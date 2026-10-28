@@ -7,33 +7,52 @@
 
 Store, sort, and share files and folders.
 
-> Status: scaffold. This repository holds the starter code only. It is not on npm
-> yet, and none of the features below work yet.
+> Status: early. The drive model works as a library. It is not on npm yet. The CLI,
+> MCP server, HTTP API, uploads, search, and sharing are not built yet.
 
-## Planned features
+## Install
 
-- Folders, files, and uploads, with search.
-- Roles that pass down from a folder to its files.
-- Share by invite or link, with expiry.
-- Agent tools: list, read, upload, move, and share.
-- File storage behind a port: Cloudflare R2 now, other stores later.
-- Trash and restore.
+```sh
+npm install agentic-drive
+```
 
-## Surfaces
+## Quick start
 
-One package gives you each way in:
+```ts
+import { createDrive, createFileStore, createFileBlobs } from "agentic-drive";
 
-- **Library and SDK**: `import { ... } from "agentic-drive"`.
-- **CLI**: `npx agentic-drive --help`.
-- **MCP server**: `npx agentic-drive mcp`, for Claude Code and other MCP clients.
-- **HTTP API**: a Cloudflare Worker you deploy to your own account.
-- **Web UI**: a small app served by the same Worker.
+const drive = createDrive({ store: createFileStore("./data/db"), blobs: createFileBlobs("./data/blobs") });
+const me = { owner: "u1", actor: { id: "u1", kind: "human" as const } };
+
+await drive.mkdir(me, "/reports/2026", { parents: true });
+await drive.putFile(me, "/reports/2026/q1.txt", new TextEncoder().encode("hello"), { mime: "text/plain" });
+await drive.putRef(me, "/reports/plan", "docs:abc123");
+await drive.move(me, "/reports/plan", "/reports/2026");
+await drive.trash(me, "/reports/2026");
+```
+
+## Features
+
+- Folders, files, and typed references to documents in other apps (`docs:<id>`).
+- Paths that start with `/`. Anything else is an item id.
+- Move, rename, trash, restore, and purge. Trashing a folder hides its whole tree.
+- Names compare without regard to case or Unicode form. A clash fails, or renames, or replaces.
+- Each item records its size, type, owner, and who made and last changed it, with the actor kind.
+- Storage sits behind `Store` and `Blobs` shapes. Memory and local file adapters ship now.
+- A `can()` hook decides who may read, write, or delete. The default allows the owner only.
+
+## Limits
+
+- No uploads with size limits, no content hash, and no signed URLs yet.
+- The file adapters allow one process at a time.
+- No sharing or roles yet. Roles come from agentic-identity.
+- The `Store` and `Blobs` shapes are a local copy. They move to agentic-identity later.
 
 ## Develop
 
 ```sh
 npm ci
-npm run build && npm run typecheck && npm test
+npm run ci:local
 ```
 
 ## License

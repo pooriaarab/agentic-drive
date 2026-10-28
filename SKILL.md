@@ -10,26 +10,15 @@ Store, sort, and share files and folders.
 ## Use the SDK
 
 ```js
-import { summarizeText, dispatchText } from "agentic-drive";
+import { createDrive, createMemoryStore, createMemoryBlobs } from "agentic-drive";
 
-summarizeText("some text");
-await dispatchText("some text", { dryRun: true });
+const drive = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });
+const me = { owner: "u1", actor: { id: "u1", kind: "human" } };
+await drive.mkdir(me, "/notes");
 ```
-
-## Use the CLI
-
-```sh
-agentic-drive summary --text "some text"
-agentic-drive dispatch --text "some text" --dry-run
-```
-
-## Use the MCP server
-
-Start the server with `agentic-drive mcp`. Call `summarize_text`
-for stats, `dispatch_text` for routes, `get_cost_report` for costs.
 
 ## Rules
 
-- Preview each route with dry run first.
-- Report guard denials and adapter errors as failures.
-- Read the cost report at the end.
+- A path starts with `/`. Any other locator is an id.
+- Trash before purge.
+- Report a `DriveError` as a failure.

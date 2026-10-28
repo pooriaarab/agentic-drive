@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "agentic-drive": {
-      "command": "npx",
-      "args": ["-y", "agentic-drive", "mcp"]
-    }
-  }
-}

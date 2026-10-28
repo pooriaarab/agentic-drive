@@ -23,7 +23,7 @@
   "type": "module",
   "private": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "files": [
     "dist"
@@ -39,10 +39,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
-  },
-  "bin": {
-    "agentic-drive": "./dist/cli.js",
-    "agentic-drive-mcp": "./dist/mcp-bin.js"
   },
   "scripts": {
     "build": "tsup",
