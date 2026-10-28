@@ -34,7 +34,7 @@ export type Node = {
 
 export type ErrorCode =
   | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
-  | "MOVE_INTO_SELF" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING";
+  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING";
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -50,10 +50,16 @@ export interface DriveDeps {
   now?: () => number;
   newId?: () => string;
   can?: Can;
+  /** Most parent steps any ancestor walk takes. A walk that hits it fails closed. */
+  maxDepth?: number;
+  /** Called with a blob key that no node points at and that could not be deleted. */
+  onOrphan?: (key: string, error: unknown) => void;
 }
 
 export type Drive = ReturnType<typeof createDrive>;
 
+const MAX_PATH_SEGMENTS = 64;
+const DEFAULT_MAX_DEPTH = 256;
 const REF = /^[a-z][a-z0-9_-]*:[^\s/]+$/;
 
 /** Validates a name. Names are NFC-normalized. Two names clash when their keys match. */
@@ -71,6 +77,7 @@ function splitPath(path: string) {
   if (rest === "") return [];
   const parts = rest.split("/");
   if (parts.includes("")) throw new DriveError("INVALID_PATH", `empty segment in path: ${path}`);
+  if (parts.length > MAX_PATH_SEGMENTS) throw new DriveError("TOO_DEEP", `a path has at most ${MAX_PATH_SEGMENTS} segments`);
   return parts.map(parseName);
 }
 
@@ -78,6 +85,9 @@ export function createDrive(deps: DriveDeps) {
   const { store, blobs } = deps;
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? (() => globalThis.crypto.randomUUID());
+  const maxDepth = deps.maxDepth ?? DEFAULT_MAX_DEPTH;
+  const onOrphan = deps.onOrphan ?? ((key: string, error: unknown) =>
+    console.error(`orphan blob ${key}: ${error instanceof Error ? error.name : "delete failed"}`));
   const can: Can = deps.can ?? ((ctx, _action, node) => node.owner === ctx.owner);
 
   const rootNode = (ctx: Ctx): Node => ({
@@ -107,7 +117,7 @@ export function createDrive(deps: DriveDeps) {
 
   /** True when the node and each ancestor are out of the trash. */
   async function isLive(ops: StoreOps, ctx: Ctx, node: Node) {
-    for (let n: Node | null = node, depth = 0; n && depth < 1000; depth++) {
+    for (let n: Node | null = node, depth = 0; n && depth < maxDepth; depth++) {
       if (n.trashed) return false;
       if (n.id === ROOT_ID) return true;
       n = await fetch(ops, ctx, n.parentId);
@@ -197,9 +207,13 @@ export function createDrive(deps: DriveDeps) {
     if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
     const dest = await resolve(ops, ctx, destLoc);
     if (dest.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${dest.name} is not a folder`);
-    for (let n: Node | null = dest, depth = 0; n && n.id !== ROOT_ID && depth < 1000; depth++) {
+    // Walk from the destination up to the root. Any gap or overrun refuses the move.
+    for (let n = dest, depth = 0; n.id !== ROOT_ID; depth++) {
       if (n.id === node.id) throw new DriveError("MOVE_INTO_SELF", `cannot move ${node.name} into itself`);
-      n = await fetch(ops, ctx, n.parentId);
+      if (depth >= maxDepth) throw new DriveError("TOO_DEEP", `the destination is deeper than ${maxDepth} folders`);
+      const parent = await fetch(ops, ctx, n.parentId);
+      if (!parent) throw new DriveError("NOT_FOUND", `a parent folder of ${dest.name} is missing`);
+      n = parent;
     }
     await need(ctx, "write", node);
     await need(ctx, "write", dest);
@@ -213,6 +227,23 @@ export function createDrive(deps: DriveDeps) {
     const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), updatedBy: who(ctx) };
     await ops.put(NODES, moved.id, moved);
     return moved;
+  }
+
+  /** True only when a query proves no node holds the key. An unreadable store keeps the blob. */
+  async function isUnreferenced(ctx: Ctx, blobKey: string) {
+    try {
+      return (await store.query<Node>(NODES, { where: { owner: ctx.owner, blobKey }, limit: 1 })).items.length === 0;
+    } catch (error) {
+      onOrphan(blobKey, error);
+      return false;
+    }
+  }
+  async function dropBlob(key: string) {
+    try {
+      await blobs.delete(key);
+    } catch (error) {
+      onOrphan(key, error);
+    }
   }
 
   const api = {
@@ -238,21 +269,26 @@ export function createDrive(deps: DriveDeps) {
       });
     },
 
-    /** Stores one blob and one node. The blob is written first and removed if the node fails. */
+    /**
+     * Stores one blob and one node. The blob is written first. The new node commits before
+     * any old blob goes. A failed old-blob delete leaves an orphan and never undoes the commit.
+     */
     async putFile(ctx: Ctx, path: string, data: Uint8Array, opts: { mime?: string; hash?: string; parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       const blobKey = `${ctx.owner}/${newId()}`;
       await blobs.put(blobKey, data, opts.mime ? { contentType: opts.mime } : undefined);
+      let committed: { node: Node; replacedBlob: string | null };
       try {
-        const { node, replacedBlob } = await store.transaction(async (tx) => {
+        committed = await store.transaction(async (tx) => {
           const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
           return insert(tx, ctx, parent, name, { kind: "file", size: data.byteLength, mime: opts.mime ?? null, hash: opts.hash ?? null, blobKey }, opts.onConflict ?? "fail");
         });
-        if (replacedBlob) await blobs.delete(replacedBlob);
-        return node;
       } catch (error) {
-        await blobs.delete(blobKey);
+        // The commit may have landed before the error. Keep the blob unless no node holds it.
+        if (await isUnreferenced(ctx, blobKey)) await dropBlob(blobKey);
         throw error;
       }
+      if (committed.replacedBlob) await dropBlob(committed.replacedBlob);
+      return committed.node;
     },
 
     /** A reference points at a document in another app, such as `docs:<id>`. */
