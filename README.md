@@ -7,8 +7,8 @@
 
 Store, sort, and share files and folders.
 
-> Status: early. The drive model works as a library. It is not on npm yet. The CLI,
-> MCP server, HTTP API, uploads, search, and sharing are not built yet.
+> Status: early. The drive model and uploads work as a library. It is not on npm yet.
+> The CLI, MCP server, HTTP API, search, and sharing are not built yet.
 
 ## Install
 
@@ -39,11 +39,15 @@ await drive.trash(me, "/reports/2026");
 - Names compare without regard to case or Unicode form. A clash fails, or renames, or replaces.
 - Each item records its size, type, owner, and who made and last changed it, with the actor kind.
 - Storage sits behind `Store` and `Blobs` shapes. Memory and local file adapters ship now.
+- `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
+- `downloadUrl()` returns a signed URL. The R2 adapter signs with AWS Signature V4 for the `eu` jurisdiction.
 - A `can()` hook decides who may read, write, or delete. The default allows the owner only.
 
 ## Limits
 
-- No uploads with size limits, no content hash, and no signed URLs yet.
+- Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.
+- The R2 adapter needs an R2 API token for signed URLs. A bucket binding cannot sign.
+- Local file blobs have no signed URLs.
 - The file adapters allow one process at a time.
 - No sharing or roles yet. Roles come from agentic-identity.
 - The `Store` and `Blobs` shapes are a local copy. They move to agentic-identity later.

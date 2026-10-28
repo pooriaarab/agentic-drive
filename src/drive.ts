@@ -34,7 +34,7 @@ export type Node = {
 
 export type ErrorCode =
   | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
-  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING";
+  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE";
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -306,6 +306,13 @@ export function createDrive(deps: DriveDeps) {
       const blob = await blobs.get(node.blobKey);
       if (!blob) throw new DriveError("BLOB_MISSING", `the bytes of ${node.name} are missing`);
       return { node, ...blob };
+    },
+
+    /** A time-limited URL to fetch the bytes straight from the blob store. */
+    async downloadUrl(ctx: Ctx, loc: string, expiresInSeconds = 300): Promise<string> {
+      const node = await resolve(store, ctx, loc);
+      if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
+      return blobs.signedUrl(node.blobKey, { method: "GET", expiresInSeconds });
     },
 
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
