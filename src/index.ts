@@ -12,3 +12,5 @@ export { buildExport } from "./export.js";
 export { readZip, writeZip } from "./zip.js";
 export type { SearchQuery } from "./drive.js";
 export { openLocal, publicNode } from "./local.js";
+export { createD1Store } from "./adapters/d1.js";
+export type { D1Like, D1Statement } from "./adapters/d1.js";
