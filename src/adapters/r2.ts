@@ -49,12 +49,16 @@ export function createR2Blobs(options: R2Options): Blobs {
     async delete(key) {
       await bucket.delete(key);
     },
-    async signedUrl(key, { method, expiresInSeconds }) {
+    async signedUrl(key, { method, expiresInSeconds, responseContentDisposition, responseContentType }) {
       if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
         throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
       }
       return presignUrl({
         method, host, path: `/${signing.bucketName}/${key}`, region: "auto", expiresInSeconds,
+        extraQuery: {
+          ...(responseContentDisposition ? { "response-content-disposition": responseContentDisposition } : {}),
+          ...(responseContentType ? { "response-content-type": responseContentType } : {}),
+        },
         accessKeyId: signing.accessKeyId, secretAccessKey: signing.secretAccessKey, at: new Date(now()),
       });
     },

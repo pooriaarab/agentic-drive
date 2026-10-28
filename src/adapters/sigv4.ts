@@ -16,6 +16,8 @@ export interface PresignInput {
   accessKeyId: string;
   secretAccessKey: string;
   expiresInSeconds: number;
+  /** More query parameters to sign, such as `response-content-disposition`. */
+  extraQuery?: Record<string, string>;
   at: Date;
 }
 
@@ -32,7 +34,8 @@ export async function presignUrl(input: PresignInput): Promise<string> {
     ["X-Amz-Expires", String(input.expiresInSeconds)],
     ["X-Amz-SignedHeaders", "host"],
   ];
-  const query = params.map(([k, v]) => `${uriEncode(k)}=${uriEncode(v)}`).sort().join("&");
+  for (const [k, v] of Object.entries(input.extraQuery ?? {})) params.push([k, v]);
+  const query = params.map(([k, v]) => [uriEncode(k), uriEncode(v)] as const).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => `${k}=${v}`).join("&");
   const canonical = [input.method, path, query, `host:${input.host}`, "", "host", "UNSIGNED-PAYLOAD"].join("\n");
   const toSign = ["AWS4-HMAC-SHA256", stamp, scope, hex(await globalThis.crypto.subtle.digest("SHA-256", enc.encode(canonical) as BufferSource))].join("\n");
   let key = await hmac(enc.encode(`AWS4${input.secretAccessKey}`), day);

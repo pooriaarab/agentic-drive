@@ -1,5 +1,5 @@
 import type { Ctx, Drive, Node, OnConflict } from "./drive.js";
-import { DriveError } from "./drive.js";
+import { DriveError, safeMime } from "./drive.js";
 
 export const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -32,11 +32,6 @@ function looksLikeText(head: Uint8Array): boolean {
     }
   }
   return false;
-}
-
-async function sha256Hex(data: Uint8Array): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", data as BufferSource);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function* iterate(source: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
@@ -84,6 +79,6 @@ export async function upload(
   const data = new Uint8Array(size);
   for (let at = 0, i = 0; i < parts.length; at += parts[i]!.byteLength, i++) data.set(parts[i]!, at);
   const head = data.subarray(0, 512);
-  const mime = sniffMime(head) ?? opts.mime ?? (looksLikeText(head) ? "text/plain" : "application/octet-stream");
-  return drive.putFile(ctx, path, data, { mime, hash: await sha256Hex(data), parents: opts.parents, onConflict: opts.onConflict });
+  const mime = sniffMime(head) ?? (opts.mime !== undefined ? safeMime(opts.mime) : looksLikeText(head) ? "text/plain" : "application/octet-stream");
+  return drive.putFile(ctx, path, data, { mime, parents: opts.parents, onConflict: opts.onConflict });
 }

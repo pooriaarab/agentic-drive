@@ -40,7 +40,7 @@ await drive.trash(me, "/reports/2026");
 - Each item records its size, type, owner, and who made and last changed it, with the actor kind.
 - Storage sits behind `Store` and `Blobs` shapes. Memory and local file adapters ship now.
 - `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
-- `downloadUrl()` returns a signed URL. The R2 adapter signs with AWS Signature V4 for the `eu` jurisdiction.
+- `downloadUrl()` returns a signed URL. The R2 adapter signs with AWS Signature V4 for the `eu` jurisdiction. A link lasts 15 minutes by default and 1 hour at most. It always serves an attachment with the stored type. Trashing a file does not revoke a link already issued.
 - A `can()` hook decides who may read, write, or delete. The default allows the owner only.
 
 ## Limits
@@ -48,6 +48,8 @@ await drive.trash(me, "/reports/2026");
 - Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.
 - The R2 adapter needs an R2 API token for signed URLs. A bucket binding cannot sign.
 - Local file blobs have no signed URLs.
+- Only `upload()` enforces the size cap. A caller of `putFile()` must check size first.
+- A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.
 - The file adapters allow one process at a time.
 - No sharing or roles yet. Roles come from agentic-identity.
 - The `Store` and `Blobs` shapes are a local copy. They move to agentic-identity later.

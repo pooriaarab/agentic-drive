@@ -34,7 +34,7 @@ export type Node = {
 
 export type ErrorCode =
   | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
-  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE";
+  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY";
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -60,6 +60,27 @@ export type Drive = ReturnType<typeof createDrive>;
 
 const MAX_PATH_SEGMENTS = 64;
 const DEFAULT_MAX_DEPTH = 256;
+export const DEFAULT_URL_SECONDS = 900;
+export const MAX_URL_SECONDS = 3600;
+const OPAQUE = "application/octet-stream";
+const MIME_SHAPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/;
+/** Types a browser runs as a page or a script. They are stored as opaque bytes. */
+const ACTIVE_TYPES = new Set([
+  "text/html", "application/xhtml+xml", "image/svg+xml", "text/xml", "application/xml", "text/javascript",
+  "application/javascript", "application/x-javascript", "text/ecmascript", "application/ecmascript", "text/css",
+]);
+
+/** The type to store for a claimed one. Malformed and active types become opaque bytes. */
+export function safeMime(claimed: string | null | undefined): string {
+  const type = (claimed ?? "").trim().toLowerCase();
+  return MIME_SHAPE.test(type) && !ACTIVE_TYPES.has(type) ? type : OPAQUE;
+}
+
+export async function sha256Hex(data: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", data as BufferSource);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 const REF = /^[a-z][a-z0-9_-]*:[^\s/]+$/;
 
 /** Validates a name. Names are NFC-normalized. Two names clash when their keys match. */
@@ -273,14 +294,16 @@ export function createDrive(deps: DriveDeps) {
      * Stores one blob and one node. The blob is written first. The new node commits before
      * any old blob goes. A failed old-blob delete leaves an orphan and never undoes the commit.
      */
-    async putFile(ctx: Ctx, path: string, data: Uint8Array, opts: { mime?: string; hash?: string; parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
+    async putFile(ctx: Ctx, path: string, data: Uint8Array, opts: { mime?: string; parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
+      const mime = opts.mime === undefined ? null : safeMime(opts.mime);
+      const hash = await sha256Hex(data);
       const blobKey = `${ctx.owner}/${newId()}`;
-      await blobs.put(blobKey, data, opts.mime ? { contentType: opts.mime } : undefined);
+      await blobs.put(blobKey, data, mime ? { contentType: mime } : undefined);
       let committed: { node: Node; replacedBlob: string | null };
       try {
         committed = await store.transaction(async (tx) => {
           const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
-          return insert(tx, ctx, parent, name, { kind: "file", size: data.byteLength, mime: opts.mime ?? null, hash: opts.hash ?? null, blobKey }, opts.onConflict ?? "fail");
+          return insert(tx, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
         });
       } catch (error) {
         // The commit may have landed before the error. Keep the blob unless no node holds it.
@@ -308,11 +331,19 @@ export function createDrive(deps: DriveDeps) {
       return { node, ...blob };
     },
 
-    /** A time-limited URL to fetch the bytes straight from the blob store. */
-    async downloadUrl(ctx: Ctx, loc: string, expiresInSeconds = 300): Promise<string> {
+    /**
+     * A time-limited URL to fetch the bytes straight from the blob store. It always serves an
+     * attachment with the stored type. Trashing an item does not revoke a link already issued.
+     */
+    async downloadUrl(ctx: Ctx, loc: string, expiresInSeconds = DEFAULT_URL_SECONDS): Promise<string> {
+      if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > MAX_URL_SECONDS) {
+        throw new DriveError("INVALID_EXPIRY", `a link lasts 1 to ${MAX_URL_SECONDS} seconds`);
+      }
       const node = await resolve(store, ctx, loc);
       if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
-      return blobs.signedUrl(node.blobKey, { method: "GET", expiresInSeconds });
+      return blobs.signedUrl(node.blobKey, {
+        method: "GET", expiresInSeconds, responseContentDisposition: "attachment", responseContentType: safeMime(node.mime),
+      });
     },
 
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {

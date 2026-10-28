@@ -103,11 +103,15 @@ export function createMemoryBlobs(options: AdapterOptions = {}): Blobs {
     async delete(key) {
       objects.delete(key);
     },
-    async signedUrl(key, { method, expiresInSeconds }) {
+    async signedUrl(key, { method, expiresInSeconds, responseContentDisposition, responseContentType }) {
       if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
         throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
       }
-      return `memory://blobs/${encodeURIComponent(key)}?method=${method}&expires=${now() + expiresInSeconds * 1000}`;
+      const extra = [
+        responseContentDisposition && `&disposition=${encodeURIComponent(responseContentDisposition)}`,
+        responseContentType && `&type=${encodeURIComponent(responseContentType)}`,
+      ].filter(Boolean).join("");
+      return `memory://blobs/${encodeURIComponent(key)}?method=${method}&expires=${now() + expiresInSeconds * 1000}${extra}`;
     },
   };
 }
