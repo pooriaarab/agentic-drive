@@ -10,15 +10,25 @@ import { readZip } from "./zip.js";
 const root = join(import.meta.dirname, "..");
 const port = 8700 + Math.floor(Math.random() * 200);
 const base = `http://127.0.0.1:${port}`;
+const tok = (name: string) => `${name}-`.padEnd(40, "k");
+const TOK_U1 = tok("u1");
+const TOK_BOT = tok("bot");
+const TOK_U2 = tok("u2");
+const TOK_NO_ACTOR = tok("noactor");
+const TOK_AGENT_NO_ACTOR = tok("agentnoactor");
+const TOK_SHORT = "short-token";
 const tokens = {
-  "tok-u1": { owner: "u1" },
-  "tok-bot": { owner: "u1", actor: "bot", kind: "agent_of_human" },
-  "tok-u2": { owner: "u2" },
+  [TOK_U1]: { owner: "u1", actor: "u1", kind: "human" },
+  [TOK_BOT]: { owner: "u1", actor: "bot", kind: "agent_of_human" },
+  [TOK_U2]: { owner: "u2", actor: "u2", kind: "human" },
+  [TOK_NO_ACTOR]: { owner: "u1", kind: "human" },
+  [TOK_AGENT_NO_ACTOR]: { owner: "u1", kind: "agent_of_human" },
+  [TOK_SHORT]: { owner: "u1", actor: "u1", kind: "human" },
 };
 let proc: ChildProcess;
 
 async function call(method: string, path: string, opts: { token?: string | null; json?: unknown; body?: BodyInit; headers?: Record<string, string> } = {}) {
-  const token = opts.token === undefined ? "tok-u1" : opts.token;
+  const token = opts.token === undefined ? TOK_U1 : opts.token;
   const res = await fetch(`${base}/api/v1/drive${path}`, {
     method,
     headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.json ? { "content-type": "application/json" } : {}), ...opts.headers },
@@ -53,19 +63,46 @@ describe("sign-in", () => {
   it("answers 401 without a token, with a wrong token, and with a token that only shares a prefix", async () => {
     expect((await call("GET", "/items", { token: null })).status).toBe(401);
     expect((await call("GET", "/items", { token: "nope" })).status).toBe(401);
-    expect((await call("GET", "/items", { token: "tok-u" })).status).toBe(401);
+    expect((await call("GET", "/items", { token: TOK_U1.slice(0, 39) })).status).toBe(401);
     expect((await json(await call("GET", "/items", { token: null }))).error.code).toBe("UNAUTHORIZED");
     expect((await fetch(`${base}/health`)).status).toBe(200);
   });
   it("fails closed when tokens are unset or broken", () => {
-    const req = new Request("http://x", { headers: { authorization: "Bearer tok-u1" } });
-    expect(authenticate(req, {} as never)).toBeNull();
-    expect(authenticate(req, { DRIVE_API_TOKENS: "{not json" } as never)).toBeNull();
-    expect(authenticate(req, { DRIVE_API_TOKENS: JSON.stringify({ "tok-u1": {} }) } as never)).toBeNull();
-    expect(authenticate(req, { DRIVE_API_TOKENS: JSON.stringify(tokens) } as never)).toMatchObject({ owner: "u1", actor: { kind: "human" } });
+    const as = (token: string) => new Request("http://x", { headers: { authorization: `Bearer ${token}` } });
+    const withGrant = (grant: unknown, token = TOK_U1) => ({ DRIVE_API_TOKENS: JSON.stringify({ [token]: grant }) }) as never;
+    expect(authenticate(as(TOK_U1), {} as never)).toBeNull();
+    expect(authenticate(as(TOK_U1), { DRIVE_API_TOKENS: "{not json" } as never)).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({}))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant(null))).toBeNull();
+    expect(authenticate(as(TOK_U1), { DRIVE_API_TOKENS: JSON.stringify(tokens) } as never)).toEqual({ owner: "u1", actor: { id: "u1", kind: "human" } });
+    // Each part of the principal is required. A missing or malformed part denies the token.
+    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", kind: "human" }))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: "u1" }))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: "", kind: "human" }))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({ owner: "", actor: "u1", kind: "human" }))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: "u1", kind: "root" }))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({ owner: 7, actor: "u1", kind: "human" }))).toBeNull();
+    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: ["u1"], kind: "human" }))).toBeNull();
+    expect(authenticate(as(TOK_SHORT), withGrant({ owner: "u1", actor: "u1", kind: "human" }, TOK_SHORT))).toBeNull();
+  });
+  it("answers 401 on every route without a token", async () => {
+    const routes: [string, string][] = [
+      ["GET", "/items"], ["GET", "/stat?path=/"], ["POST", "/folders"], ["PUT", "/files?path=/x"], ["GET", "/files?path=/x"], ["GET", "/url?path=/x"],
+      ["POST", "/move"], ["POST", "/trash"], ["GET", "/trash"], ["POST", "/restore"], ["POST", "/purge"], ["GET", "/search"], ["GET", "/export"], ["DELETE", "/account?confirm=yes"],
+    ];
+    for (const [method, path] of routes) expect((await call(method, path, { token: null })).status, `${method} ${path}`).toBe(401);
+  });
+  it("answers 401 for a token with no actor, and an agent token with no actor cannot delete anything", async () => {
+    expect((await put("/keep-me.txt", "keep")).status).toBe(201);
+    for (const token of [TOK_NO_ACTOR, TOK_AGENT_NO_ACTOR, TOK_SHORT]) {
+      expect((await call("GET", "/items", { token })).status, token).toBe(401);
+      expect((await call("DELETE", "/account?confirm=yes", { token })).status, token).toBe(401);
+      expect((await call("POST", "/trash", { token, json: { path: "/keep-me.txt" } })).status, token).toBe(401);
+    }
+    expect((await call("GET", "/stat?path=/keep-me.txt")).status).toBe(200);
   });
   it("returns JSON errors for unknown routes", async () => {
-    const res = await fetch(`${base}/api/v1/drive/nowhere`, { headers: { authorization: "Bearer tok-u1" } });
+    const res = await fetch(`${base}/api/v1/drive/nowhere`, { headers: { authorization: `Bearer ${TOK_U1}` } });
     expect(res.status).toBe(404);
   });
 });
@@ -90,7 +127,7 @@ describe("files", () => {
     const big = new Uint8Array(1500);
     expect((await put("/big1", big)).status).toBe(413);
     const chunked = new ReadableStream({ start(c) { c.enqueue(big.slice(0, 700)); c.enqueue(big.slice(700)); c.close(); } });
-    const res = await fetch(`${base}/api/v1/drive/files?path=/big2`, { method: "PUT", headers: { authorization: "Bearer tok-u1" }, body: chunked, duplex: "half" } as RequestInit);
+    const res = await fetch(`${base}/api/v1/drive/files?path=/big2`, { method: "PUT", headers: { authorization: `Bearer ${TOK_U1}` }, body: chunked, duplex: "half" } as RequestInit);
     expect(res.status).toBe(413);
     expect((await call("GET", "/stat?path=/big2")).status).toBe(404);
     expect((await call("GET", "/stat?path=/big1")).status).toBe(404);
@@ -110,10 +147,20 @@ describe("files", () => {
     expect((await call("POST", "/folders", { body: "not json" })).status).toBe(400);
   });
   it("keeps owners apart", async () => {
-    expect((await call("GET", "/stat?path=/dup.txt", { token: "tok-u2" })).status).toBe(404);
-    expect(await json(await call("GET", "/items", { token: "tok-u2" }))).toEqual([]);
-    expect((await call("GET", "/search?name=dup", { token: "tok-u2" })).status).toBe(200);
-    expect(await json(await call("GET", "/search?name=dup", { token: "tok-u2" }))).toEqual([]);
+    expect((await call("GET", "/stat?path=/dup.txt", { token: TOK_U2 })).status).toBe(404);
+    expect(await json(await call("GET", "/items", { token: TOK_U2 }))).toEqual([]);
+    expect((await call("GET", "/search?name=dup", { token: TOK_U2 })).status).toBe(200);
+    expect(await json(await call("GET", "/search?name=dup", { token: TOK_U2 }))).toEqual([]);
+  });
+  it("answers 400 for a JSON body that is not an object", async () => {
+    for (const raw of ["null", "[]", "5", '"x"']) {
+      const res = await call("POST", "/folders", { body: raw, headers: { "content-type": "application/json" } });
+      expect(res.status, raw).toBe(400);
+    }
+  });
+  it("treats a generic form type as no claim and sniffs text", async () => {
+    const res = await call("PUT", "/files?path=/note.txt", { body: "hello", headers: { "content-type": "application/x-www-form-urlencoded" } });
+    expect((await json(res)).mime).toBe("text/plain");
   });
   it("has no signed URLs until R2 keys are set", async () => {
     expect((await call("GET", "/url?path=/dup.txt")).status).toBe(501);
@@ -122,7 +169,7 @@ describe("files", () => {
 
 describe("trash, search, export, erase", () => {
   it("trashes, restores, and purges", async () => {
-    await put("/t/x.txt", "bye", "tok-u1", "&parents=true");
+    await put("/t/x.txt", "bye", TOK_U1, "&parents=true");
     const trashed = await json(await call("POST", "/trash", { json: { path: "/t" } }));
     expect((await call("GET", "/stat?path=/t/x.txt")).status).toBe(404);
     expect((await json(await call("GET", "/trash"))).map((n: { id: string }) => n.id)).toContain(trashed.id);
@@ -134,7 +181,7 @@ describe("trash, search, export, erase", () => {
     expect((await call("GET", "/stat?path=/t/x.txt")).status).toBe(404);
   });
   it("searches and labels agent work", async () => {
-    await put("/by-bot.txt", "robot", "tok-bot");
+    await put("/by-bot.txt", "robot", TOK_BOT);
     const hits = await json(await call("GET", "/search?createdByKind=agent_of_human&kind=file"));
     expect(hits.map((h: { path: string }) => h.path)).toEqual(["/by-bot.txt"]);
     expect(hits[0].createdBy).toEqual({ id: "bot", kind: "agent_of_human" });
@@ -149,13 +196,13 @@ describe("trash, search, export, erase", () => {
     expect(manifest.items.every((i: { owner: string }) => i.owner === "u1")).toBe(true);
   });
   it("erases only with confirmation, never for an agent, and only the caller's data", async () => {
-    await put("/theirs.txt", "keep", "tok-u2");
+    await put("/theirs.txt", "keep", TOK_U2);
     expect((await call("DELETE", "/account")).status).toBe(400);
-    expect((await call("DELETE", "/account?confirm=yes", { token: "tok-bot" })).status).toBe(403);
+    expect((await call("DELETE", "/account?confirm=yes", { token: TOK_BOT })).status).toBe(403);
     expect((await call("GET", "/stat?path=/dup.txt")).status).toBe(200);
     const gone = await json(await call("DELETE", "/account?confirm=yes"));
     expect(gone.removed).toBeGreaterThan(3);
     expect(await json(await call("GET", "/items"))).toEqual([]);
-    expect((await json(await call("GET", "/items", { token: "tok-u2" }))).map((n: { name: string }) => n.name)).toEqual(["theirs.txt"]);
+    expect((await json(await call("GET", "/items", { token: TOK_U2 }))).map((n: { name: string }) => n.name)).toEqual(["theirs.txt"]);
   });
 });

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { createFileBlobs, createFileStore } from "./adapters/fs.js";
-import { createDrive, type ActorKind, type Ctx, type Drive, type Node } from "./drive.js";
+import { ACTOR_KINDS, createDrive, type ActorKind, type Ctx, type Drive, type Node } from "./drive.js";
 
 export interface LocalOptions {
   /** Where the drive keeps its data. */
@@ -13,11 +13,9 @@ export interface LocalOptions {
   kind?: ActorKind;
 }
 
-export const ACTOR_KINDS: ActorKind[] = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"];
-
 export function openLocal(options: LocalOptions): { drive: Drive; ctx: Ctx } {
   const kind = options.kind ?? "human";
-  if (!ACTOR_KINDS.includes(kind)) throw new Error(`unknown actor kind "${kind}"`);
+  if (!(ACTOR_KINDS as readonly string[]).includes(kind)) throw new Error(`unknown actor kind "${kind}"`);
   return {
     drive: createDrive({ store: createFileStore(join(options.dir, "db")), blobs: createFileBlobs(join(options.dir, "blobs")) }),
     ctx: { owner: options.owner, actor: { id: options.actor ?? options.owner, kind } },
