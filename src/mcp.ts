@@ -3,9 +3,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { DriveError, type Ctx, type Drive } from "./drive.js";
+import { ACTOR_KINDS, DriveError, type Ctx, type Drive } from "./drive.js";
 import { buildExport } from "./export.js";
-import { ACTOR_KINDS, publicNode } from "./local.js";
+import { publicNode } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
@@ -71,7 +71,7 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string): McpS
   tool(
     "drive_search",
     "Find items by name and metadata.",
-    { name: z.string().optional(), mime: z.string().optional(), kind: z.enum(["folder", "file", "ref"]).optional(), minSize: z.number().optional(), maxSize: z.number().optional(), createdByKind: z.enum(ACTOR_KINDS as [string, ...string[]]).optional(), limit: z.number().int().min(1).optional() },
+    { name: z.string().optional(), mime: z.string().optional(), kind: z.enum(["folder", "file", "ref"]).optional(), minSize: z.number().optional(), maxSize: z.number().optional(), createdByKind: z.enum(ACTOR_KINDS).optional(), limit: z.number().int().min(1).optional() },
     async (q) => (await drive.search(ctx, q as never)).map((r) => publicNode(r.node, r.path)),
     { readOnlyHint: true },
   );

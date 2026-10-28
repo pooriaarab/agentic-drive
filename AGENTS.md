@@ -11,6 +11,7 @@ document in another app. Each item belongs to one owner.
 
 - SDK: `import { createDrive } from "agentic-drive"`.
 - CLI: `npx agentic-drive <command>`. Every command prints JSON.
+- HTTP: `/api/v1/drive/*` on the Worker. Send `Authorization: Bearer <token>`.
 - MCP: `npx agentic-drive mcp`. Tools: drive_ls, drive_stat, drive_mkdir, drive_upload,
   drive_download, drive_mv, drive_rm, drive_trash, drive_restore, drive_purge,
   drive_search, drive_export.

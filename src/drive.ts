@@ -1,9 +1,15 @@
-import type { Blobs, Store, StoreOps } from "./ports.js";
+import { StoreConflictError, type Blobs, type Scalar, type Store, type StoreOps } from "./ports.js";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
 
-export type ActorKind = "human" | "agent_of_human" | "agent_of_agent" | "agent" | "user_token";
+export const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"] as const;
+export type ActorKind = (typeof ACTOR_KINDS)[number];
+
+/** Rules a database must enforce itself. Two live items never share a name in one folder. */
+export const DRIVE_UNIQUE_INDEXES: { name: string; collection: string; fields: string[]; where: Record<string, Scalar> }[] = [
+  { name: "drive_live_names", collection: NODES, fields: ["owner", "parentId", "nameKey"], where: { trashed: false } },
+];
 export type Actor = { id: string; kind: ActorKind };
 /** `owner` is the drive's owner. `actor` is who acts for them. */
 export type Ctx = { owner: string; actor: Actor };
@@ -304,6 +310,16 @@ export function createDrive(deps: DriveDeps) {
     return null;
   }
 
+  /** A store conflict means another writer won the name, or the data kept changing. Say so as a drive error. */
+  async function transact<R>(fn: (tx: StoreOps) => Promise<R>): Promise<R> {
+    try {
+      return await store.transaction(fn);
+    } catch (error) {
+      if (error instanceof StoreConflictError) throw new DriveError("NAME_TAKEN", "that name was taken, or the drive changed at the same time. Try again.");
+      throw error;
+    }
+  }
+
   /**
    * Blobs go first (a delete is idempotent), then rows in chunks, children before parents. A
    * failure at any step leaves rows that still name what is left, so the same call can run again.
@@ -333,7 +349,7 @@ export function createDrive(deps: DriveDeps) {
     },
 
     async mkdir(ctx: Ctx, path: string, opts: { parents?: boolean } = {}): Promise<Node> {
-      return store.transaction(async (tx) => {
+      return transact(async (tx) => {
         const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
         const existing = await liveChild(tx, ctx, parent.id, parseName(name).key);
         if (opts.parents && existing?.kind === "folder") return existing;
@@ -352,7 +368,7 @@ export function createDrive(deps: DriveDeps) {
       await blobs.put(blobKey, data, mime ? { contentType: mime } : undefined);
       let committed: { node: Node; replacedBlob: string | null };
       try {
-        committed = await store.transaction(async (tx) => {
+        committed = await transact(async (tx) => {
           const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
           return insert(tx, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
         });
@@ -368,7 +384,7 @@ export function createDrive(deps: DriveDeps) {
     /** A reference points at a document in another app, such as `docs:<id>`. */
     async putRef(ctx: Ctx, path: string, ref: string, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
-      return store.transaction(async (tx) => {
+      return transact(async (tx) => {
         const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
         return (await insert(tx, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "replace" ? "fail" : opts.onConflict ?? "fail")).node;
       });
@@ -398,11 +414,11 @@ export function createDrive(deps: DriveDeps) {
     },
 
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
-      return store.transaction(async (tx) => relocate(tx, ctx, await resolve(tx, ctx, src), destLoc, opts));
+      return transact(async (tx) => relocate(tx, ctx, await resolve(tx, ctx, src), destLoc, opts));
     },
 
     async rename(ctx: Ctx, loc: string, name: string): Promise<Node> {
-      return store.transaction(async (tx) => {
+      return transact(async (tx) => {
         const node = await resolve(tx, ctx, loc);
         return relocate(tx, ctx, node, node.parentId, { name });
       });
@@ -410,7 +426,7 @@ export function createDrive(deps: DriveDeps) {
 
     /** Hides an item and, for a folder, everything under it. Nothing else changes. */
     async trash(ctx: Ctx, loc: string): Promise<Node> {
-      return store.transaction(async (tx) => {
+      return transact(async (tx) => {
         const node = await resolve(tx, ctx, loc);
         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot trash the root");
         await need(ctx, "delete", node);
@@ -431,7 +447,7 @@ export function createDrive(deps: DriveDeps) {
 
     /** Puts a trashed item back. It needs a live parent folder. */
     async restore(ctx: Ctx, id: string, opts: { parentId?: string; onConflict?: OnConflict } = {}): Promise<Node> {
-      return store.transaction(async (tx) => {
+      return transact(async (tx) => {
         const node = await fetch(tx, ctx, id);
         if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
         if (!node.trashed) throw new DriveError("NOT_TRASHED", `${node.name} is not in the trash`);

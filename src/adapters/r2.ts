@@ -20,21 +20,23 @@ export interface R2Signing {
 
 export interface R2Options extends AdapterOptions {
   bucket: R2BucketLike;
-  signing: R2Signing;
+  /** Needed only for signed URLs. Without it, `signedUrl` throws. */
+  signing?: R2Signing;
 }
 
 /**
  * Blobs on Cloudflare R2. The region defaults to "eu". An "eu" adapter needs an
  * "eu" jurisdiction in `signing`, so a signed URL never points at a bucket outside the EU.
+ * Create the bucket itself with the same jurisdiction. A binding cannot report it.
  */
 export function createR2Blobs(options: R2Options): Blobs {
   const region: Region = options.region ?? "eu";
   const { signing, bucket } = options;
-  if (region === "eu" && signing.jurisdiction !== "eu") {
+  if (region === "eu" && signing && signing.jurisdiction !== "eu") {
     throw new Error('an "eu" R2 adapter needs signing.jurisdiction "eu"');
   }
   const now = options.now ?? Date.now;
-  const host = `${signing.accountId}.${signing.jurisdiction ? `${signing.jurisdiction}.` : ""}r2.cloudflarestorage.com`;
+  const host = signing && `${signing.accountId}.${signing.jurisdiction ? `${signing.jurisdiction}.` : ""}r2.cloudflarestorage.com`;
   return {
     region,
     async put(key, data, opts) {
@@ -53,6 +55,7 @@ export function createR2Blobs(options: R2Options): Blobs {
       if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
         throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
       }
+      if (!signing || !host) throw new Error("signed URLs need R2 signing keys");
       return presignUrl({
         method, host, path: `/${signing.bucketName}/${key}`, region: "auto", expiresInSeconds,
         extraQuery: {

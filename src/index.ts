@@ -1,8 +1,9 @@
 export { VERSION } from "./version.js";
-export { createDrive, DriveError, parseName, ROOT_ID } from "./drive.js";
+export { ACTOR_KINDS, createDrive, DRIVE_UNIQUE_INDEXES, DriveError, parseName, ROOT_ID } from "./drive.js";
 export type { Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, Node, OnConflict } from "./drive.js";
 export { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
 export { createFileBlobs, createFileStore } from "./adapters/fs.js";
+export { StoreConflictError } from "./ports.js";
 export type { AdapterOptions, BlobObject, Blobs, Doc, Page, Query, Region, Store, StoreOps } from "./ports.js";
 export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";
 export type { UploadOptions } from "./upload.js";
@@ -12,3 +13,5 @@ export { buildExport } from "./export.js";
 export { readZip, writeZip } from "./zip.js";
 export type { SearchQuery } from "./drive.js";
 export { openLocal, publicNode } from "./local.js";
+export { createD1Store } from "./adapters/d1.js";
+export type { D1Like, D1Options, D1Statement, UniqueIndex } from "./adapters/d1.js";

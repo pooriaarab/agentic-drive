@@ -7,8 +7,8 @@
 
 Store, sort, and share files and folders.
 
-> Status: early. The library, CLI, and MCP server work. It is not on npm yet.
-> The HTTP API and sharing are not built yet.
+> Status: early. The library, CLI, MCP server, and HTTP API work. It is not on npm yet.
+> Sharing and the web UI are not built yet.
 
 ## Install
 
@@ -45,6 +45,21 @@ Every command prints JSON. A failure prints `{"error":{"code","message"}}` on st
 Set `--dir`, `--owner`, `--actor`, and `--actor-kind` (or the `AGENTIC_DRIVE_*` variables).
 An agent sets `--actor-kind agent_of_human`. Each item then records that a machine made it.
 
+## HTTP API
+
+A Cloudflare Worker (Hono) serves `/api/v1/drive` and mirrors the CLI. It uses D1 and R2.
+
+```sh
+npx wrangler secret put DRIVE_API_TOKENS   # {"<token of 32+ characters>":{"owner":"u1","actor":"u1","kind":"human"}}
+npx wrangler deploy
+curl -H "authorization: Bearer <token>" "$URL/api/v1/drive/items?path=/"
+```
+
+Routes: `GET /items`, `GET /stat`, `POST /folders`, `PUT /files`, `GET /files`, `GET /url`,
+`POST /move`, `POST /trash`, `GET /trash`, `POST /restore`, `POST /purge`, `GET /search`,
+`GET /export`, `DELETE /account?confirm=yes`. Without `DRIVE_API_TOKENS`, every request gets 401.
+Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--location weur`.
+
 ## Features
 
 - Folders, files, and typed references to documents in other apps (`docs:<id>`).
@@ -73,6 +88,11 @@ An agent sets `--actor-kind agent_of_human`. Each item then records that a machi
 - The export holds every file in memory. A very large drive needs a streaming export, which is not built yet.
 - The zip export stores entries without compression and has no Zip64 support.
 - No access log for personal data yet. That comes with agentic-identity.
+- The D1 store checks every document a transaction read. If another Worker changed one, the transaction runs again, and after four tries it fails with a conflict. A unique index stops two live items from sharing a name in one folder.
+- One lock covers all owners in a Worker isolate, and there is no index on `owner` and `parentId` yet. A busy deployment needs both.
+- `region: "eu"` on the D1 and R2 adapters is a promise made at deploy time. The code cannot check where the database or the bucket lives.
+- Every API token is at least 32 characters. Its grant names an owner, an actor id, and an actor kind. A grant with a missing part gets 401.
+- Tokens in `DRIVE_API_TOKENS` are a stopgap for sign-in. OIDC comes with agentic-identity.
 - No sharing or roles yet. Roles come from agentic-identity.
 - The `Store` and `Blobs` shapes are a local copy. They move to agentic-identity later.
 

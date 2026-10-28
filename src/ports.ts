@@ -23,6 +23,14 @@ export interface Page<T extends Doc = Doc> {
   nextCursor?: string;
 }
 
+/** A write broke a uniqueness rule, or the data kept changing under a transaction. */
+export class StoreConflictError extends Error {
+  constructor(message = "the data changed during the transaction") {
+    super(message);
+    this.name = "StoreConflictError";
+  }
+}
+
 export interface StoreOps {
   get<T extends Doc = Doc>(collection: string, id: string): Promise<T | null>;
   put<T extends Doc = Doc>(collection: string, id: string, doc: T): Promise<void>;
