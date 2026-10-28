@@ -45,5 +45,12 @@ export interface Blobs {
   put(key: string, data: Uint8Array, options?: { contentType?: string }): Promise<void>;
   get(key: string): Promise<BlobObject | null>;
   delete(key: string): Promise<void>;
-  signedUrl(key: string, options: { method: "GET" | "PUT"; expiresInSeconds: number }): Promise<string>;
+  /**
+   * `responseContentDisposition` and `responseContentType` are signed into a GET URL, so the
+   * holder of the link cannot change how the bytes are served.
+   */
+  signedUrl(
+    key: string,
+    options: { method: "GET" | "PUT"; expiresInSeconds: number; responseContentDisposition?: string; responseContentType?: string },
+  ): Promise<string>;
 }

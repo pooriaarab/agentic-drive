@@ -4,3 +4,7 @@ export type { Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, N
 export { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
 export { createFileBlobs, createFileStore } from "./adapters/fs.js";
 export type { AdapterOptions, BlobObject, Blobs, Doc, Page, Query, Region, Store, StoreOps } from "./ports.js";
+export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";
+export type { UploadOptions } from "./upload.js";
+export { createR2Blobs } from "./adapters/r2.js";
+export type { R2BucketLike, R2Options, R2Signing } from "./adapters/r2.js";
