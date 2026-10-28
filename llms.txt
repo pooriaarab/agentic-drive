@@ -1,0 +1,15 @@
+# agentic-drive
+
+Store, sort, and share files and folders.
+
+Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
+
+- SDK: import { summarizeText, dispatchText } from "agentic-drive".
+- CLI: agentic-drive summary --text "...".
+- MCP: run agentic-drive mcp, then call summarize_text.
+
+## Docs
+
+- README: https://github.com/pooriaarab/agentic-drive
+- Core contract: https://github.com/pooriaarab/agentic-drive/blob/main/docs/agentic-core.md
+- License: MIT
