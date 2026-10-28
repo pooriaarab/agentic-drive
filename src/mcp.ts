@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { DriveError, type Ctx, type Drive } from "./drive.js";
 import { buildExport } from "./export.js";
@@ -18,7 +18,10 @@ function failure(error: unknown) {
   return { isError: true as const, content: [{ type: "text" as const, text: JSON.stringify({ error: { code: error.code, message: error.message } }) }] };
 }
 
-export function createMcpServer(drive: Drive, ctx: Ctx): McpServer {
+/** A plain `.zip` file name. It has no folder part, so it cannot name a path outside the export folder. */
+const EXPORT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.zip$/;
+
+export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string): McpServer {
   const server = new McpServer({ name: "agentic-drive", version: VERSION });
   const tool = <S extends z.ZodRawShape>(
     name: string,
@@ -72,14 +75,28 @@ export function createMcpServer(drive: Drive, ctx: Ctx): McpServer {
     async (q) => (await drive.search(ctx, q as never)).map((r) => publicNode(r.node, r.path)),
     { readOnlyHint: true },
   );
-  tool("drive_export", "Write everything the owner has to a zip file with a JSON manifest.", { outPath: z.string() }, async ({ outPath }) => {
-    const zip = await buildExport(drive, ctx);
-    writeFileSync(resolve(outPath), zip);
-    return { saved: resolve(outPath), size: zip.byteLength };
-  });
+  tool(
+    "drive_export",
+    "Write everything the owner has to a new zip file in the export folder. Give a plain file name that ends in .zip. It never overwrites a file.",
+    { name: z.string() },
+    async ({ name }) => {
+      if (!EXPORT_NAME.test(name)) throw new DriveError("INVALID_PATH", "name must be a plain file name that ends in .zip");
+      const zip = await buildExport(drive, ctx);
+      mkdirSync(exportDir, { recursive: true });
+      const saved = join(exportDir, name);
+      try {
+        writeFileSync(saved, zip, { flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new DriveError("NAME_TAKEN", `${name} already exists in the export folder`);
+        throw error;
+      }
+      return { saved, size: zip.byteLength };
+    },
+    { destructiveHint: false },
+  );
   return server;
 }
 
-export async function startMcp(deps: { drive: Drive; ctx: Ctx }): Promise<void> {
-  await createMcpServer(deps.drive, deps.ctx).connect(new StdioServerTransport());
+export async function startMcp(deps: { drive: Drive; ctx: Ctx; exportDir: string }): Promise<void> {
+  await createMcpServer(deps.drive, deps.ctx, deps.exportDir).connect(new StdioServerTransport());
 }

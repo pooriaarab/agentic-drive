@@ -99,11 +99,11 @@ describe("MCP over stdio", () => {
       const r = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
       return { isError: r.isError === true, body: JSON.parse(r.content[0]!.text) as any };
     };
-    return { client, call, work };
+    return { client, call, work, data };
   }
 
   it("lists the tools and runs the life of a file", async () => {
-    const { client, call, work } = await connect({ AGENTIC_DRIVE_ACTOR: "bot", AGENTIC_DRIVE_KIND: "agent_of_human", AGENTIC_DRIVE_OWNER: "u1" });
+    const { client, call, work, data } = await connect({ AGENTIC_DRIVE_ACTOR: "bot", AGENTIC_DRIVE_KIND: "agent_of_human", AGENTIC_DRIVE_OWNER: "u1" });
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
       expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export"]));
@@ -118,9 +118,14 @@ describe("MCP over stdio", () => {
       const rm = await call("drive_rm", { path: "/z.txt" });
       expect((await call("drive_ls")).body.map((n: { name: string }) => n.name)).toEqual(["notes"]);
       expect((await call("drive_restore", { id: rm.body.id })).body.name).toBe("z.txt");
-      const out = join(work, "x.zip");
-      await call("drive_export", { outPath: out });
-      expect(readZip(new Uint8Array(readFileSync(out))).has("manifest.json")).toBe(true);
+      const made = await call("drive_export", { name: "x.zip" });
+      expect(readZip(new Uint8Array(readFileSync(join(data, "exports", "x.zip")))).has("manifest.json")).toBe(true);
+      expect(made.body.saved).toBe(join(data, "exports", "x.zip"));
+      for (const bad of ["../x.zip", "/tmp/x.zip", "a/b.zip", ".zshrc", "x.txt", "x\\y.zip"]) {
+        expect((await call("drive_export", { name: bad })).isError, bad).toBe(true);
+      }
+      expect((await call("drive_export", { name: "x.zip" })).isError).toBe(true);
+      expect(existsSync(join(work, "x.zip"))).toBe(false);
     } finally {
       await client.close();
     }

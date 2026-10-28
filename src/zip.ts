@@ -16,7 +16,14 @@ export interface ZipEntry {
   data: Uint8Array;
 }
 
+/** True for a relative, forward-slash name that cannot climb out of an extraction folder. */
+export function safeEntryName(name: string): boolean {
+  if (name === "" || /[\\\u0000]/.test(name) || name.startsWith("/") || /^[a-zA-Z]:/.test(name)) return false;
+  return name.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+
 export function writeZip(entries: ZipEntry[], at: number): Uint8Array {
+  for (const { name } of entries) if (!safeEntryName(name)) throw new Error(`zip: unsafe entry name ${JSON.stringify(name)}`);
   const d = new Date(at);
   const time = (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1);
   const date = ((Math.max(d.getUTCFullYear(), 1980) - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate();

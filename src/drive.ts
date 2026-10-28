@@ -34,7 +34,7 @@ export type Node = {
 
 export type ErrorCode =
   | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
-  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY";
+  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY";
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -304,6 +304,20 @@ export function createDrive(deps: DriveDeps) {
     return null;
   }
 
+  /**
+   * Blobs go first (a delete is idempotent), then rows in chunks, children before parents. A
+   * failure at any step leaves rows that still name what is left, so the same call can run again.
+   */
+  async function removeNodes(nodes: Node[]) {
+    for (const node of nodes) if (node.blobKey) await blobs.delete(node.blobKey);
+    const rows = [...nodes].reverse();
+    for (let i = 0; i < rows.length; i += 400) {
+      await store.transaction(async (tx) => {
+        for (const node of rows.slice(i, i + 400)) await tx.delete(NODES, node.id);
+      });
+    }
+  }
+
   const api = {
     async stat(ctx: Ctx, loc: string): Promise<Node> {
       return resolve(store, ctx, loc);
@@ -461,54 +475,49 @@ export function createDrive(deps: DriveDeps) {
     },
 
     /** Every item of the owner, trashed or not, with its original path and bytes. For export. */
-    async exportData(ctx: Ctx): Promise<{ node: Node; path: string; data: Uint8Array | null }[]> {
+    async exportData(ctx: Ctx): Promise<{ node: Node; path: string; data: Uint8Array | null; missing: boolean }[]> {
       const all = await ownerNodes(ctx);
       const byId = new Map(all.map((n) => [n.id, n]));
-      const out: { node: Node; path: string; data: Uint8Array | null }[] = [];
+      const out: { node: Node; path: string; data: Uint8Array | null; missing: boolean }[] = [];
       for (const node of all.sort((a, b) => (a.id < b.id ? -1 : 1))) {
         const blob = node.blobKey ? await blobs.get(node.blobKey) : null;
-        if (node.blobKey && !blob) throw new DriveError("BLOB_MISSING", `the bytes of ${node.name} are missing`);
-        out.push({ node, path: pathIn(byId, node, false) as string, data: blob?.data ?? null });
+        out.push({ node, path: pathIn(byId, node, false) as string, data: blob?.data ?? null, missing: node.blobKey !== null && !blob });
       }
       return out;
     },
 
     /** Deletes every item and byte of the owner for good. Only the owner may do this, never an agent for them. */
+    /** Deletes every item and blob of one owner. Blobs go first, so a failure can be retried. */
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
-      if (ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner can delete the whole drive");
+      if (ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
       await need(ctx, "delete", rootNode(ctx));
-      const all = await ownerNodes(ctx);
-      for (let i = 0; i < all.length; i += 400) {
-        await store.transaction(async (tx) => {
-          for (const node of all.slice(i, i + 400)) await tx.delete(NODES, node.id);
-        });
+      let removed = 0;
+      // A file created during a pass shows up in the next one.
+      for (let pass = 0; pass < 5; pass++) {
+        const all = await ownerNodes(ctx);
+        if (all.length === 0) return { removed };
+        await removeNodes(all);
+        removed += all.length;
       }
-      for (const node of all) if (node.blobKey) await blobs.delete(node.blobKey);
-      return { removed: all.length };
+      throw new DriveError("BUSY", "the drive kept changing while it was deleted. Run it again.");
     },
-
     /** Deletes a trashed item for good, with everything under it and all their bytes. */
     async purge(ctx: Ctx, id: string): Promise<{ removed: number }> {
-      const keys: string[] = [];
-      const removed = await store.transaction(async (tx) => {
-        keys.length = 0;
-        const top = await fetch(tx, ctx, id);
-        if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
-        if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
-        await need(ctx, "delete", top);
-        let count = 0;
-        for (const queue = [top]; queue.length; ) {
-          const node = queue.pop() as Node;
-          if (node.kind === "folder") queue.push(...(await children(tx, node.owner, node.id)));
-          if (node.blobKey) keys.push(node.blobKey);
-          await tx.delete(NODES, node.id);
-          count++;
-        }
-        return count;
-      });
-      for (const key of keys) await blobs.delete(key);
-      return { removed };
+      const top = await fetch(store, ctx, id);
+      if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
+      if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
+      await need(ctx, "delete", top);
+      // A trashed folder takes no new children, so one read pass sees the whole subtree.
+      const nodes: Node[] = [];
+      for (const queue = [top]; queue.length; ) {
+        const node = queue.pop() as Node;
+        nodes.push(node);
+        if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
+      }
+      await removeNodes(nodes);
+      return { removed: nodes.length };
     },
+
   };
   return api;
 }

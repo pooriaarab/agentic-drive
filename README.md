@@ -56,7 +56,7 @@ An agent sets `--actor-kind agent_of_human`. Each item then records that a machi
 - `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
 - `downloadUrl()` returns a signed URL. The R2 adapter signs with AWS Signature V4 for the `eu` jurisdiction. A link lasts 15 minutes by default and 1 hour at most. It always serves an attachment with the stored type. Trashing a file does not revoke a link already issued.
 - `search()` finds live items by name, type, kind, size, and who made them.
-- `buildExport()` writes everything one owner has to a zip with a `manifest.json`. Trashed items are flagged.
+- `buildExport()` writes everything one owner has to a zip with a `manifest.json`. Trashed items are flagged. Entries are named by item id. A file whose bytes are gone is marked `missing`.
 - `deleteAll()` deletes all items and bytes of one owner for good. Only the owner can call it.
 - A `can()` hook decides who may read, write, or delete. The default allows the owner only.
 
@@ -68,6 +68,9 @@ An agent sets `--actor-kind agent_of_human`. Each item then records that a machi
 - Only `upload()` enforces the size cap. A caller of `putFile()` must check size first.
 - A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.
 - The file adapters allow one process at a time.
+- The MCP `drive_export` tool writes a new `.zip` into `<dir>/exports` and never overwrites a file. It takes a plain file name, not a path.
+- Hard delete removes blobs first and then rows. If a blob delete fails, the call throws and the same call can run again.
+- The export holds every file in memory. A very large drive needs a streaming export, which is not built yet.
 - The zip export stores entries without compression and has no Zip64 support.
 - No access log for personal data yet. That comes with agentic-identity.
 - No sharing or roles yet. Roles come from agentic-identity.

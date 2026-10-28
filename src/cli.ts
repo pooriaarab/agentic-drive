@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createReadStream, realpathSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { DriveError, type ActorKind, type OnConflict } from "./drive.js";
@@ -72,8 +72,9 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       if (args.length < n) throw new UsageError(`usage: agentic-drive ${usage}`);
     };
     const env = io.env;
+    const dir = resolve(values.dir ?? env.AGENTIC_DRIVE_DIR ?? ".agentic-drive");
     const { drive, ctx } = openLocal({
-      dir: resolve(values.dir ?? env.AGENTIC_DRIVE_DIR ?? ".agentic-drive"),
+      dir,
       owner: values.owner ?? env.AGENTIC_DRIVE_OWNER ?? "me",
       actor: values.actor ?? env.AGENTIC_DRIVE_ACTOR,
       kind: (values["actor-kind"] ?? env.AGENTIC_DRIVE_KIND) as ActorKind | undefined,
@@ -152,7 +153,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         break;
       case "mcp": {
         const { startMcp } = await import("./mcp.js");
-        await startMcp({ drive, ctx });
+        await startMcp({ drive, ctx, exportDir: join(dir, "exports") });
         return 0;
       }
       default:
