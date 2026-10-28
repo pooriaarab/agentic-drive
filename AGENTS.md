@@ -4,37 +4,19 @@ Store, sort, and share files and folders.
 
 ## Mental model
 
-Text goes in. Stats or a route receipt come out. One core serves
-all three faces, so each face returns the same shape.
+A drive holds folders and items. An item is a file, or a typed reference to a
+document in another app. Each item belongs to one owner.
 
-## The three faces
+## Faces
 
-- SDK: `import { summarizeText } from "agentic-drive"`.
-- CLI: `npx agentic-drive summary --text "..."`.
-- MCP: `npx agentic-drive mcp`, then call a tool below.
-
-Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
-
-## MCP tools
-
-| Tool | Use it for |
-| --- | --- |
-| summarize_text | Count chars, words, lines, top words. |
-| dispatch_text | Route one text. Pass dryRun to preview. |
-| get_cost_report | Read session cost totals. |
-
-## The loop
-
-1. Discover the tools with `tools/list`.
-2. Run `summarize_text` on a sample.
-3. Preview a route with `dispatch_text` and dryRun true.
-4. Run the real route when the preview looks right.
-5. Read `get_cost_report` and state the cost.
+- SDK: `import { createDrive } from "agentic-drive"`.
+- CLI and MCP: not built yet.
 
 ## Rules
 
-- Preview with dry run before each real dispatch.
-- Stop when a guard denies the call. State the reason.
-- Never retry a denied call with changed text to dodge a guard.
-- Report adapter errors as errors. Never present them as success.
-- State the cost report before you claim the task is done.
+- A string that starts with `/` is a path. Any other string is an id.
+- Trash first. Purge only items that are in the trash.
+- Report a `DriveError` as an error. Read its `code`.
+- Do not retry a `FORBIDDEN` error with other input.
+
+Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
