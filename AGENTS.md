@@ -10,13 +10,17 @@ document in another app. Each item belongs to one owner.
 ## Faces
 
 - SDK: `import { createDrive } from "agentic-drive"`.
-- CLI and MCP: not built yet.
+- CLI: `npx agentic-drive <command>`. Every command prints JSON.
+- MCP: `npx agentic-drive mcp`. Tools: drive_ls, drive_stat, drive_mkdir, drive_upload,
+  drive_download, drive_mv, drive_rm, drive_trash, drive_restore, drive_purge,
+  drive_search, drive_export.
 
 ## Rules
 
 - A string that starts with `/` is a path. Any other string is an id.
 - Trash first. Purge only items that are in the trash.
 - Report a `DriveError` as an error. Read its `code`.
+- Run with `--actor-kind agent_of_human` so items show a machine made them.
 - Do not retry a `FORBIDDEN` error with other input.
 
 Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.

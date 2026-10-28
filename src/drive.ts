@@ -34,13 +34,27 @@ export type Node = {
 
 export type ErrorCode =
   | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
-  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY";
+  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY";
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
     super(message);
     this.name = "DriveError";
   }
+}
+
+export interface SearchQuery {
+  /** Part of the name. Case and Unicode form do not matter. */
+  name?: string;
+  /** An exact type, or a family such as `image/*`. */
+  mime?: string;
+  kind?: Node["kind"];
+  minSize?: number;
+  maxSize?: number;
+  /** Items first made by this kind of actor, such as `agent_of_human`. */
+  createdByKind?: ActorKind;
+  /** At most this many results. Defaults to 100. */
+  limit?: number;
 }
 
 export type OnConflict = "fail" | "rename" | "replace";
@@ -266,6 +280,43 @@ export function createDrive(deps: DriveDeps) {
       onOrphan(key, error);
     }
   }
+  async function ownerNodes(ctx: Ctx): Promise<Node[]> {
+    const root = rootNode(ctx);
+    if (!(await can(ctx, "read", root))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
+    const out: Node[] = [];
+    for (let cursor: string | undefined; ; ) {
+      const page = await store.query<Node>(NODES, { where: { owner: ctx.owner }, limit: 100, cursor });
+      out.push(...page.items.map((item) => item.data));
+      if (!page.nextCursor) return out;
+      cursor = page.nextCursor;
+    }
+  }
+  /** The path of a node, built from a map of all the owner's nodes. Null when the node or an ancestor is trashed. */
+  function pathIn(byId: Map<string, Node>, node: Node, liveOnly: boolean): string | null {
+    const names: string[] = [];
+    for (let n: Node | undefined = node, depth = 0; depth < 1000; depth++) {
+      if (!n) return liveOnly ? null : `/(orphan)/${names.reverse().join("/")}`;
+      if (liveOnly && n.trashed) return null;
+      names.push(n.name);
+      if (n.parentId === ROOT_ID) return `/${names.reverse().join("/")}`;
+      n = byId.get(n.parentId);
+    }
+    return null;
+  }
+
+  /**
+   * Blobs go first (a delete is idempotent), then rows in chunks, children before parents. A
+   * failure at any step leaves rows that still name what is left, so the same call can run again.
+   */
+  async function removeNodes(nodes: Node[]) {
+    for (const node of nodes) if (node.blobKey) await blobs.delete(node.blobKey);
+    const rows = [...nodes].reverse();
+    for (let i = 0; i < rows.length; i += 400) {
+      await store.transaction(async (tx) => {
+        for (const node of rows.slice(i, i + 400)) await tx.delete(NODES, node.id);
+      });
+    }
+  }
 
   const api = {
     async stat(ctx: Ctx, loc: string): Promise<Node> {
@@ -401,28 +452,72 @@ export function createDrive(deps: DriveDeps) {
       });
     },
 
+    /** Live items that match every field given, sorted by path. */
+    async search(ctx: Ctx, q: SearchQuery = {}): Promise<{ node: Node; path: string }[]> {
+      const limit = q.limit ?? 100;
+      if (!Number.isInteger(limit) || limit < 1) throw new RangeError("limit must be an integer of 1 or more");
+      const all = await ownerNodes(ctx);
+      const byId = new Map(all.map((n) => [n.id, n]));
+      const needle = q.name?.normalize("NFC").toLowerCase();
+      const hits: { node: Node; path: string }[] = [];
+      for (const node of all) {
+        const path = pathIn(byId, node, true);
+        if (path === null) continue;
+        if (needle !== undefined && !node.nameKey.includes(needle)) continue;
+        if (q.kind && node.kind !== q.kind) continue;
+        if (q.mime && !(q.mime.endsWith("/*") ? node.mime?.startsWith(q.mime.slice(0, -1)) : node.mime === q.mime)) continue;
+        if (q.minSize !== undefined && node.size < q.minSize) continue;
+        if (q.maxSize !== undefined && node.size > q.maxSize) continue;
+        if (q.createdByKind && node.createdBy.kind !== q.createdByKind) continue;
+        hits.push({ node, path });
+      }
+      return hits.sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, limit);
+    },
+
+    /** Every item of the owner, trashed or not, with its original path and bytes. For export. */
+    async exportData(ctx: Ctx): Promise<{ node: Node; path: string; data: Uint8Array | null; missing: boolean }[]> {
+      const all = await ownerNodes(ctx);
+      const byId = new Map(all.map((n) => [n.id, n]));
+      const out: { node: Node; path: string; data: Uint8Array | null; missing: boolean }[] = [];
+      for (const node of all.sort((a, b) => (a.id < b.id ? -1 : 1))) {
+        const blob = node.blobKey ? await blobs.get(node.blobKey) : null;
+        out.push({ node, path: pathIn(byId, node, false) as string, data: blob?.data ?? null, missing: node.blobKey !== null && !blob });
+      }
+      return out;
+    },
+
+    /** Deletes every item and byte of the owner for good. Only the owner may do this, never an agent for them. */
+    /** Deletes every item and blob of one owner. Blobs go first, so a failure can be retried. */
+    async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
+      if (ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
+      await need(ctx, "delete", rootNode(ctx));
+      let removed = 0;
+      // A file created during a pass shows up in the next one.
+      for (let pass = 0; pass < 5; pass++) {
+        const all = await ownerNodes(ctx);
+        if (all.length === 0) return { removed };
+        await removeNodes(all);
+        removed += all.length;
+      }
+      throw new DriveError("BUSY", "the drive kept changing while it was deleted. Run it again.");
+    },
     /** Deletes a trashed item for good, with everything under it and all their bytes. */
     async purge(ctx: Ctx, id: string): Promise<{ removed: number }> {
-      const keys: string[] = [];
-      const removed = await store.transaction(async (tx) => {
-        keys.length = 0;
-        const top = await fetch(tx, ctx, id);
-        if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
-        if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
-        await need(ctx, "delete", top);
-        let count = 0;
-        for (const queue = [top]; queue.length; ) {
-          const node = queue.pop() as Node;
-          if (node.kind === "folder") queue.push(...(await children(tx, node.owner, node.id)));
-          if (node.blobKey) keys.push(node.blobKey);
-          await tx.delete(NODES, node.id);
-          count++;
-        }
-        return count;
-      });
-      for (const key of keys) await blobs.delete(key);
-      return { removed };
+      const top = await fetch(store, ctx, id);
+      if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
+      if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
+      await need(ctx, "delete", top);
+      // A trashed folder takes no new children, so one read pass sees the whole subtree.
+      const nodes: Node[] = [];
+      for (const queue = [top]; queue.length; ) {
+        const node = queue.pop() as Node;
+        nodes.push(node);
+        if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
+      }
+      await removeNodes(nodes);
+      return { removed: nodes.length };
     },
+
   };
   return api;
 }

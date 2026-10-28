@@ -8,3 +8,7 @@ export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";
 export type { UploadOptions } from "./upload.js";
 export { createR2Blobs } from "./adapters/r2.js";
 export type { R2BucketLike, R2Options, R2Signing } from "./adapters/r2.js";
+export { buildExport } from "./export.js";
+export { readZip, writeZip } from "./zip.js";
+export type { SearchQuery } from "./drive.js";
+export { openLocal, publicNode } from "./local.js";

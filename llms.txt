@@ -5,6 +5,8 @@ Store, sort, and share files and folders.
 Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
 
 - SDK: import { createDrive } from "agentic-drive".
+- CLI: agentic-drive ls /.
+- MCP: run agentic-drive mcp, then call drive_ls.
 
 ## Docs
 
