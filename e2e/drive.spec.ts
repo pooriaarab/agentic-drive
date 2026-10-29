@@ -19,7 +19,7 @@ async function audit(page: Page, name: string) {
   await page.emulateMedia({ colorScheme: "light" });
 }
 
-const row = (page: Page, name: string) => page.locator(".ad-file-row").filter({ has: page.getByRole("link", { name, exact: true }) });
+const row = (page: Page, name: string) => page.locator(".agd-file-row").filter({ has: page.getByRole("link", { name, exact: true }) });
 async function pick(page: Page, name: string, action: string) {
   await page.getByRole("button", { name: `Actions for ${name}` }).click();
   await page.getByRole("menuitem", { name: action, exact: true }).click();
@@ -52,7 +52,7 @@ test("a person manages files, and the changes persist", async ({ page }) => {
   await expect(page.getByText("A name cannot have a slash.")).toBeVisible();
   await page.getByLabel("Folder name").fill("Reports");
   await page.getByRole("button", { name: "Create" }).click();
-  await expect(page.locator(".ad-toast__title", { hasText: "That did not work" })).toBeVisible();
+  await expect(page.locator(".agd-toast__title", { hasText: "That did not work" })).toBeVisible();
   await page.getByLabel("Folder name").fill("Archive");
   await page.getByRole("button", { name: "Create" }).click();
   await expect(page.getByRole("link", { name: "Archive", exact: true }).first()).toBeVisible();
@@ -146,7 +146,7 @@ test("the share dialog shares by link and by invite, and the keyboard reaches it
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Invite a person or an agent").fill("grace@example.com");
   await dialog.getByRole("button", { name: "Invite", exact: true }).click();
-  await expect(page.locator(".ad-toast__title", { hasText: "Invite created" })).toBeVisible();
+  await expect(page.locator(".agd-toast__title", { hasText: "Invite created" })).toBeVisible();
   await audit(page, "08-share");
   await dialog.getByRole("tab", { name: /link/i }).first().click();
   await dialog.getByLabel("Anyone with the link").click();
