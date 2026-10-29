@@ -1,5 +1,5 @@
 export { VERSION } from "./version.js";
-export { ACTOR_KINDS, createDrive, DriveError, parseName, ROOT_ID } from "./drive.js";
+export { ACTOR_KINDS, createDrive, DriveError, parseName, parseSubject, ROOT_ID, subjectKindOf } from "./drive.js";
 export type { Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, Node, OnConflict } from "./drive.js";
 export { createFileBlobs, createFileStore } from "./adapters/fs.js";
 export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";

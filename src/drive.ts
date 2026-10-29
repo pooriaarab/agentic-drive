@@ -1,4 +1,4 @@
-import { MAX_FOLDER_DEPTH, type Blobs, type createSharing, type Doc, type PrincipalContext, type Resource, type Role, type Store, type StoreOps } from "agentic-identity";
+import { EraseRefusedError, MAX_FOLDER_DEPTH, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -174,6 +174,24 @@ const VISITOR: Actor = { id: "", kind: "human" };
 const appOf = (node: Node): string | null => (node.kind === "ref" && node.ref ? (node.ref.split(":")[0] as string) : null);
 /** Stands in for the id of an erased person on items that other people own. */
 const ERASED = "erased";
+
+/**
+ * The kind that holds a role, for the kind of a principal at the root of a chain. Only the root of a chain holds a
+ * role, so only `human` and `agent` map. Any other kind, a delegated one too, is an error: it never defaults to a person.
+ */
+export function subjectKindOf(kind: unknown): SubjectKind {
+  if (kind === "human" || kind === "agent") return kind;
+  throw new DriveError("INVALID_SHARE", `a ${typeof kind === "string" ? kind : "missing"} principal cannot hold a role. Only the root of a chain can: human or agent`);
+}
+
+/** A subject from input: both parts are checked. */
+export function parseSubject(input: unknown): Subject {
+  const s = input as { kind?: unknown; id?: unknown } | null;
+  if (!s || typeof s.id !== "string" || s.id === "" || !(SUBJECT_KINDS as readonly unknown[]).includes(s.kind)) {
+    throw new DriveError("INVALID_SHARE", `a subject needs an id and a kind (${SUBJECT_KINDS.join(" or ")})`);
+  }
+  return { kind: s.kind as SubjectKind, id: s.id };
+}
 const SHARE_ERROR = /^(invalid|give an|expiresAt|expiresInMs|resource exists|the last owner)/;
 
 export function createDrive(deps: DriveDeps) {
@@ -519,6 +537,8 @@ export function createDrive(deps: DriveDeps) {
   }
   /** The person behind a call: the root of the chain. The kind is null unless the chain or the person in person says it. */
   const subjectOf = (ctx: Ctx) => ({ id: ctx.owner, kind: ctx.principal?.chain[0]?.kind ?? (isInPerson(ctx) ? ctx.actor.kind : null) });
+  /** Who can hold a grant among the actors of a person: the person, and the agents with their own identity. A grant has the kind of its subject, so a person and an agent with one id stay apart. */
+  const heldBy = (who: { id: string; kind: unknown }, ownedAgents: string[]): [string, SubjectKind][] => [[who.id, subjectKindOf(who.kind)], ...ownedAgents.map((a): [string, SubjectKind] => [a, subjectKindOf("agent")])];
   /** Every doc of a collection that matches every field, page by page. */
   async function allWhere(ops: StoreOps, collection: string, where: Record<string, string>, orderBy?: { field: string }) {
     const out: { id: string; data: Doc }[] = [];
@@ -555,24 +575,48 @@ export function createDrive(deps: DriveDeps) {
   }
 
   /** Deletes every item and blob of one owner, and the shares of the drive root. The caller has checked the right. */
-  async function eraseDrive(owner: string): Promise<number> {
+  async function eraseDrive(owner: string, principal?: PrincipalContext): Promise<number> {
     let removed = 0;
     // A file created during a pass shows up in the next one.
     for (let pass = 0; pass < 5; pass++) {
       const all = await rawOwnerNodes(owner, true);
       if (all.length === 0) {
         // The root has shares too. Erase them, so an old share never reaches a new file.
-        const rootId = await rootResource(owner);
-        await transact(async (tx) => {
-          const shares = sharing ? await sharesOf(tx, rootId) : [];
-          for (const share of shares) await tx.delete(share.collection, share.id);
-          if (sharing) await tx.delete("resources", rootId);
-        });
+        await finishResource(principal, await rootResource(owner));
         return removed;
       }
-      removed += await removeNodes(all);
+      removed += await removeNodes(all, undefined, principal);
     }
     throw new DriveError("BUSY", "the drive kept changing while it was deleted. Run it again.");
+  }
+
+  /**
+   * Erases what hangs on a resource: its grants, links, invites, and audit entries, and the resource itself. Identity
+   * does it for a caller who owns the resource. Identity says forbidden for another caller and refuses a resource with
+   * children or too many owners. A drive erased for an agent without an identity of its own has no such caller. In
+   * those cases a sweep does the same. It runs after the item is gone, so a failed call leaves a share with no item
+   * behind, never an item with no share record. The share cannot reach anything, and the same erase removes it.
+   */
+  async function finishResource(principal: PrincipalContext | undefined, resourceId: string): Promise<void> {
+    if (!sharing) return;
+    if (principal) {
+      try {
+        await sharing.deleteResource(principal, resourceId);
+        return;
+      } catch (error) {
+        if (!(error instanceof EraseRefusedError) && !(error instanceof Error && error.message === "forbidden")) throw error;
+      }
+    }
+    await transact(async (tx) => {
+      for (const share of await sharesOf(tx, resourceId)) await tx.delete(share.collection, share.id);
+      await tx.delete("resources", resourceId);
+    });
+    for (let cursor: string | undefined; ; ) {
+      const page = await store.query("audit", { where: { resourceId }, limit: 100, cursor });
+      for (const entry of page.items) await store.delete("audit", entry.id);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
   }
 
   /** Every grant, link, and invite of one resource, page by page. */
@@ -600,7 +644,7 @@ export function createDrive(deps: DriveDeps) {
    * that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
    * new mark, so the same call can run again until it is done.
    */
-  async function removeNodes(nodes: Node[], top?: Node): Promise<number> {
+  async function removeNodes(nodes: Node[], top?: Node, principal?: PrincipalContext): Promise<number> {
     const unchanged = (now: Node | null, seen: Node) =>
       now !== null && now.trashed === seen.trashed && now.parentId === seen.parentId && now.updatedAt === seen.updatedAt;
     const size = sharing ? SHARED_CHUNK : CHUNK;
@@ -639,20 +683,18 @@ export function createDrive(deps: DriveDeps) {
     for (let i = 0; i < rows.length; i += size) {
       const chunk = rows.slice(i, i + size);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
+      // The node is marked, so it is hidden and cannot come back. A call that fails from here on runs again: see `purge`.
+      for (const node of chunk) await finishResource(principal, node.id);
       await transact(async (tx) => {
-        const held: { node: Node; claim: string | null; owns: boolean; shares: { collection: string; id: string }[] }[] = [];
+        const held: { node: Node; claim: string | null; owns: boolean }[] = [];
         for (const node of chunk) {
           // A trashed item gave up its name when it was trashed, and another item may hold it now.
           const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
-          // The shares of a deleted item go with it: its grants, links, and invites.
-          const shares = sharing ? await sharesOf(tx, node.id) : [];
-          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id, shares });
+          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id });
         }
-        for (const { node, claim, owns, shares } of held) {
+        for (const { node, claim, owns } of held) {
           await tx.delete(NODES, node.id);
           if (claim && owns) await tx.delete(NAMES, claim);
-          if (sharing) await tx.delete("resources", node.id);
-          for (const share of shares) await tx.delete(share.collection, share.id);
         }
       });
     }
@@ -900,14 +942,17 @@ export function createDrive(deps: DriveDeps) {
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
       assertInPerson(ctx, "delete the whole drive");
       await need(ctx, "delete", rootNode(ctx.owner, ctx.actor));
-      return { removed: await eraseDrive(ctx.owner) };
+      return { removed: await eraseDrive(ctx.owner, ctx.principal) };
     },
     /** Deletes a trashed item for good, with everything under it and all their bytes. */
     async purge(ctx: Ctx, id: string): Promise<{ removed: number }> {
-      const top = await fetch(store, ctx, id, true);
+      // An earlier purge may have erased the sharing record and then failed. Roles cannot be checked then, so only the person in person, who owns the drive, may finish it.
+      const marked = await rawNode(store, id, ctx.owner, ctx.actor, true);
+      const resumed = marked?.purging === true && sharing !== undefined && isInPerson(ctx) && marked.owner === ctx.owner && (await store.get("resources", marked.id)) === null;
+      const top = resumed ? marked : await fetch(store, ctx, id, true);
       if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
       if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
-      await need(ctx, "delete", top);
+      if (!resumed) await need(ctx, "delete", top);
       // A trashed folder takes no new children, so one read pass sees the whole subtree.
       const nodes: Node[] = [];
       for (const queue = [top]; queue.length; ) {
@@ -915,7 +960,7 @@ export function createDrive(deps: DriveDeps) {
         nodes.push(node);
         if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
       }
-      return { removed: await removeNodes(nodes, top) };
+      return { removed: await removeNodes(nodes, top, ctx.principal) };
     },
 
     /**
@@ -1000,8 +1045,8 @@ export function createDrive(deps: DriveDeps) {
           by: [...new Set([actors.includes(n.createdById) ? n.createdBy : null, actors.includes(n.updatedById) ? n.updatedBy : null].filter((a) => a !== null).map((a) => JSON.stringify(a)))].map((a) => JSON.parse(a as string)),
         }))
         .sort((x, y) => (x.id < y.id ? -1 : 1));
-      const held: { subjectId: unknown; resourceId: unknown; role: unknown }[] = [];
-      for (const actor of actors) for (const g of await allWhere(store, "grants", { subjectId: actor })) held.push({ subjectId: g.data.subjectId, resourceId: g.data.resourceId, role: g.data.role });
+      const held: { subjectKind: unknown; subjectId: unknown; resourceId: unknown; role: unknown }[] = [];
+      for (const [actor, kind] of heldBy(subject, ownedAgents)) for (const g of await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })) held.push({ subjectKind: g.data.subjectKind, subjectId: g.data.subjectId, resourceId: g.data.resourceId, role: g.data.role });
       // An agent with its own identity has its own drive. It belongs to the person. The bytes are not in the export.
       const agents = [];
       for (const agent of ownedAgents) {
@@ -1027,7 +1072,7 @@ export function createDrive(deps: DriveDeps) {
      * they hold and the invites they or their agents sent, on drive items only: the grants of other apps stay for
      * those apps and for identity. What they or their agents made in other drives stays, because it belongs to
      * those drives: the id becomes "erased", and the kind stays, so machine-made work keeps its label. The audit
-     * trail stays: it holds ids and kinds only. A failed call can run again.
+     * entries of the erased items go with them. The ones about what the person did in other drives stay: they hold ids and kinds only. A failed call can run again.
      */
     async erasePerson(ctx: Ctx): Promise<{ removed: number; grants: number; invites: number; anonymized: number }> {
       assertInPerson(ctx, "erase a person");
@@ -1051,7 +1096,7 @@ export function createDrive(deps: DriveDeps) {
       };
       let grants = 0;
       let invites = 0;
-      for (const actor of actors) grants += await sweep(await ofDrive(await allWhere(store, "grants", { subjectId: actor })), "grants");
+      for (const [actor, kind] of heldBy(subjectOf(ctx), ownedAgents)) grants += await sweep(await ofDrive(await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })), "grants");
       for (const actor of actors) invites += await sweep(await ofDrive(await allWhere(store, "invites", { createdBy: actor })), "invites");
       const todo = await madeBy(store, actors);
       for (let i = 0; i < todo.length; i += CHUNK) {
@@ -1073,14 +1118,14 @@ export function createDrive(deps: DriveDeps) {
     },
 
     /** Gives a person or an agent a role on an item and everything under it. Only an owner may. */
-    async shareWith(ctx: Ctx, loc: string, subjectId: string, role: Role): Promise<void> {
+    async shareWith(ctx: Ctx, loc: string, subject: Subject, role: Role): Promise<void> {
       const resource = await resourceOf(await resolve(store, ctx, loc));
-      await viaSharing(ctx, (s, p) => s.grant(p, resource, subjectId, role));
+      await viaSharing(ctx, (s, p) => s.grant(p, resource, parseSubject(subject), role));
     },
 
-    async unshare(ctx: Ctx, loc: string, subjectId: string): Promise<void> {
+    async unshare(ctx: Ctx, loc: string, subject: Subject): Promise<void> {
       const resource = await resourceOf(await resolve(store, ctx, loc));
-      await viaSharing(ctx, (s, p) => s.revokeGrant(p, resource, subjectId));
+      await viaSharing(ctx, (s, p) => s.revokeGrant(p, resource, parseSubject(subject)));
     },
 
     /** Invite by `email` (a person) or `handle` (an agent). The invite lasts `expiresInMs`, if given. It sends no message. */
@@ -1111,7 +1156,7 @@ export function createDrive(deps: DriveDeps) {
       const where = { resourceId: await resourceOf(node) };
       const rows = async (collection: string) => (await store.query(collection, { where, limit: 100 })).items.map((item) => item.data);
       return {
-        grants: (await rows("grants")).map((g) => ({ subjectId: g.subjectId, role: g.role })),
+        grants: (await rows("grants")).map((g) => ({ subjectKind: g.subjectKind, subjectId: g.subjectId, role: g.role })),
         links: (await rows("links")).map((l) => ({ id: l.id, role: l.role, signedInOnly: l.signedInOnly === true, expiresAt: l.expiresAt ?? null, revoked: l.revokedAt != null })),
         invites: (await rows("invites")).map((i) => ({ id: i.id, role: i.role, email: i.email ?? null, handle: i.handle ?? null, expiresAt: i.expiresAt ?? null, accepted: i.acceptedAt !== undefined })),
       };

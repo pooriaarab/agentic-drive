@@ -31,9 +31,11 @@
 //  30. Counting a height reads file pages, so a folder of files runs past a query cap.
 //  31. A big folder cannot move up, rename, or restore to its own parent, because its height is counted when it cannot get deeper.
 //  32. mkdir -p returns an existing folder whose sharing record is gone.
+//  33. A purge or an erase leaves the audit entries of the erased item, because identity was not asked to erase the resource.
+//  34. A grant for an agent is read as a grant for a person with the same id, or an unknown kind is taken for a person.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createDrive, type Ctx, type Drive } from "./drive.js";
+import { createDrive, subjectKindOf, type Ctx, type Drive } from "./drive.js";
 
 const bytes = (s: string) => new TextEncoder().encode(s);
 const principal = (id: string, kind: PrincipalContext["kind"] = "human", scopes = ["drive:admin"], chain?: PrincipalContext["chain"]): PrincipalContext => ({
@@ -62,7 +64,7 @@ const fails = (promise: Promise<unknown>, code: string) => expect(promise).rejec
 async function team(role: "viewer" | "commenter" | "editor") {
   const file = await drive.putFile(A, "/team/docs/a.txt", bytes("a"), { parents: true });
   const folder = await drive.stat(A, "/team");
-  await drive.shareWith(A, "/team", "bob", role);
+  await drive.shareWith(A, "/team", { kind: "human", id: "bob" }, role);
   return { file, folder };
 }
 
@@ -77,7 +79,7 @@ describe("roles on a folder", () => {
     await fails(drive.trash(B, file.id), "FORBIDDEN");
     await fails(drive.rename(B, file.id, "b.txt"), "FORBIDDEN");
     await fails(drive.move(B, file.id, folder.id), "FORBIDDEN");
-    await fails(drive.shareWith(B, folder.id, "carol", "viewer"), "FORBIDDEN");
+    await fails(drive.shareWith(B, folder.id, { kind: "human", id: "carol" }, "viewer"), "FORBIDDEN");
     await fails(drive.createLink(B, folder.id, { role: "viewer" }), "FORBIDDEN");
     await fails(drive.shares(B, folder.id), "FORBIDDEN");
     await drive.trash(A, file.id);
@@ -89,7 +91,7 @@ describe("roles on a folder", () => {
     expect(made.owner).toBe("alice");
     await drive.rename(B, file.id, "c.txt");
     await drive.trash(B, made.id);
-    await fails(drive.shareWith(B, folder.id, "carol", "viewer"), "FORBIDDEN");
+    await fails(drive.shareWith(B, folder.id, { kind: "human", id: "carol" }, "viewer"), "FORBIDDEN");
     await fails(drive.invite(B, folder.id, { role: "viewer", email: "c@example.com" }), "FORBIDDEN");
     await fails(drive.purge(B, made.id), "FORBIDDEN");
     // Erase works on the caller's own drive only.
@@ -100,14 +102,14 @@ describe("roles on a folder", () => {
     const { file, folder } = await team("viewer");
     for (const call of [
       () => drive.stat(C, file.id), () => drive.list(C, folder.id), () => drive.read(C, file.id), () => drive.downloadUrl(C, file.id),
-      () => drive.putFile(C, `${folder.id}/x.txt`, bytes("x")), () => drive.trash(C, file.id), () => drive.shareWith(C, folder.id, "carol", "owner"),
+      () => drive.putFile(C, `${folder.id}/x.txt`, bytes("x")), () => drive.trash(C, file.id), () => drive.shareWith(C, folder.id, { kind: "human", id: "carol" }, "owner"),
     ]) await fails(call(), "NOT_FOUND");
     await fails(drive.stat(C, "nope"), "NOT_FOUND");
   });
   it("gives a grant on one file to that file only", async () => {
     const one = await drive.putFile(A, "/one.txt", bytes("1"));
     const two = await drive.putFile(A, "/two.txt", bytes("2"));
-    await drive.shareWith(A, one.id, "bob", "viewer");
+    await drive.shareWith(A, one.id, { kind: "human", id: "bob" }, "viewer");
     expect((await drive.stat(B, one.id)).name).toBe("one.txt");
     await fails(drive.stat(B, two.id), "NOT_FOUND");
     expect(await drive.list(B, "/")).toEqual([]);
@@ -116,7 +118,7 @@ describe("roles on a folder", () => {
     await drive.mkdir(A, "/open");
     await drive.mkdir(A, "/closed");
     const file = await drive.putFile(A, "/closed/f.txt", bytes("f"));
-    await drive.shareWith(A, "/open", "bob", "viewer");
+    await drive.shareWith(A, "/open", { kind: "human", id: "bob" }, "viewer");
     await fails(drive.stat(B, file.id), "NOT_FOUND");
     await drive.move(A, file.id, "/open");
     expect((await drive.stat(B, file.id)).name).toBe("f.txt");
@@ -128,14 +130,14 @@ describe("roles on a folder", () => {
   });
   it("loses a share when the role is revoked, and keeps the last owner", async () => {
     const { file } = await team("viewer");
-    await drive.unshare(A, "/team", "bob");
+    await drive.unshare(A, "/team", { kind: "human", id: "bob" });
     await fails(drive.stat(B, file.id), "NOT_FOUND");
-    await fails(drive.unshare(A, "/", "alice"), "INVALID_SHARE");
+    await fails(drive.unshare(A, "/", { kind: "human", id: "alice" }), "INVALID_SHARE");
   });
   it("rejects a bad role and a bad subject as INVALID_SHARE", async () => {
     await drive.mkdir(A, "/x");
-    await fails(drive.shareWith(A, "/x", "bob", "boss" as never), "INVALID_SHARE");
-    await fails(drive.shareWith(A, "/x", "../etc", "viewer"), "INVALID_SHARE");
+    await fails(drive.shareWith(A, "/x", { kind: "human", id: "bob" }, "boss" as never), "INVALID_SHARE");
+    await fails(drive.shareWith(A, "/x", { kind: "human", id: "../etc" }, "viewer"), "INVALID_SHARE");
   });
 });
 
@@ -176,7 +178,7 @@ describe("agents", () => {
     const made = await drive.putFile(writer, "/by-bot.txt", bytes("x"));
     expect(made.createdBy).toEqual({ id: "bot", kind: "agent_of_human" });
     expect(made.owner).toBe("alice");
-    await fails(drive.shareWith(writer, "/team", "carol", "viewer"), "FORBIDDEN");
+    await fails(drive.shareWith(writer, "/team", { kind: "human", id: "carol" }, "viewer"), "FORBIDDEN");
     await fails(drive.deleteAll(writer), "FORBIDDEN");
     await fails(drive.stat(ctxOf(botOf(["other:admin"])), "/team"), "NOT_FOUND");
   });
@@ -222,7 +224,7 @@ describe("links and invites", () => {
   });
   it("accepts an invite by verified email once, and only for that email", async () => {
     const { file, folder } = await team("viewer");
-    await drive.unshare(A, folder.id, "bob");
+    await drive.unshare(A, folder.id, { kind: "human", id: "bob" });
     const { id } = await drive.invite(A, folder.id, { role: "editor", email: "Bob@Example.com" });
     await fails(drive.acceptInvite(B, id, { email: "mallory@example.com" }), "FORBIDDEN");
     await fails(drive.acceptInvite(B, id, {}), "FORBIDDEN");
@@ -249,7 +251,7 @@ describe("the share list, the audit, and fail-closed storage", () => {
     const link = await drive.createLink(A, "/team", { role: "viewer" });
     await drive.invite(A, "/team", { role: "viewer", email: "x@example.com" });
     const shown = await drive.shares(A, "/team");
-    expect(shown.grants).toEqual([{ subjectId: "bob", role: "viewer" }]);
+    expect(shown.grants).toEqual([{ subjectKind: "human", subjectId: "bob", role: "viewer" }]);
     expect(shown.links).toEqual([{ id: link.id, role: "viewer", signedInOnly: false, expiresAt: null, revoked: false }]);
     expect(JSON.stringify(shown)).not.toContain(link.token);
     expect(shown.invites).toHaveLength(1);
@@ -267,7 +269,7 @@ describe("the share list, the audit, and fail-closed storage", () => {
   });
   it("deletes the shares of an item when the item is purged", async () => {
     const { file } = await team("viewer");
-    await drive.shareWith(A, file.id, "carol", "viewer");
+    await drive.shareWith(A, file.id, { kind: "human", id: "carol" }, "viewer");
     await drive.trash(A, "/team");
     await drive.purge(A, (await drive.listTrash(A))[0]!.id);
     expect((await store.query("grants", { where: { resourceId: file.id } })).items).toEqual([]);
@@ -289,7 +291,7 @@ describe("the share list, the audit, and fail-closed storage", () => {
   it("refuses sharing calls when sharing is off", async () => {
     const plain = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });
     await plain.mkdir(A, "/x");
-    await fails(plain.shareWith(A, "/x", "bob", "viewer"), "INVALID_SHARE");
+    await fails(plain.shareWith(A, "/x", { kind: "human", id: "bob" }, "viewer"), "INVALID_SHARE");
     await fails(plain.openShared(null, "x", "t"), "INVALID_SHARE");
   });
 });
@@ -324,7 +326,7 @@ describe("depth, scope, and in-place changes", () => {
     await drive.putFile(A, "/top.txt", bytes("t"));
     await drive.putFile(A, "/priv/in.txt", bytes("i"), { parents: true });
     await drive.mkdir(A, "/team");
-    for (const path of ["/top.txt", "/priv/in.txt", "/team"]) await drive.shareWith(A, path, "bob", "editor");
+    for (const path of ["/top.txt", "/priv/in.txt", "/team"]) await drive.shareWith(A, path, { kind: "human", id: "bob" }, "editor");
     const ids = [await drive.stat(A, "/top.txt"), await drive.stat(A, "/priv/in.txt"), await drive.stat(A, "/team")];
     for (const [i, node] of ids.entries()) expect((await drive.rename(B, node.id, `renamed${i}`)).name).toBe(`renamed${i}`);
     expect((await drive.stat(A, "/priv/renamed1")).id).toBe(ids[1]!.id);
@@ -332,7 +334,7 @@ describe("depth, scope, and in-place changes", () => {
   });
   it("deletes links, invites, and every grant of a purged item", { timeout: 60_000 }, async () => {
     const file = await drive.putFile(A, "/f.txt", bytes("f"));
-    for (let i = 0; i < 105; i++) await drive.shareWith(A, file.id, `friend-${i}`, "viewer");
+    for (let i = 0; i < 105; i++) await drive.shareWith(A, file.id, { kind: "human", id: `friend-${i}` }, "viewer");
     const link = await drive.createLink(A, file.id, { role: "viewer" });
     await drive.invite(A, file.id, { role: "viewer", email: "gone@example.com" });
     await drive.trash(A, file.id);
@@ -342,7 +344,7 @@ describe("depth, scope, and in-place changes", () => {
   });
   it("erases the shares of the drive root too, so an old share does not reach new files", async () => {
     await drive.putFile(A, "/old.txt", bytes("o"));
-    await drive.shareWith(A, "/", "bob", "viewer");
+    await drive.shareWith(A, "/", { kind: "human", id: "bob" }, "viewer");
     await drive.createLink(A, "/", { role: "viewer" });
     await drive.invite(A, "/", { role: "viewer", email: "gone@example.com" });
     await drive.deleteAll(A);
@@ -421,8 +423,8 @@ describe("depth, scope, and in-place changes", () => {
   it("stops an editor from becoming owner of an item by moving it into a folder they own", async () => {
     await drive.putFile(A, "/f/x.txt", bytes("x"), { parents: true });
     await drive.mkdir(A, "/g");
-    await drive.shareWith(A, "/f", "bob", "editor");
-    await drive.shareWith(A, "/g", "bob", "owner");
+    await drive.shareWith(A, "/f", { kind: "human", id: "bob" }, "editor");
+    await drive.shareWith(A, "/g", { kind: "human", id: "bob" }, "owner");
     const [x, f, g] = [await drive.stat(A, "/f/x.txt"), await drive.stat(A, "/f"), await drive.stat(A, "/g")];
     await fails(drive.move(B, x.id, g.id), "FORBIDDEN");
     // An agent with fewer scopes than its person must not do what the person may not.
@@ -462,5 +464,97 @@ describe("depth, scope, and in-place changes", () => {
     const dir = await drive.mkdir(A, "/gone");
     await store.delete("resources", dir.id);
     await fails(drive.mkdir(A, "/gone", { parents: true }), "NOT_FOUND");
+  });
+});
+
+describe("identity erase and kinds", () => {
+  const entriesOf = async (resourceId: string) => (await store.query("audit", { where: { resourceId }, limit: 100 })).items;
+  it("asks identity to erase a purged item, audit entries included", async () => {
+    const file = await drive.putFile(A, "/p.txt", bytes("p"));
+    await drive.shareWith(A, file.id, { kind: "human", id: "bob" }, "viewer");
+    await drive.stat(B, file.id);
+    expect((await entriesOf(file.id)).length).toBeGreaterThan(0);
+    await drive.trash(A, file.id);
+    await drive.purge(A, file.id);
+    expect(await entriesOf(file.id)).toEqual([]);
+    expect((await store.query("grants", { where: { resourceId: file.id } })).items).toEqual([]);
+  });
+  it("erases the audit entries of the drive root with the drive", async () => {
+    await drive.putFile(A, "/p.txt", bytes("p"));
+    const root = (await store.query("resources", { where: { type: "drive" }, limit: 5 })).items[0]!.id;
+    await sharing.can(alice, "read", root);
+    expect((await entriesOf(root)).length).toBeGreaterThan(0);
+    await drive.deleteAll(A);
+    expect(await entriesOf(root)).toEqual([]);
+  });
+  it("erases the audit entries of a purged folder and everything under it", async () => {
+    const file = await drive.putFile(A, "/dir/sub/f.txt", bytes("f"), { parents: true });
+    const ids = [file.id, file.parentId!, (await drive.stat(A, "/dir")).id];
+    await drive.stat(A, file.id);
+    await drive.trash(A, "/dir");
+    await drive.purge(A, ids[2]!);
+    for (const id of ids) expect(await entriesOf(id)).toEqual([]);
+    expect((await store.query("resources", { limit: 50 })).items.map((r) => r.id)).not.toEqual(expect.arrayContaining(ids));
+  });
+  it("lets a purge run again after a failed transaction", async () => {
+    let fail = false;
+    const flaky = { ...store, transaction: ((fn: never) => (fail ? Promise.reject(new Error("transient")) : store.transaction(fn))) as typeof store.transaction } as typeof store;
+    const d = createDrive({ store: flaky, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
+    const file = await d.putFile(A, "/r.txt", bytes("r"));
+    await d.trash(A, file.id);
+    fail = true;
+    await expect(d.purge(A, file.id)).rejects.toThrow("transient");
+    fail = false;
+    expect(await d.purge(A, file.id)).toEqual({ removed: 1 });
+    expect(await entriesOf(file.id)).toEqual([]);
+    expect(await store.get("resources", file.id)).toBeNull();
+  });
+  it("finishes a purge that failed after identity erased the shares", async () => {
+    let calls = 0;
+    let failAt = 0;
+    const flaky = { ...store, transaction: ((fn: never) => (++calls === failAt ? Promise.reject(new Error("transient")) : store.transaction(fn))) as typeof store.transaction } as typeof store;
+    const d = createDrive({ store: flaky, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
+    const file = await d.putFile(A, "/dir/f.txt", bytes("f"), { parents: true });
+    const dir = await d.stat(A, "/dir");
+    await d.shareWith(A, file.id, { kind: "human", id: "bob" }, "viewer");
+    await d.stat(B, file.id);
+    await d.trash(A, "/dir");
+    // The drive makes transaction 1 to mark the items, and transaction 2 to delete their rows. Identity runs on the plain store.
+    calls = 0;
+    failAt = 2;
+    await expect(d.purge(A, dir.id)).rejects.toThrow("transient");
+    expect((await store.query("grants", { where: { resourceId: file.id } })).items).toEqual([]);
+    expect(await d.purge(A, dir.id)).toEqual({ removed: 2 });
+    for (const id of [file.id, dir.id]) {
+      expect(await entriesOf(id)).toEqual([]);
+      expect(await store.get("resources", id)).toBeNull();
+      expect(await store.get("drive_nodes", id)).toBeNull();
+    }
+  });
+  it("does not let anyone but the person in person finish a purge that lost its sharing record", async () => {
+    const file = await drive.putFile(A, "/g.txt", bytes("g"));
+    await drive.trash(A, file.id);
+    await store.put("drive_nodes", file.id, { ...(await store.get("drive_nodes", file.id))!, purging: true });
+    await store.delete("resources", file.id);
+    await fails(drive.purge(B, file.id), "NOT_FOUND");
+    await fails(drive.purge(ctxOf(botOf(["drive:admin"])), file.id), "NOT_FOUND");
+    expect(await drive.purge(A, file.id)).toEqual({ removed: 1 });
+  });
+  it("keeps a person and an agent with one id apart", async () => {
+    const file = await drive.putFile(A, "/k.txt", bytes("k"));
+    await drive.shareWith(A, file.id, { kind: "agent", id: "bob" }, "viewer");
+    await fails(drive.stat(B, file.id), "NOT_FOUND");
+    expect((await drive.shares(A, file.id)).grants).toContainEqual({ subjectKind: "agent", subjectId: "bob", role: "viewer" });
+  });
+  it("refuses a subject with no kind or an unknown kind", async () => {
+    await drive.putFile(A, "/k.txt", bytes("k"));
+    for (const subject of [{ id: "bob" }, { kind: "user_token", id: "bob" }, { kind: "robot", id: "bob" }, { kind: "human", id: "" }]) {
+      await fails(drive.shareWith(A, "/k.txt", subject as never, "viewer"), "INVALID_SHARE");
+      await fails(drive.unshare(A, "/k.txt", subject as never), "INVALID_SHARE");
+    }
+  });
+  it("maps the root kinds of a chain and throws on any other kind", () => {
+    expect(["human", "agent"].map(subjectKindOf)).toEqual(["human", "agent"]);
+    for (const bad of [undefined, "", "robot", "Human", "user_token", "agent_of_human", "agent_of_agent"]) expect(() => subjectKindOf(bad)).toThrow(/cannot hold a role/);
   });
 });

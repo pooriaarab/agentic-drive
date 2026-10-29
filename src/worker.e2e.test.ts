@@ -137,7 +137,7 @@ describe("sign-in", () => {
     const routes: [string, string][] = [
       ["GET", "/items"], ["GET", "/stat?path=/"], ["POST", "/folders"], ["PUT", "/files?path=/x"], ["GET", "/files?path=/x"], ["GET", "/url?path=/x"],
       ["POST", "/move"], ["POST", "/trash"], ["GET", "/trash"], ["POST", "/restore"], ["POST", "/purge"], ["GET", "/search"], ["GET", "/export"], ["DELETE", "/account?confirm=yes"],
-      ["GET", "/shares?path=/x"], ["POST", "/shares"], ["DELETE", "/shares?path=/x&subjectId=u2"], ["POST", "/invites"], ["POST", "/invites/accept"], ["POST", "/links"], ["DELETE", "/links?id=x"],
+      ["GET", "/shares?path=/x"], ["POST", "/shares"], ["DELETE", "/shares?path=/x&subjectId=u2&subjectKind=human"], ["POST", "/invites"], ["POST", "/invites/accept"], ["POST", "/links"], ["DELETE", "/links?id=x"],
     ];
     for (const [method, path] of routes) expect((await call(method, path, { token: null })).status, `${method} ${path}`).toBe(401);
   });
@@ -315,7 +315,7 @@ describe("sharing over HTTP", () => {
     expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
     expect(await status(call("GET", `/items?path=${folderId}`, { token: TOK_U2 }))).toBe(404);
     expect(await status(call("GET", `/files?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
-    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", role: "viewer" }))).toBe(200);
+    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", subjectKind: "human", role: "viewer" }))).toBe(200);
     expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(200);
     expect((await json(await call("GET", `/items?path=${folderId}`, { token: TOK_U2 }))).map((n: { name: string }) => n.name)).toEqual(["docs"]);
     expect(await (await call("GET", `/files?path=${fileId}`, { token: TOK_U2 })).text()).toBe("hello");
@@ -327,16 +327,16 @@ describe("sharing over HTTP", () => {
     expect(await status(post("/folders", { path: `${folderId}/d` }, as))).toBe(403);
     expect(await status(post("/trash", { path: fileId }, as))).toBe(403);
     expect(await status(post("/move", { src: fileId, folder: folderId }, as))).toBe(403);
-    expect(await status(post("/shares", { path: folderId, subjectId: "u2", role: "owner" }, as))).toBe(403);
+    expect(await status(post("/shares", { path: folderId, subjectId: "u2", subjectKind: "human", role: "owner" }, as))).toBe(403);
     expect(await status(call("GET", `/shares?path=${folderId}`, { token: as }))).toBe(403);
     expect(await status(post("/links", { path: folderId, role: "viewer" }, as))).toBe(403);
     expect(await status(post("/invites", { path: folderId, role: "viewer", handle: "x" }, as))).toBe(403);
-    expect(await status(call("DELETE", `/shares?path=${folderId}&subjectId=u1`, { token: as }))).toBe(403);
+    expect(await status(call("DELETE", `/shares?path=${folderId}&subjectId=u1&subjectKind=human`, { token: as }))).toBe(403);
     expect((await call("GET", "/search?name=a.txt", { token: as })).status).toBe(200);
     expect(await json(await call("GET", "/search?name=a.txt", { token: as }))).toEqual([]);
   });
   it("lets an editor write into the shared folder, in the owner's drive, but not purge or share", async () => {
-    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", role: "editor" }))).toBe(200);
+    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", subjectKind: "human", role: "editor" }))).toBe(200);
     const made = await put(`${folderId}/n.txt`, "from u2", TOK_U2);
     expect(made.status).toBe(201);
     const node = await json(made);
@@ -344,17 +344,17 @@ describe("sharing over HTTP", () => {
     expect(await status(put("/pub/n.txt", "dup"))).toBe(409);
     expect(await status(post("/trash", { path: node.id }, TOK_U2))).toBe(200);
     expect(await status(post("/purge", { id: node.id }, TOK_U2))).toBe(403);
-    expect(await status(post("/shares", { path: folderId, subjectId: "u2", role: "owner" }, TOK_U2))).toBe(403);
+    expect(await status(post("/shares", { path: folderId, subjectId: "u2", subjectKind: "human", role: "owner" }, TOK_U2))).toBe(403);
     expect(await status(post("/purge", { id: node.id }))).toBe(200);
   });
   it("narrows an agent to its scopes", async () => {
     expect(await status(call("GET", "/items?path=/pub", { token: TOK_READ_BOT }))).toBe(200);
     expect(await status(put("/pub/by-readbot.txt", "x", TOK_READ_BOT))).toBe(403);
     expect(await status(put("/pub/by-bot.txt", "x", TOK_BOT))).toBe(201);
-    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", role: "owner" }, TOK_BOT))).toBe(403);
+    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", subjectKind: "human", role: "owner" }, TOK_BOT))).toBe(403);
   });
   it("serves a linked folder to a visitor, and stops at the expiry, the revoke, and a wrong token", async () => {
-    await call("DELETE", `/shares?path=/pub&subjectId=u2`);
+    await call("DELETE", `/shares?path=/pub&subjectId=u2&subjectKind=human`);
     expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
     const link = await json(await post("/links", { path: "/pub", role: "viewer", expiresInMs: 60_000 }));
     expect(link.token).toBeTruthy();

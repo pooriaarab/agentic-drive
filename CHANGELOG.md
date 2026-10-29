@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **agentic-identity 0.4.0.** A grant has a kind and an id, and a person and an agent with the same id are two subjects. The range is now `^0.4.0`. Run identity's `migrateGrants` once on a store with grants from 0.3.0. Until then, those grants do not count.
+- **`shareWith` and `unshare` take a subject.** The subject is `{ kind: "human" | "agent", id }`, not a bare id. A subject with no kind, or with another kind, fails with `INVALID_SHARE`. The HTTP routes take `subjectKind` next to `subjectId`: in the body of `POST /shares`, and in the query of `DELETE /shares`. `GET /shares` lists `subjectKind` on each grant.
+- **Erase and export read grants by kind.** A person's erase and export touch the grants of that person and of their agents with their own identity. A grant of an agent with the same id as a person stays.
+
+### Changed
+
+- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item.
+- New exports `subjectKindOf` and `parseSubject`. `subjectKindOf` accepts the kind of the root of a chain, `human` or `agent`, and throws on any other kind, a delegated one too.
+- An export lists `subjectKind` on each grant a person holds.
+
 ## 0.2.0
 
 Read the breaking changes before you upgrade. The migration steps follow them.
