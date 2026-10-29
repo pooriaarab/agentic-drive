@@ -88,7 +88,7 @@ Sharing routes: `GET /shares?path=`, `POST /shares`, `DELETE /shares?path=&subje
 `POST /invites/accept`, `POST /links`, `DELETE /links?id=`. A link visitor reads with the header
 `x-link-token` on `GET /shared/:id`, `GET /shared/:id/items`, and `GET /shared/:id/content`.
 Name a shared item by its id. A path can start at a folder id: `<folder id>/notes/a.txt`.
-Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every request gets 503.
+Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every API request gets 503. `/health` still answers.
 Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--location weur`.
 The Worker declares region `eu` and refuses a D1 query that a non-EU region served. `DRIVE_REGION=unknown` turns this off for local runs.
 

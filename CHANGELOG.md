@@ -29,9 +29,9 @@ Read the breaking changes before you upgrade or deploy.
 
 Local data from 0.3.0 belongs to the owner `me`, or to the id you passed to `--owner`. The data folder does not change. Without the key of that owner, the CLI shows an empty drive. Make the principal and a key, then use the key:
 
-1. Run `npx agentic-drive principal add me`, with your old owner id if it was not `me`.
+1. Run `npx agentic-drive principal add me`, with your old owner id if it was not `me`. Pass the same `--dir` or `AGENTIC_DRIVE_DIR` as before, if you set one.
 2. Run `export AGENTIC_DRIVE_TOKEN=$(npx agentic-drive key issue me | jq -r .token)`.
-3. Put the same key in each MCP client config as `AGENTIC_DRIVE_TOKEN`.
+3. Put the same key in each MCP client config as `AGENTIC_DRIVE_TOKEN`, and the same data folder as `AGENTIC_DRIVE_DIR`, if you set one.
 
 ## 0.3.0
 
