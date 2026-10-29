@@ -40,6 +40,13 @@ export function App() {
     addEventListener("hashchange", on);
     return () => removeEventListener("hashchange", on);
   }, []);
+  // A file dropped outside the drop zone must not open in the tab and leave the app.
+  useEffect(() => {
+    const stop = (e: Event) => e.preventDefault();
+    addEventListener("dragover", stop);
+    addEventListener("drop", stop);
+    return () => { removeEventListener("dragover", stop); removeEventListener("drop", stop); };
+  }, []);
   const client = useMemo(() => {
     try {
       return createClient({ baseUrl: location.origin, ...(token ? { token } : {}) });
@@ -142,7 +149,8 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
     reload();
   };
   const upload = async (files: FileList | File[]) => {
-    if (state.status !== "ok" || busy) return;
+    if (state.status !== "ok") return;
+    if (busy) return void toast({ title: "An upload is running", description: "Wait for it to finish, then add more files.", tone: "info" });
     const { folder, root } = state.data;
     setBusy(true);
     for (const file of Array.from(files)) {
@@ -234,20 +242,29 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
   );
 }
 
-function Prompt({ open, title, label, initial, submit, onClose, onSubmit }: { open?: boolean; title: string; label: string; initial: string; submit: string; onClose: () => void; onSubmit: (v: string) => void }) {
+function Prompt({ open, title, label, initial, submit, onClose, onSubmit }: { open?: boolean; title: string; label: string; initial: string; submit: string; onClose: () => void; onSubmit: (v: string) => Promise<unknown> }) {
   const [value, setValue] = useState(initial);
   const sent = useRef(false);
+  const [problem, setProblem] = useState<string>();
+  // One request at a time. A failed request frees the form, so the person can fix the name and send again.
+  const send = (name: string) => {
+    if (!name) return;
+    if (name.includes("/")) return setProblem("A name cannot have a slash.");
+    setProblem(undefined);
+    sent.current = true;
+    void onSubmit(name).finally(() => { sent.current = false; });
+  };
   return (
     <Dialog open={!!open} onOpenChange={(o) => { if (!o) onClose(); }} title={title}>
-      <form onSubmit={(e) => { e.preventDefault(); if (value.trim() && !sent.current) { sent.current = true; onSubmit(value.trim()); } }} className="drive-form">
-        <Input label={label} value={value} onChange={(e) => setValue(e.target.value)} required />
+      <form onSubmit={(e) => { e.preventDefault(); if (!sent.current) send(value.trim()); }} className="drive-form">
+        <Input label={label} value={value} onChange={(e) => setValue(e.target.value)} error={problem} required />
         <div className="drive-form__actions"><DialogClose asChild><Button variant="ghost" type="button">Cancel</Button></DialogClose><Button type="submit">{submit}</Button></div>
       </form>
     </Dialog>
   );
 }
 
-function MoveDialog({ client, item, onClose, onMove }: { client: DriveClient; item: Item; onClose: () => void; onMove: (to: string) => void }) {
+function MoveDialog({ client, item, onClose, onMove }: { client: DriveClient; item: Item; onClose: () => void; onMove: (to: string) => Promise<unknown> }) {
   const [folders, retry] = useLoad(async () => {
     const root = await client.stat("/");
     const all = await client.search({ kind: "folder", limit: 1000 });
@@ -256,11 +273,12 @@ function MoveDialog({ client, item, onClose, onMove }: { client: DriveClient; it
     return [{ id: "/", path: "/", name: "My files" }, ...all.filter((x) => x.id !== root.id && !(own && (x.path === own || x.path.startsWith(`${own}/`))))];
   });
   const [to, setTo] = useState("/");
+  const sent = useRef(false);
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }} title={`Move ${item.name}`}>
       <Status state={folders} retry={retry}>
         {folders.status === "ok" && (
-          <form onSubmit={(e) => { e.preventDefault(); onMove(to); }} className="drive-form">
+          <form onSubmit={(e) => { e.preventDefault(); if (sent.current) return; sent.current = true; void onMove(to).finally(() => { sent.current = false; }); }} className="drive-form">
             <Select label="Move to" value={to} onChange={(e) => setTo(e.target.value)}>
               {folders.data.map((x) => <option key={x.id} value={x.id}>{x.path === "/" ? "My files" : x.path}</option>)}
             </Select>
@@ -331,7 +349,7 @@ function TrashView({ client }: { client: DriveClient }) {
       <Status state={state} retry={reload}>
         {state.status === "ok" && (state.data.length === 0 ? <EmptyState title="The trash is empty" description="Items you move to the trash show up here." /> : (
           <FileList label="Items in the trash">
-            {state.data.sort(byName).map((i) => <FileRow key={i.id} name={i.name} href="#/trash" kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.trashedAt ?? i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button>} />)}
+            {[...state.data].sort(byName).map((i) => <FileRow key={i.id} name={i.name} href="#/trash" kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.trashedAt ?? i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button>} />)}
           </FileList>
         ))}
       </Status>

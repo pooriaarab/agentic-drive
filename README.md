@@ -121,6 +121,8 @@ Test it with `npm run test:e2e`. The test starts `wrangler dev` on a seeded data
 
 Run `npm run build:ui` before `npm test` or `wrangler deploy`, because the Worker config names the `ui-dist` folder. The UI answers with a strict content security policy and refuses to be framed.
 
+Set `DRIVE_PUBLIC_URL` to the origin that serves the UI. A download link on another origin is refused.
+
 The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
 ## Features

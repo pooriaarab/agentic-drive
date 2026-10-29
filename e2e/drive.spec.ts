@@ -44,6 +44,18 @@ test("a person manages files, and the changes persist", async ({ page }) => {
   await page.getByRole("button", { name: "New folder" }).click();
   await page.getByLabel("Folder name").fill("Reports");
   await page.getByRole("button", { name: "Create" }).click();
+
+  // A refused name keeps the dialog open, and the next try goes through.
+  await page.getByRole("button", { name: "New folder" }).click();
+  await page.getByLabel("Folder name").fill("a/b");
+  await page.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByText("A name cannot have a slash.")).toBeVisible();
+  await page.getByLabel("Folder name").fill("Reports");
+  await page.getByRole("button", { name: "Create" }).click();
+  await expect(page.locator(".ad-toast__title", { hasText: "That did not work" })).toBeVisible();
+  await page.getByLabel("Folder name").fill("Archive");
+  await page.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByRole("link", { name: "Archive", exact: true }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Reports", exact: true }).first()).toBeVisible();
 
   await page.locator('input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello drive") });
