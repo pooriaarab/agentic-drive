@@ -2,9 +2,15 @@
 
 ## 0.5.0
 
-### Changed
+Read the breaking changes before you upgrade or deploy.
 
-- **Machine-made label from creation on.** The web UI shows "Created by agent" on every item that an agent made, not only after a person edits it. Each item in the HTTP, CLI, and MCP output has a `machineMade` field next to `createdBy.kind`. The client now rejects an item with no `machineMade`, so deploy the Worker and the client together.
+### Breaking changes
+
+- **Deploy the Worker and the client together.** Each item in the HTTP, CLI, and MCP output has a `machineMade` field next to `createdBy.kind`. The client now rejects an item with no `machineMade`. A client of 0.5.0 that talks to a Worker of 0.4.0 fails every call that returns items, such as list, stat, and search. Also, `Item` and `PathItem` in the client types now require `machineMade: boolean`. A project that builds those objects itself, such as test fixtures or mocks of the client, must add the field.
+
+### Added
+
+- **Machine-made label from creation on.** The web UI shows "Created by agent" on every item that an agent made, not only after a person edits it.
 
 ## 0.4.0
 
