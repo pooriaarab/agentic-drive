@@ -166,7 +166,7 @@ export { default } from "agentic-drive/worker";
 }
 ```
 
-Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `DRIVE_URL_SECRET` needs 32 bytes or more. `DRIVE_PUBLIC_URL` is the origin of this Worker. The Worker declares region `eu` unless `DRIVE_REGION` says otherwise, so keep the EU jurisdiction and location above. Sign-in uses agentic-identity credentials in the same D1 database. Create a token there first, or every bearer API request gets 401. Without both secrets, the API answers 503. With this config, `/` serves the UI, and `/health` and `/api/v1/drive/*` answer from the Worker.
+Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `DRIVE_URL_SECRET` needs 32 bytes or more. `DRIVE_PUBLIC_URL` is the origin of this Worker. The Worker declares region `eu` unless `DRIVE_REGION` says otherwise, so keep the EU jurisdiction and location above. Sign-in uses agentic-identity credentials in the same D1 database. Create a token there first, or every bearer API request gets 401. The repo file `e2e/serve.mjs` shows the rows to write. Without both secrets, the API answers 503. With this config, `/` serves the UI, and `/health` and `/api/v1/drive/*` answer from the Worker.
 
 The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
