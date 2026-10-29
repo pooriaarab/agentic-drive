@@ -230,12 +230,13 @@ describe("eraseAccount", () => {
   });
 
   // The checks of an export write access-log rows (audit), as every read does. They do not write the person's data back.
-  it("adds no root or grant when an export runs after the erase", async () => {
+  it("adds no root, grant, item, name, invite, or activity when an export runs after the erase", async () => {
     await seed();
     await driveAccount.eraseAccount(ALICE, deps(A));
-    const before = [await rowsIn("resources"), await rowsIn("grants")];
+    const counts = async () => Promise.all(["resources", "grants", "invites", "drive_nodes", "drive_names", "drive_activity"].map(rowsIn));
+    const before = await counts();
     await driveAccount.exportAccount(ALICE, deps(A));
-    expect([await rowsIn("resources"), await rowsIn("grants")]).toEqual(before);
+    expect(await counts()).toEqual(before);
   });
 
   it("refuses an agent subject", async () => {
