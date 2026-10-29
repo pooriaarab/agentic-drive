@@ -1,14 +1,26 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { isMachineMade, isScope, issueCredential, revokeCredential, type Doc, type Store } from "agentic-identity";
+import { createSharing, isMachineMade, isScope, issueCredential, revokeCredential, type Doc, type Store } from "agentic-identity";
 import { createFileBlobs, createFileStore } from "./adapters/fs.js";
 import { DriveError, createDrive, type Ctx, type Drive, type Node } from "./drive.js";
 import { authenticate } from "./auth.js";
+import { backfillResources } from "./migrate.js";
 
-/** The drive and the store behind it, both kept in `dir`. The store holds the principals and keys too. */
+/** The drive and the store behind it, both kept in `dir`. The store holds the principals and keys too. Sharing is on, as in the Worker. */
 export function openLocal(dir: string): { drive: Drive; store: Store } {
   const store = createFileStore(join(dir, "db"));
-  return { store, drive: createDrive({ store, blobs: createFileBlobs(join(dir, "blobs")) }) };
+  return { store, drive: createDrive({ store, blobs: createFileBlobs(join(dir, "blobs")), sharing: createSharing(store) }) };
+}
+
+/** Gives the items of a folder made before sharing their `resources` docs. It runs once, and a marker records it. */
+export async function ensureSharing(store: Store): Promise<void> {
+  if (await store.get("drive_meta", "sharing")) return;
+  try {
+    await backfillResources(store);
+  } catch (error) {
+    throw new Error(`the one-time sharing backfill of local items failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await store.put("drive_meta", "sharing", { backfilledAt: Date.now() });
 }
 
 /** Why no caller could be named. The CLI turns it into exit code 3. */

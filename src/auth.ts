@@ -13,3 +13,16 @@ export async function authenticate(request: Request, store: Store, now?: () => n
   if (principal instanceof Response) return null;
   return { owner: principal.chain[0]!.id, actor: { id: principal.principalId, kind: principal.kind as ActorKind }, principal };
 }
+
+/**
+ * What an invite is matched against: the verified email of the caller and the handle of the agent, both read from
+ * the store, never from the request. An unverified email is left out.
+ */
+export async function inviteIdentity(store: Store, actorId: string): Promise<{ email?: string; handle?: string }> {
+  const user = await store.get("users", actorId);
+  const agent = await store.get("principals", actorId);
+  return {
+    ...(user?.emailVerified === true && typeof user.email === "string" ? { email: user.email } : {}),
+    ...(typeof agent?.handle === "string" ? { handle: agent.handle } : {}),
+  };
+}
