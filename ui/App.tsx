@@ -33,6 +33,21 @@ function Status({ state, retry, children }: { state: Load<unknown>; retry: () =>
   return <>{children}</>;
 }
 
+const routeParts = (hash: string) => hash.replace(/^#\/?/, "").split("/");
+/** Points the page address at a folder, and tells the app. */
+const goHash = (loc: string) => {
+  history.replaceState(null, "", `#/${loc}`);
+  dispatchEvent(new HashChangeEvent("hashchange"));
+};
+
+/** The signed-in views. `origin` is the server that signs download links and makes share links. `go` opens a folder. */
+export function Routes({ hash, client, origin, go }: { hash: string; client: DriveClient; origin: string; go: (loc: string) => void }) {
+  const parts = routeParts(hash);
+  if (parts[0] === "trash") return <TrashView key="trash" client={client} />;
+  if (parts[0] === "f" && parts[1]) return <Download key={hash} client={client} id={parts[1]} origin={origin} go={go} />;
+  return <Browser key={hash} client={client} loc={parts[0] || "/"} origin={origin} />;
+}
+
 export function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? "");
   const [hash, setHash] = useState(location.hash);
@@ -60,12 +75,12 @@ export function App() {
     if (token && !/^[A-Za-z0-9_-]{1,512}$/.test(token)) { sessionStorage.removeItem(TOKEN_KEY); setToken(""); }
   }, [token]);
   const signOut = () => { sessionStorage.removeItem(TOKEN_KEY); setToken(""); location.hash = "#/"; };
-  const parts = hash.replace(/^#\/?/, "").split("/");
+  const parts = routeParts(hash);
   if (parts[0] === "s" && parts[1]) return <Chrome signedIn={false} signOut={signOut}><SharedView key={hash} client={client} id={parts[1]} linkToken={parts[2]} /></Chrome>;
   if (!token) return <Chrome signedIn={false} signOut={signOut}><SignIn onToken={(t) => { sessionStorage.setItem(TOKEN_KEY, t); setToken(t); }} /></Chrome>;
   return (
     <Chrome signedIn signOut={signOut} current={parts[0] === "trash" ? "trash" : "files"}>
-      {parts[0] === "trash" ? <TrashView key="trash" client={client} /> : parts[0] === "f" && parts[1] ? <Download key={hash} client={client} id={parts[1]} /> : <Browser key={hash} client={client} loc={parts[0] || "/"} />}
+      <Routes hash={hash} client={client} origin={location.origin} go={goHash} />
     </Chrome>
   );
 }
@@ -120,7 +135,7 @@ function SignIn({ onToken }: { onToken: (t: string) => void }) {
 
 type Dlg = { kind: "mkdir" } | { kind: "rename" | "move" | "share"; item: Item };
 
-function Browser({ client, loc }: { client: DriveClient; loc: string }) {
+function Browser({ client, loc, origin }: { client: DriveClient; loc: string; origin: string }) {
   const toast = useToast();
   const [view, setView] = useState<"list" | "grid">(() => (localStorage.getItem("agentic-drive-view") === "grid" ? "grid" : "list"));
   const [dlg, setDlg] = useState<Dlg | null>(null);
@@ -234,7 +249,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
               {dlg?.kind === "mkdir" && <Prompt open title="New folder" label="Folder name" initial="" submit="Create" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.mkdir(folder.id === root.id ? `/${name}` : `${folder.id}/${name}`), `Created ${name}`)} />}
               {dlg?.kind === "rename" && <Prompt open title="Rename" label="New name" initial={dlg.item.name} submit="Rename" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.move(dlg.item.id, dlg.item.parentId, { name }), `Renamed to ${name}`)} />}
               {dlg?.kind === "move" && <MoveDialog client={client} item={dlg.item} onClose={() => setDlg(null)} onMove={(to) => act(() => client.move(dlg.item.id, to), `Moved ${dlg.item.name}`)} />}
-              {dlg?.kind === "share" && <Sharing client={client} item={dlg.item} onClose={() => setDlg(null)} />}
+              {dlg?.kind === "share" && <Sharing client={client} item={dlg.item} origin={origin} onClose={() => setDlg(null)} />}
             </>
           );
         })()}
@@ -294,7 +309,7 @@ function MoveDialog({ client, item, onClose, onMove }: { client: DriveClient; it
 const EXPIRY_MS: Record<LinkExpiry, number | undefined> = { never: undefined, "1d": 864e5, "7d": 7 * 864e5, "30d": 30 * 864e5 };
 type LinkState = { id?: string; token?: string; role: ShareRole; expiry: LinkExpiry; signedInOnly: boolean };
 
-function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; onClose: () => void }) {
+function Sharing({ client, item, origin, onClose }: { client: DriveClient; item: Item; origin: string; onClose: () => void }) {
   const toast = useToast();
   const [state, reload] = useLoad(() => client.shares(item.id));
   const [link, setLink] = useState<LinkState>({ role: "viewer", expiry: "never", signedInOnly: false });
@@ -317,7 +332,7 @@ function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; o
   });
   const shareLink: ShareLink = {
     enabled: !!current.id, role: current.role, expiry: current.expiry, signedInOnly: current.signedInOnly,
-    url: current.token ? `${location.origin}/#/s/${item.id}/${current.token}` : "Turn the link off and on to make a new one. The address shows once.",
+    url: current.token ? `${origin}/#/s/${item.id}/${current.token}` : "Turn the link off and on to make a new one. The address shows once.",
     expiresAt: live?.expiresAt ? new Date(live.expiresAt) : null,
   };
   return (
@@ -359,20 +374,19 @@ function TrashView({ client }: { client: DriveClient }) {
 }
 
 /** Opens a signed download link, then goes back to the folder of the file. */
-function Download({ client, id }: { client: DriveClient; id: string }) {
-  const [state] = useLoad(async () => {
+function Download({ client, id, origin, go }: { client: DriveClient; id: string; origin: string; go: (loc: string) => void }) {
+  const [state, retry] = useLoad(async () => {
     const item = await client.stat(id);
     const { url } = await client.url(id);
-    if (new URL(url, location.origin).origin !== location.origin) throw new Error("The download link points to another site.");
+    if (new URL(url, origin).origin !== origin) throw new Error("The download link points to another site.");
     const a = document.createElement("a");
     a.href = url;
     a.download = item.name;
     a.click();
-    history.replaceState(null, "", `#/${item.parentId}`);
-    dispatchEvent(new HashChangeEvent("hashchange"));
+    go(item.parentId);
     return item;
   });
-  return <Status state={state} retry={() => location.reload()}>{null}</Status>;
+  return <Status state={state} retry={retry}>{null}</Status>;
 }
 
 function SharedView({ client, id, linkToken }: { client: DriveClient; id: string; linkToken?: string }) {
