@@ -17,7 +17,7 @@ export interface DriveAccount {
   /**
    * Collections: `items` (the subject's own drive, trashed ones flagged, a file with its bytes as base64 in `data`),
    * `authored` (ids of items the subject made or changed in other drives), `agents` (the drives of agents
-   * that belong to the subject, with no bytes), `grants` (shares the subject holds), `invites` (invites the subject sent),
+   * that belong to the subject, with no bytes), `grants` (shares the subject holds on drive items), `invites` (invites the subject sent on drive items),
    * and `audit` (what the subject did). Only an agent with its own identity can be a subject: it gets its own `items` and empty collections, and the export does not say that these are partial. An agent that acts for a person has a context for that person, and is refused.
    */
   exportAccount(subject: Actor, deps: DriveAccountDeps): Promise<Record<"items" | "authored" | "agents" | "grants" | "invites" | "audit", JsonRecord[]>>;

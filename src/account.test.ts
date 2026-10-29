@@ -20,10 +20,12 @@ const OWN = ctxOf(principal("robo", "agent"));
 const ROBO = { id: "robo", kind: "agent" as const };
 
 let drive: Drive;
+let store: ReturnType<typeof backend.store>;
 beforeEach(() => {
-  const store = backend.store();
+  store = backend.store();
   drive = createDrive({ store, blobs: createMemoryBlobs(), sharing: createSharing(store) });
 });
+const rowsIn = async (collection: string) => (await store.query(collection, { where: {}, limit: 1000 })).items.length;
 const deps = (ctx: Ctx) => ({ drive, ctx });
 
 async function seed() {
@@ -112,6 +114,20 @@ describe("each guard on its own", () => {
     const asAgent = { owner: A.owner, actor: { id: "alice", kind: "agent" } } as Ctx;
     await expect(driveAccount.exportAccount(ALICE, { drive: permissive(false), ctx: asAgent })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
+
+  // Each case differs from Alice in one field only, so one guard is the only thing that can refuse it.
+  it("refuses each mismatched field when the drive would answer", async () => {
+    const cases = [
+      { owner: "bob", actor: { id: "alice", kind: "human" }, principal: principal("alice") }, // owner
+      { owner: "alice", actor: { id: "bob", kind: "human" } }, // actor id
+      { ...A, principal: principal("alice", "agent", [ALICE]) }, // principal kind
+      { ...A, principal: principal("alice", "human", [{ id: "bob", kind: "human" }]) }, // first chain link id
+    ] as Ctx[];
+    for (const ctx of cases) {
+      await expect(driveAccount.exportAccount(ALICE, { drive: permissive(false), ctx })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(driveAccount.eraseAccount(ALICE, { drive: permissive(false), ctx })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
+  });
 });
 
 describe("exportAccount", () => {
@@ -135,6 +151,17 @@ describe("exportAccount", () => {
     expect(JSON.parse(JSON.stringify(out))).toStrictEqual(out);
   });
 
+  it("lists only the shares on drive items, as erase sweeps them", async () => {
+    const team = await seed();
+    const sharing = createSharing(store);
+    const wide: PrincipalContext = { ...principal("alice"), scopes: ["*:admin"] as PrincipalContext["scopes"] };
+    await sharing.createResource(wide, { id: "doc-1", type: "docs" });
+    await sharing.grant(wide, "doc-1", { kind: "human", id: "bob" }, "editor");
+    const resources = (await driveAccount.exportAccount(ALICE, deps(A))).grants.map((g) => g.resourceId);
+    expect(resources).toContain(team.id);
+    expect(resources).not.toContain("doc-1");
+  });
+
   it("gives an agent subject no person data", async () => {
     await seed();
     const out = await driveAccount.exportAccount(ROBO, deps(OWN));
@@ -148,10 +175,18 @@ describe("eraseAccount", () => {
     const first = await driveAccount.eraseAccount(ALICE, deps(A));
     expect(first).toMatchObject({ items: 3, grants: 1, invites: 0, anonymized: 1 });
     const after = await driveAccount.exportAccount(ALICE, deps(A));
-    expect(after).toMatchObject({ items: [], invites: [] });
+    expect(after).toMatchObject({ items: [], grants: [], invites: [] });
     expect((await drive.list(B, team.id)).map((n) => n.createdBy.id)).toEqual(["erased"]);
     expect((await drive.read(B, "/b.txt")).data).toEqual(bytes("bob secret"));
     expect(await driveAccount.eraseAccount(ALICE, deps(A))).toEqual({ items: 0, grants: 0, invites: 0, anonymized: 0 });
+  });
+
+  it("writes nothing when an export runs after the erase", async () => {
+    await seed();
+    await driveAccount.eraseAccount(ALICE, deps(A));
+    const before = [await rowsIn("resources"), await rowsIn("grants"), await rowsIn("audit")];
+    await driveAccount.exportAccount(ALICE, deps(A));
+    expect([await rowsIn("resources"), await rowsIn("grants"), await rowsIn("audit")]).toEqual(before);
   });
 
   it("refuses an agent subject", async () => {
