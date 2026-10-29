@@ -15,7 +15,7 @@ Read the breaking changes before you upgrade or deploy.
 
 - **`principal add`, `principal revoke`, `key issue`, and `key revoke`** make local principals and keys. `principal add` takes `--of <person>` for an agent and `--scope <s>`, which repeats. `key issue` takes `--label`. The package root also exports `addPrincipal`, `revokePrincipal`, `issueKey`, `revokeKey`, and `AuthError`.
 - **A web UI.** The Worker serves it from `ui-dist` (`npm run build:ui`). It uses agentic-design and the typed client. It has a folder tree, breadcrumbs, a list and a grid, upload by button and by drop, new folder, rename, move, trash and restore, and a share dialog. An item that an agent made shows a "Created by agent" label while a person is its last editor. "Edited by" names the last editor, a person or an agent. A Playwright test with an axe WCAG 2.2 AA check covers each view in light and dark.
-- **A content security policy.** The UI loads scripts and fonts only from its own origin. Inline styles are allowed. The UI refuses to be framed. It also sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+- **A content security policy.** The UI loads scripts and fonts only from its own origin. It allows inline styles. The UI refuses to be framed. It also sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
 - **Same-origin downloads.** The UI refuses a download link on another origin. Set `DRIVE_PUBLIC_URL` to the origin that serves the UI.
 - **The UI ships in the package.** `npm pack` runs `build:ui` in `prepack`, and the tarball has `ui-dist`.
 

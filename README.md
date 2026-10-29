@@ -170,7 +170,7 @@ Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `D
 
 1. Create the table, unless a request has already run: `wrangler d1 execute agentic-drive --remote --command "CREATE TABLE IF NOT EXISTS store_docs (collection TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (collection, id)) WITHOUT ROWID"`.
 2. Insert a row into `store_docs` with `collection` `principals` and `id` `me`. Its body is `{ "id": "me", "kind": "human", "scopes": ["drive:admin"] }`.
-3. Insert a row into `store_docs` with `collection` `credentials`. Its `id` is the lowercase hex SHA-256 of the token, and its body is `{ "principalId": "me", "kind": "api_key" }`.
+3. Make the token with `openssl rand -hex 32`. A token may use only letters, digits, `_`, and `-`, up to 512 characters. Insert a row into `store_docs` with `collection` `credentials`. Its `id` is the lowercase hex SHA-256 of the token, which `printf %s "$TOKEN" | sha256sum` prints. Its body is `{ "principalId": "me", "kind": "api_key" }`.
 
 The [seed script](https://github.com/pooriaarab/agentic-drive/blob/main/e2e/serve.mjs) shows these rows. Its tokens are for tests only. Never use them in a deployment. Without both secrets, the API answers 503. With this config, `/` serves the UI, and `/health` and `/api/v1/drive/*` answer from the Worker.
 
