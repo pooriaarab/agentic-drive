@@ -8,7 +8,7 @@
 Store, sort, and share files and folders.
 
 > Status: early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK and the HTTP API.
-> The web UI is not built yet.
+> A small web UI works. See [UI](#ui).
 
 ## Install
 
@@ -100,6 +100,26 @@ try {
 - A stream body for `upload` is refused by some browsers. The error says so, and nothing is sent. Items from before 0.2.0 need `backfillAuthorIds`, or a list that holds one fails with `BAD_RESPONSE`.
 - A browser page needs the Worker on its own origin for now: the Worker sends no CORS headers.
 - Share with a subject: `share("/pub", { kind: "human", id: "u2" }, "viewer")`.
+
+## UI
+
+The Worker serves a small web UI. It uses the [agentic-design](https://www.npmjs.com/package/agentic-design) package and the typed client of this package (`agentic-drive/client`). It has a folder tree, breadcrumbs, a file list and grid, upload by button or by drag and drop, new folder, rename, move, trash and restore, and a share dialog with roles and a link. An item that an agent made or changed shows an Agent label. It works with the keyboard and meets WCAG 2.2 AA in the light and dark themes.
+
+Run it locally:
+
+```sh
+npm ci
+npm run build:ui
+WRANGLER_SEND_METRICS=false npx wrangler dev --local \
+  --var DRIVE_PUBLIC_URL:http://127.0.0.1:8787 \
+  --var DRIVE_URL_SECRET:<32 or more characters> --var DRIVE_REGION:unknown
+```
+
+Open `http://127.0.0.1:8787` and sign in with a bearer token. The tab keeps the token until you close it. A fresh local database has no tokens. `e2e/serve.mjs` shows how to seed a person and an agent.
+
+Test it with `npm run test:e2e`. The test starts `wrangler dev` on a seeded database, drives the UI in Chromium, and runs an axe WCAG 2.2 AA check on each view in both themes. Run `npx playwright install chromium` once first. The run also writes the screenshots in [docs/ui](docs/ui).
+
+The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
 ## Features
 

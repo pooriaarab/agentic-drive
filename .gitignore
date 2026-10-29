@@ -5,3 +5,7 @@ coverage/
 .env
 .env.local
 .DS_Store
+ui-dist/
+test-results/
+playwright-report/
+.wrangler/
