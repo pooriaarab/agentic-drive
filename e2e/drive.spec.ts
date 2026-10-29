@@ -103,13 +103,21 @@ test("an item made by an agent carries a marker, in the list and in the grid", a
   const made = row(page, "agent-notes.txt");
   await expect(made.getByText("Agent", { exact: true })).toBeVisible();
   await expect(made).toContainText("helper");
+  await expect(made.getByText("Created by agent", { exact: true })).toBeVisible();
   await expect(row(page, "Reports")).not.toContainText("Agent");
   await audit(page, "06-agent-marker");
 
   await page.getByRole("button", { name: "Grid view" }).click();
   await expect(page.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("list", { name: /Items in/ }).getByText("Agent", { exact: true })).toBeVisible();
+  await expect(page.getByRole("list", { name: /Items in/ }).getByText("Created by agent", { exact: true })).toBeVisible();
   await audit(page, "07-grid");
+
+  await pick(page, "agent-notes.txt", "Move to trash");
+  await page.getByRole("link", { name: "Trash" }).click();
+  await expect(row(page, "agent-notes.txt").getByText("Created by agent", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Restore agent-notes.txt" }).click();
+  await expect(page.getByText("The trash is empty")).toBeVisible();
 });
 
 test("drag and drop uploads a file", async ({ page }) => {
@@ -158,6 +166,7 @@ test("the share dialog shares by link and by invite, and the keyboard reaches it
   await page.goto(shared);
   await page.reload();
   await expect(page.getByRole("heading", { name: "agent-notes.txt" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Shared item" }).getByText("Created by agent", { exact: true })).toBeVisible();
   await audit(page, "10-shared");
 });
 

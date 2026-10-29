@@ -10,7 +10,8 @@ const errorText = (e: unknown) => (e instanceof DriveApiError ? `${e.message} ($
 const byName = (a: Item, b: Item) => (a.kind === "folder" ? 0 : 1) - (b.kind === "folder" ? 0 : 1) || a.name.localeCompare(b.name);
 const who = (a: Item["createdBy"], owner: string): PresenceEntry =>
   a.kind === "human" ? { id: a.id, name: a.id, kind: "person" } : { id: a.id, name: a.id, kind: "agent", actingFor: owner };
-const isAgent = (a: Item["createdBy"]) => a.kind !== "human";
+/** The AI Act marker. It has text, and it reads `machineMade` from the API. */
+const MachineLabel = ({ item }: { item: Item }) => (item.machineMade ? <span className="ad-pill">Created by agent</span> : null);
 
 type Load<T> = { status: "loading" } | { status: "error"; error: string } | { status: "ok"; data: T };
 /** Runs `fn` on mount and on `reload`. A view remounts per route, so state never leaks between folders. */
@@ -168,7 +169,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
           const { folder, root, crumbs, items, tree } = state.data;
           const actions = (item: Item) => (
             <>
-              {isAgent(item.createdBy) && !isAgent(item.updatedBy) && <span className="ad-pill">Created by agent</span>}
+              <MachineLabel item={item} />
               <Menu align="end" trigger={<IconButton label={`Actions for ${item.name}`} icon={<MoreIcon />} variant="ghost" />} items={[
                 { label: "Rename", onSelect: () => setDlg({ kind: "rename", item }) },
                 { label: "Move", onSelect: () => setDlg({ kind: "move", item }) },
@@ -349,7 +350,7 @@ function TrashView({ client }: { client: DriveClient }) {
       <Status state={state} retry={reload}>
         {state.status === "ok" && (state.data.length === 0 ? <EmptyState title="The trash is empty" description="Items you move to the trash show up here." /> : (
           <FileList label="Items in the trash">
-            {[...state.data].sort(byName).map((i) => <FileRow key={i.id} name={i.name} href="#/trash" kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.trashedAt ?? i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button>} />)}
+            {[...state.data].sort(byName).map((i) => <FileRow key={i.id} name={i.name} href="#/trash" kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.trashedAt ?? i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<><MachineLabel item={i} /><Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button></>} />)}
           </FileList>
         ))}
       </Status>
@@ -400,8 +401,9 @@ function SharedView({ client, id, linkToken }: { client: DriveClient; id: string
           <>
             <h1>{state.data.item.name}</h1>
             <p className="drive-muted">Shared with you.</p>
+            <MachineLabel item={state.data.item} />
             {state.data.item.kind === "folder"
-              ? (state.data.items.length === 0 ? <EmptyState title="This folder is empty" /> : <FileList label="Shared items">{state.data.items.map((i) => <FileRow key={i.id} name={i.name} href={`#/s/${i.id}${linkToken ? `/${linkToken}` : ""}`} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} />)}</FileList>)
+              ? (state.data.items.length === 0 ? <EmptyState title="This folder is empty" /> : <FileList label="Shared items">{state.data.items.map((i) => <FileRow key={i.id} name={i.name} href={`#/s/${i.id}${linkToken ? `/${linkToken}` : ""}`} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<MachineLabel item={i} />} />)}</FileList>)
               : <Button onClick={() => void save()}>Download</Button>}
           </>
         )}

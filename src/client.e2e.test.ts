@@ -267,6 +267,10 @@ describe("the client without a server", () => {
     expect(await failure(answering(() => Response.json({ grants: [1], links: ["x"], invites: [null] })).shares("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
     expect(await failure(answering(() => Response.json({ apps: { docs: "many" }, files: 0, items: [] })).home())).toMatchObject({ code: "BAD_RESPONSE" });
     expect(await failure(answering(() => Response.json({ id: "x", name: "n", kind: "file", size: 1, trashed: false })).stat("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    const item = { id: "x", owner: "u1", parentId: "r", name: "n", kind: "file", size: 1, mime: null, hash: null, ref: null, createdAt: 1, updatedAt: 1, createdBy: { id: "bot", kind: "agent_of_human" }, updatedBy: { id: "bot", kind: "agent_of_human" }, createdById: "bot", updatedById: "bot", trashed: false, trashedAt: null };
+    expect(await answering(() => Response.json({ ...item, machineMade: true })).stat("/a")).toMatchObject({ machineMade: true });
+    expect(await failure(answering(() => Response.json(item)).stat("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => Response.json({ ...item, machineMade: "yes" })).stat("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
     const cut = answering(() => new Response(new ReadableStream({ start: (c) => { c.enqueue(new TextEncoder().encode("[{")); c.error(new Error("reset")); } })));
     expect(await failure(cut.list("/"))).toMatchObject({ code: "NETWORK_ERROR", status: 0 });
     const dropped = answering(() => new Response(new ReadableStream({ start: (c) => c.error(new Error("reset")) })));

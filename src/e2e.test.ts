@@ -49,6 +49,16 @@ describe("CLI", () => {
     expect(run(["register", "not-a-ref", "x"]).code).toBe(1);
   });
 
+  it("marks an item an agent created as machine made, from creation on", () => {
+    const { run, raw, principal } = fixture();
+    const agent = principal("bot1", "u1");
+    const made = raw(["mkdir", "/by-agent"], { AGENTIC_DRIVE_TOKEN: agent }).json();
+    expect(made.createdBy.kind).not.toBe("human");
+    expect(made.machineMade).toBe(true);
+    expect(raw(["ls", "/"], { AGENTIC_DRIVE_TOKEN: agent }).json().find((n: { name: string }) => n.name === "by-agent").machineMade).toBe(true);
+    expect(run(["mkdir", "/by-person"]).json().machineMade).toBe(false);
+  });
+
   it("runs the whole life of a file", () => {
     const { work, run } = fixture();
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -211,7 +221,7 @@ describe("MCP over stdio", () => {
       expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export", "drive_home", "drive_register_document", "drive_forget_document"]));
       await call("drive_mkdir", { path: "/notes", parents: true });
       const up = await call("drive_upload", { path: "/notes/a.txt", text: "héllo" });
-      expect(up.body).toMatchObject({ mime: "text/plain", createdBy: { id: "bot", kind: "agent_of_human" } });
+      expect(up.body).toMatchObject({ mime: "text/plain", createdBy: { id: "bot", kind: "agent_of_human" }, machineMade: true });
       expect((await call("drive_download", { path: "/notes/a.txt" })).body.text).toBe("héllo");
       const bin = await call("drive_upload", { path: "/notes/b.bin", contentBase64: Buffer.from([0, 255, 1]).toString("base64") });
       expect((await call("drive_download", { path: bin.body.id })).body.contentBase64).toBe("AP8B");

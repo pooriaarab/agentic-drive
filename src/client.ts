@@ -7,7 +7,8 @@ export type SubjectKind = "human" | "agent";
 export type Subject = { kind: SubjectKind; id: string };
 
 /** An item as the API prints it: no storage keys. */
-export type Item = Omit<Node, "nameKey" | "blobKey" | "purging">;
+/** `machineMade` is true when the creator is not a human principal. */
+export type Item = Omit<Node, "nameKey" | "blobKey" | "purging"> & { machineMade: boolean };
 /** A search hit, or a home item: an item with its path. */
 export type PathItem = Item & { path: string };
 
@@ -67,7 +68,7 @@ const oneOf = (list: string[]) => (v: unknown) => typeof v === "string" && list.
 const actor = (v: unknown) => record(v) && text(v.id) && oneOf(Object.keys(ACTOR_KINDS))(v.kind);
 const isItem: Check<Item> = (v): v is Item =>
   record(v) && text(v.id) && text(v.owner) && text(v.parentId) && text(v.name) && (v.kind === "folder" || v.kind === "file" || v.kind === "ref") && num(v.size) && orNull(text)(v.mime) && orNull(text)(v.hash) &&
-  orNull(text)(v.ref) && num(v.createdAt) && num(v.updatedAt) && actor(v.createdBy) && actor(v.updatedBy) && text(v.createdById) && text(v.updatedById) && typeof v.trashed === "boolean" && orNull(num)(v.trashedAt);
+  orNull(text)(v.ref) && num(v.createdAt) && num(v.updatedAt) && actor(v.createdBy) && actor(v.updatedBy) && text(v.createdById) && text(v.updatedById) && typeof v.trashed === "boolean" && orNull(num)(v.trashedAt) && typeof v.machineMade === "boolean";
 const isPathItem: Check<PathItem> = (v): v is PathItem => isItem(v) && typeof (v as { path?: unknown }).path === "string";
 const listOf = <T>(check: Check<T>): Check<T[]> => (v): v is T[] => Array.isArray(v) && v.every(check);
 const shape = <T>(test: (v: Record<string, unknown>) => boolean): Check<T> => (v): v is T => record(v) && test(v);
