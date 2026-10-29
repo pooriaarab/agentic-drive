@@ -52,3 +52,6 @@
 .drive-drop--bulk { padding-bottom: 6rem; }
 html:has(.drive-bulk) { scroll-padding-bottom: 6rem; }
 .agd-checkbox:indeterminate { background-color: var(--agd-color-accent); border-color: var(--agd-color-accent); background-image: linear-gradient(var(--agd-color-surface), var(--agd-color-surface)); background-size: 60% 2px; background-repeat: no-repeat; background-position: center; }
+.drive-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--agd-space-2); }
+.drive-activity li { padding: var(--agd-space-2) 0; border-bottom: 1px solid var(--agd-color-border); }
+.drive-activity time { color: var(--agd-color-text-muted); font-size: 0.875em; }

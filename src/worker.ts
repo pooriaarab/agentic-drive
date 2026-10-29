@@ -80,6 +80,12 @@ async function defaultStore(env: WorkerEnv): Promise<Store> {
   return createD1Store(env.DB, { region: regionOf(env) });
 }
 
+/** A limit is a whole number of 1 or more. */
+const limitOf = (v: string | undefined) => {
+  const n = number(v, "limit");
+  if (n !== undefined && (!Number.isInteger(n) || n < 1)) throw new DriveError("INVALID_PATH", "limit needs a whole number of 1 or more");
+  return n;
+};
 const number = (v: string | undefined, name: string) => {
   if (v === undefined) return undefined;
   const n = Number(v);
@@ -157,6 +163,8 @@ export function createApp<Env extends object = WorkerEnv>(options: AppOptions<En
   const opt = (v: unknown, name: string) => (v === undefined ? undefined : str(v, name));
 
   api.get("/items", async (c) => c.json((await c.var.drive.list(c.var.ctx, q(c, "path") ?? "/")).map((n) => publicNode(n))));
+  // The id may be percent-encoded, so a path works too.
+  api.get("/items/:id/activity", async (c) => c.json(await c.var.drive.listActivity(c.var.ctx, c.req.param("id"), { limit: limitOf(q(c, "limit")) })));
   api.get("/stat", async (c) => c.json(publicNode(await c.var.drive.stat(c.var.ctx, need(q(c, "path"), "path")))));
   api.post("/folders", async (c) => {
     const b = await body(c);

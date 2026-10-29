@@ -107,6 +107,8 @@ describe("the client on the real Worker", () => {
     expect(got.sha256).toBe(createHash("sha256").update("hello").digest("hex"));
     expect((await me.list("/docs")).map((n) => n.name).sort()).toEqual(["2026", "a.txt"]);
     expect((await me.stat(file.id)).id).toBe(file.id);
+    expect((await me.listActivity(file.id)).map((e) => [e.action, e.actor])).toEqual([["create", { id: "u1", kind: "human" }]]);
+    expect((await me.listActivity("/docs/a.txt", { limit: 1 })).length).toBe(1);
     expect((await me.upload("/docs/b.bin", bytes("bytes"), {})).size).toBe(5);
     expect((await me.move("/docs/b.bin", "/docs/2026", { name: "c.bin" })).name).toBe("c.bin");
     expect((await me.search({ name: "c.bin" }))[0]).toMatchObject({ path: "/docs/2026/c.bin" });
@@ -225,7 +227,7 @@ describe("the client on the real Worker", () => {
 describe("the client without a server", () => {
   it("imports nothing from Node, so a browser or a Worker can run it", () => {
     const source = readFileSync(join(import.meta.dirname, "client.ts"), "utf8");
-    expect(source.match(/^import .* from "(.*)";$/gm)).toEqual(['import type { ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";']);
+    expect(source.match(/^import .* from "(.*)";$/gm)).toEqual(['import type { ActivityAction, ActivityEntry, ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";']);
     expect(source.match(/\bimport\s*\(|\brequire\s*\(|\bimport\s+[^t(]|from\s+"node:|process\./g)).toBeNull();
   });
   const counting = (status: number) => {

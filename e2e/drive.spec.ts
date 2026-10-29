@@ -225,3 +225,20 @@ test("a person searches, sorts, and moves many items to the trash at once", asyn
   await expect(row(page, "alpha.txt")).toHaveCount(0);
   await expect(bar).toBeHidden();
 });
+
+test("the activity page labels a change that an agent made to an item of a person", async ({ page }) => {
+  const base = `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`;
+  const made = await createClient({ baseUrl: base, token: ADA }).upload("/activity-note.txt", "by ada", { mime: "text/plain" });
+  await createClient({ baseUrl: base, token: HELPER }).move(made.id, "/", { name: "activity-note-v2.txt" });
+  await page.goto("/");
+  await page.getByLabel("Access token").fill(ADA);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await pick(page, "activity-note-v2.txt", "Activity");
+  await expect(page.getByRole("heading", { name: "Activity: activity-note-v2.txt" })).toBeVisible();
+  const entries = page.getByRole("list", { name: "Activity" }).getByRole("listitem");
+  await expect(entries).toHaveCount(2);
+  await expect(entries.nth(0)).toContainText("AI agent");
+  await expect(entries.nth(0)).toContainText("renamed it");
+  await expect(entries.nth(1)).not.toContainText("AI agent");
+  await audit(page, "14-activity");
+});

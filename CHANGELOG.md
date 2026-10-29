@@ -2,6 +2,13 @@
 
 ## 0.9.0
 
+### Added
+
+- **An activity log for each item.** Drive now keeps an append-only entry for each create, rename, move, content update, share, unshare, delete (to the trash), and restore of an item. Each entry has the actor (`{ id, kind }`, where `kind` is `human` or `agent`), the time, and what changed (names and ids, never content). Every principal that is not a person counts as an agent. So a later change by an agent to an item that a person made carries the label. The entry of a create, rename, move, update, delete, or restore is written in the same transaction as the change. A share entry follows the grant, also for `claimRef` and for an accepted invite (but not an invite to a drive root). An unshare entry follows a revoke only when the subject held a role. Only the owner of the drive sees who got a role in a log. A share of the drive root is logged under the id `root`. The log uses the existing `Store` port, in the `drive_activity` collection. Items made before 0.9.0 have no entries until they change.
+- `listActivity(ctx, idOrPath, { limit })` in the SDK, `GET /api/v1/drive/items/:id/activity` in the HTTP API (and `listActivity` in the client), `activity <path|id> [--limit n]` in the CLI, and `drive_activity` in MCP. Anyone who may read an item may read its log. A purge deletes the log of the item.
+- The UI has an Activity page for an item (the Activity entry of the item menu). An entry made by an agent shows an "AI agent" label.
+- `buildExport` adds `activity` to the manifest: the entries made by the person and their agents, in any drive. In a drive that the person does not own, the entries have no names. `erasePerson` changes the actor id of those entries, and the id of a person named in a share entry, to `erased`. It keeps the kind.
+
 ### Changed
 
 - **The web UI has a calm list view.** Files show in a table with sortable Name and Modified columns, a search that opens from a button, and a Share button next to the title of a folder. Select rows with the check boxes to see a bar at the bottom of the page that moves them all to the trash. A search with no match has its own empty state. The design classes in the list view are now `drive-*` classes of the app, not `agd-file-*` classes.

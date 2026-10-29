@@ -35,6 +35,18 @@ function fixture() {
 }
 
 describe("CLI", () => {
+  it("lists the activity of an item and labels an agent", () => {
+    const { run, raw, principal } = fixture();
+    const made = run(["mkdir", "/a"]).json();
+    const bot = principal("bot1", "u1");
+    expect(raw(["mv", made.id, "/", "--name", "b"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(0);
+    const log = run(["activity", made.id]).json();
+    expect(log.map((e: { action: string }) => e.action)).toEqual(["rename", "create"]);
+    expect(log.map((e: { actor: unknown }) => e.actor)).toEqual([{ id: "bot1", kind: "agent" }, { id: "u1", kind: "human" }]);
+    expect(run(["activity", "/b", "--limit", "1"]).json()).toHaveLength(1);
+    expect(run(["activity"]).code).toBe(2);
+    expect(run(["activity", made.id, "--limit", "0"]).code).toBe(2);
+  }, 30_000);
   it("registers app documents, lists them in the home view, and forgets one", () => {
     const { run } = fixture();
     expect(run(["register", "docs:d1", "Plan"]).json()).toMatchObject({ kind: "ref", ref: "docs:d1", name: "Plan" });
@@ -289,7 +301,7 @@ describe("MCP over stdio", () => {
     const { client, call, work, data } = await connect(true);
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export", "drive_home", "drive_register_document", "drive_forget_document"]));
+      expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export", "drive_home", "drive_register_document", "drive_forget_document", "drive_activity"]));
       await call("drive_mkdir", { path: "/notes", parents: true });
       const up = await call("drive_upload", { path: "/notes/a.txt", text: "héllo" });
       expect(up.body).toMatchObject({ mime: "text/plain", createdBy: { id: "bot", kind: "agent_of_human" }, machineMade: true });
@@ -297,6 +309,9 @@ describe("MCP over stdio", () => {
       const bin = await call("drive_upload", { path: "/notes/b.bin", contentBase64: Buffer.from([0, 255, 1]).toString("base64") });
       expect((await call("drive_download", { path: bin.body.id })).body.contentBase64).toBe("AP8B");
       expect((await call("drive_mv", { src: "/notes/a.txt", folder: "/", name: "z.txt" })).body.name).toBe("z.txt");
+      const trail = await call("drive_activity", { path: "/z.txt" });
+      expect(trail.body.map((e: { action: string }) => e.action)).toEqual(["move", "rename", "create"]);
+      expect(trail.body[0].actor).toEqual({ id: "bot", kind: "agent" });
       expect((await call("drive_search", { createdByKind: "agent_of_human", kind: "file", name: "z" })).body[0].path).toBe("/z.txt");
       const rm = await call("drive_rm", { path: "/z.txt" });
       expect((await call("drive_ls")).body.map((n: { name: string }) => n.name)).toEqual(["notes"]);

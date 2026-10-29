@@ -14,7 +14,7 @@ document in another app. Each item belongs to one owner.
 - HTTP: `/api/v1/drive/*` on the Worker. Send `Authorization: Bearer <token>`.
 - MCP: `npx agentic-drive mcp`. Tools: drive_ls, drive_stat, drive_mkdir, drive_upload,
   drive_download, drive_mv, drive_rm, drive_trash, drive_restore, drive_purge,
-  drive_search, drive_export, drive_home, drive_register_document, drive_forget_document, drive_find_ref, drive_claim_ref, drive_shares, drive_share, drive_unshare,
+  drive_search, drive_export, drive_home, drive_register_document, drive_forget_document, drive_find_ref, drive_claim_ref, drive_activity, drive_shares, drive_share, drive_unshare,
   drive_invite, drive_accept_invite, drive_create_link, drive_revoke_link, drive_delete_account.
 
 ## Rules
