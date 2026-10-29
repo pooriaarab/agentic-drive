@@ -102,7 +102,7 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 - A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.
 - The file adapters allow one process at a time.
 - The MCP `drive_export` tool writes a new `.zip` into `<dir>/exports` and never overwrites a file. It takes a plain file name, not a path.
-- A purge or an erase works in chunks of 25 items, and each chunk commits. A Worker call has a cap on database queries, so a very large tree can need several calls. A failed or cut-off call leaves marked items hidden, and the same call finishes the job.
+- A purge or an erase works in chunks of 25 items (10 with sharing on), and each chunk commits. A Worker call has a cap on database queries, so a very large tree can need several calls. A failed or cut-off call leaves marked items hidden, and the same call finishes the job.
 - Hard delete removes blobs first and then rows. If a blob delete fails, the call throws and the same call can run again.
 - The export holds every file in memory. A very large drive needs a streaming export, which is not built yet.
 - The zip export stores entries without compression and has no Zip64 support.
@@ -115,7 +115,7 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 - Sharing is on in the Worker and in the SDK (`createDrive({ sharing })`). The CLI and the MCP server work on a local drive with one owner, so they do not share yet.
 - Drive writes the `resources` doc of each item itself, in the same transaction, because identity has no call that does it in a transaction. A drive with `sharing` off keeps no such docs, so turn it on at the start.
 - An invite sends no message. The caller passes the invite id on.
-- Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path or move fails with `TOO_DEEP`.
+- Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path, move, or restore fails with `TOO_DEEP`. A move or a restore of a folder reads its subtree once, outside the transaction, to count its height.
 - Every access check writes one audit row, and a transaction that runs again writes its rows again. The audit holds ids and kinds only: no emails and no content.
 - Data made before sharing has no `resources` docs, so its owner gets `NOT_FOUND`. There is no backfill yet.
 - A person who is not an owner cannot move an item into their own drive: the move fails with `CROSS_DRIVE`.

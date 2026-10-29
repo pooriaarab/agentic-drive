@@ -89,6 +89,8 @@ const MAX_PATH_SEGMENTS = 64;
 const DEFAULT_MAX_DEPTH = 256;
 /** Nodes a purge marks or deletes in one transaction. A Worker call has a cap on database queries. */
 const CHUNK = 25;
+/** With sharing, each node costs about three more queries, so a chunk is smaller. */
+const SHARED_CHUNK = 10;
 export const DEFAULT_URL_SECONDS = 900;
 export const MAX_URL_SECONDS = 3600;
 const OPAQUE = "application/octet-stream";
@@ -236,19 +238,27 @@ export function createDrive(deps: DriveDeps) {
       if (known !== undefined) return depth + known;
       if (++depth > MAX_ITEM_DEPTH) return depth;
       n = await rawNode(ops, n.parentId, n.owner);
+      // A missing ancestor is a broken tree. Count it as too deep, so nothing new goes under it.
+      if (n === null) return MAX_ITEM_DEPTH + 1;
     }
     return depth;
   }
-  /** True when a folder has items more than `levels` below it. */
-  async function deeperThan(ops: StoreOps, folder: Node, levels: number): Promise<boolean> {
+  /** How many levels of items sit below a folder: 0 for an empty folder, 1 when it holds only files. Stops past the depth cap. */
+  async function heightOf(ops: StoreOps, folder: Node): Promise<number> {
     let level = [folder];
-    for (let i = 0; i <= levels; i++) {
+    for (let height = 0; height <= MAX_ITEM_DEPTH; height++) {
       const next: Node[] = [];
       for (const f of level) if (f.kind === "folder") next.push(...(await children(ops, f.owner, f.id)));
-      if (next.length === 0) return false;
+      if (next.length === 0) return height;
       level = next;
     }
-    return true;
+    return MAX_ITEM_DEPTH + 1;
+  }
+  /** Fails when a node, with `height` levels of items below it, would sit deeper than sharing can follow under `dest`. */
+  async function fitsUnder(ops: StoreOps, w: ReturnType<typeof batch>, dest: Node, height: number) {
+    if (sharing && (await depthOf(ops, w, dest)) + 1 + height > MAX_ITEM_DEPTH) {
+      throw new DriveError("TOO_DEEP", `an item can sit at most ${MAX_ITEM_DEPTH} folders deep`);
+    }
   }
 
   /**
@@ -284,6 +294,8 @@ export function createDrive(deps: DriveDeps) {
       if (!next) throw new DriveError("NOT_FOUND", `no item ${loc}`);
       node = next;
     }
+    // Read on the start does not prove read on the item: its sharing record may be missing or too deep.
+    if (!(await can(ctx, "read", node))) throw new DriveError("NOT_FOUND", `no item ${loc}`);
     return node;
   }
 
@@ -357,7 +369,7 @@ export function createDrive(deps: DriveDeps) {
     return { parent: await folderAt(ops, w, ctx, start, segs, parents), name: last.name };
   }
 
-  async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string | Node, opts: { name?: string; onConflict?: OnConflict }) {
+  async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string | Node, opts: { name?: string; onConflict?: OnConflict; height?: number }) {
     if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
     const dest = typeof destLoc === "string" ? await resolve(ops, ctx, destLoc) : destLoc;
     if (dest.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${dest.name} is not a folder`);
@@ -374,10 +386,7 @@ export function createDrive(deps: DriveDeps) {
     // A change inside the same folder is a rename. It needs no right on the folder.
     if (dest.id !== node.parentId) {
       await need(ctx, "write", dest);
-      if (sharing) {
-        const room = MAX_ITEM_DEPTH - ((await depthOf(ops, w, dest)) + 1);
-        if (room < 0 || (node.kind === "folder" && (await deeperThan(ops, node, room)))) throw new DriveError("TOO_DEEP", `an item can sit at most ${MAX_ITEM_DEPTH} folders deep`);
-      }
+      await fitsUnder(ops, w, dest, opts.height ?? 0);
     }
     let { name, key } = parseName(opts.name ?? node.name);
     const slot = await claimed(ops, dest.owner, dest.id, key);
@@ -480,10 +489,11 @@ export function createDrive(deps: DriveDeps) {
   async function removeNodes(nodes: Node[], top?: Node): Promise<number> {
     const unchanged = (now: Node | null, seen: Node) =>
       now !== null && now.trashed === seen.trashed && now.parentId === seen.parentId && now.updatedAt === seen.updatedAt;
+    const size = sharing ? SHARED_CHUNK : CHUNK;
     const marked: Node[] = [];
     const markedIds = new Set<string>();
-    for (let i = 0; i < nodes.length; i += CHUNK) {
-      const slice = nodes.slice(i, i + CHUNK);
+    for (let i = 0; i < nodes.length; i += size) {
+      const slice = nodes.slice(i, i + size);
       for (const node of slice) {
         if (node.purging === true) {
           marked.push(node);
@@ -512,8 +522,8 @@ export function createDrive(deps: DriveDeps) {
       if (top && i === 0 && !markedIds.has(top.id)) throw new DriveError("BUSY", `${top.name} changed during the purge. Nothing was deleted.`);
     }
     const rows = marked.reverse();
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const chunk = rows.slice(i, i + CHUNK);
+    for (let i = 0; i < rows.length; i += size) {
+      const chunk = rows.slice(i, i + size);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
       await transact(async (tx) => {
         const held: { node: Node; claim: string | null; owns: boolean; shares: { collection: string; id: string }[] }[] = [];
@@ -637,9 +647,12 @@ export function createDrive(deps: DriveDeps) {
     },
 
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
+      // The height of a moved folder is read once, outside the transaction, so the transaction stays short.
+      const probe = sharing ? await resolve(store, ctx, src) : null;
+      const height = probe?.kind === "folder" ? await heightOf(store, probe) : 0;
       return transact(async (tx) => {
         const w = batch();
-        const moved = await relocate(tx, w, ctx, await resolve(tx, ctx, src), destLoc, opts);
+        const moved = await relocate(tx, w, ctx, await resolve(tx, ctx, src), destLoc, { ...opts, height });
         await w.apply(tx);
         return moved;
       });
@@ -685,6 +698,8 @@ export function createDrive(deps: DriveDeps) {
 
     /** Puts a trashed item back. It needs a live parent folder. */
     async restore(ctx: Ctx, id: string, opts: { parentId?: string; onConflict?: OnConflict } = {}): Promise<Node> {
+      const probe = sharing ? await rawNode(store, id, ctx.owner) : null;
+      const height = probe?.kind === "folder" ? await heightOf(store, probe) : 0;
       return transact(async (tx) => {
         const node = await fetch(tx, ctx, id);
         if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
@@ -698,7 +713,10 @@ export function createDrive(deps: DriveDeps) {
           throw new DriveError("PARENT_GONE", `the folder of ${node.name} is gone or in the trash`);
         }
         if (parent.owner !== node.owner) throw new DriveError("CROSS_DRIVE", "an item cannot move into another person's drive");
-        if (parent.id !== node.parentId) await need(ctx, "write", parent);
+        if (parent.id !== node.parentId) {
+          await need(ctx, "write", parent);
+          await fitsUnder(tx, batch(), parent, height);
+        }
         let { name, key } = parseName(node.name);
         if ((await claimed(tx, parent.owner, parent.id, key)).taken) {
           if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);

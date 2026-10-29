@@ -20,6 +20,9 @@
 //  19. A purge or an erase leaves links, invites, or grants (past the first page) behind, and old shares then apply to new files.
 //  20. A restore into a parent id tells a caller which ids exist.
 //  21. An agent principal, with a forged human actor, erases a drive.
+//  22. A restore puts a subtree deeper than sharing can follow.
+//  23. A path walk reaches an item that an id lookup denies, because its sharing record is gone.
+//  24. A folder whose parent is missing takes new items.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
@@ -354,5 +357,28 @@ describe("depth, scope, and in-place changes", () => {
     await fails(drive.deleteAll(forged), "FORBIDDEN");
     const delegated: Ctx = { ...ctxOf(botOf(["drive:admin"])), actor: { id: "alice", kind: "human" } };
     await fails(drive.deleteAll(delegated), "FORBIDDEN");
+  });
+  it("refuses a restore that would put a subtree too deep, and leaves it in the trash", async () => {
+    await drive.mkdir(A, `/${chain(14)}`, { parents: true });
+    await drive.putFile(A, "/s/t/u/v.txt", bytes("v"), { parents: true });
+    const deepest = await drive.stat(A, `/${chain(14)}`);
+    await drive.trash(A, "/s");
+    const s1 = (await drive.listTrash(A))[0]!;
+    await fails(drive.restore(A, s1.id, { parentId: deepest.id }), "TOO_DEEP");
+    expect((await drive.listTrash(A)).map((n) => n.id)).toEqual([s1.id]);
+    await drive.restore(A, s1.id);
+    expect((await drive.stat(A, "/s/t/u/v.txt")).name).toBe("v.txt");
+  });
+  it("denies a path to an item whose sharing record is gone, as it denies the id", async () => {
+    const { file, folder } = await team("viewer");
+    await store.delete("resources", file.id);
+    await fails(drive.read(A, "/team/docs/a.txt"), "NOT_FOUND");
+    await fails(drive.read(B, `${folder.id}/docs/a.txt`), "NOT_FOUND");
+    await fails(drive.stat(A, "/team/docs/a.txt"), "NOT_FOUND");
+  });
+  it("refuses new items under a folder whose parent is missing", async () => {
+    const inner = await drive.mkdir(A, "/a/b", { parents: true });
+    await store.delete("drive_nodes", (await drive.stat(A, "/a")).id);
+    await fails(drive.putFile(A, `${inner.id}/x.txt`, bytes("x")), "TRASHED");
   });
 });
