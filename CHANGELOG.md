@@ -2,6 +2,8 @@
 
 ## 0.8.0
 
+Read the breaking changes before you upgrade.
+
 ### Breaking changes
 
 - **The design class prefix is now `agd-`.** It was `ad-`. The CSS classes, the custom properties (`--ad-*` is now `--agd-*`),
