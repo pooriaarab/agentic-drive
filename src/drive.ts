@@ -299,7 +299,8 @@ export function createDrive(deps: DriveDeps) {
     w.put(NODES, moved.id, moved);
     const [from, to] = [await claimId(ctx.owner, node.parentId, node.nameKey), await claimId(ctx.owner, dest.id, key)];
     if (from !== to) {
-      w.remove(NAMES, from);
+      // Release only a claim that this item holds.
+      if ((await ops.get<Claim>(NAMES, from))?.nodeId === node.id) w.remove(NAMES, from);
       w.put(NAMES, to, { nodeId: moved.id, owner: ctx.owner, parentId: dest.id });
     }
     return moved;
@@ -359,18 +360,35 @@ export function createDrive(deps: DriveDeps) {
   }
 
   /**
-   * Blobs go first (a delete is idempotent), then rows in chunks, children before parents. A
-   * failure at any step leaves rows that still name what is left, so the same call can run again.
+   * Removes the nodes that still look as they did when they were read. A node that was restored,
+   * moved, or changed in the meantime stays, with its bytes and its name. A chunk deletes its blobs
+   * first (a delete is idempotent), then its rows, children before parents. A failure at any step
+   * leaves rows that still name what is left, so the same call can run again.
    */
-  async function removeNodes(nodes: Node[]) {
-    for (const node of nodes) if (node.blobKey) await blobs.delete(node.blobKey);
+  async function removeNodes(nodes: Node[], top?: Node) {
+    const unchanged = (now: Node | null, seen: Node) =>
+      now !== null && now.trashed === seen.trashed && now.parentId === seen.parentId && now.updatedAt === seen.updatedAt;
     const rows = [...nodes].reverse();
-    for (let i = 0; i < rows.length; i += 400) {
-      await store.transaction(async (tx) => {
-        for (const node of rows.slice(i, i + 400)) {
-          await tx.delete(NODES, node.id);
+    for (let i = 0; i < rows.length; i += 100) {
+      const chunk = rows.slice(i, i + 100);
+      const keep = async (tx: StoreOps) => {
+        const out: { node: Node; claim: string | null; held: Claim | null }[] = [];
+        // A restored top item keeps its whole tree.
+        if (top && !unchanged(await tx.get<Node>(NODES, top.id), top)) return out;
+        for (const node of chunk) {
+          if (!unchanged(await tx.get<Node>(NODES, node.id), node)) continue;
           // A trashed item gave up its name when it was trashed, and another item may hold it now.
-          if (!node.trashed) await tx.delete(NAMES, await claimId(node.owner, node.parentId, node.nameKey));
+          const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
+          out.push({ node, claim, held: claim ? await tx.get<Claim>(NAMES, claim) : null });
+        }
+        return out;
+      };
+      for (const { node } of await transact(keep)) if (node.blobKey) await blobs.delete(node.blobKey);
+      await transact(async (tx) => {
+        const found = await keep(tx);
+        for (const { node, claim, held } of found) {
+          await tx.delete(NODES, node.id);
+          if (claim && held?.nodeId === node.id) await tx.delete(NAMES, claim);
         }
       });
     }
@@ -593,7 +611,7 @@ export function createDrive(deps: DriveDeps) {
         nodes.push(node);
         if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
       }
-      await removeNodes(nodes);
+      await removeNodes(nodes, top);
       return { removed: nodes.length };
     },
 

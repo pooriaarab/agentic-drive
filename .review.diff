@@ -1,0 +1,2305 @@
+diff --git a/README.md b/README.md
+index 968b748..7f87681 100644
+--- a/README.md
++++ b/README.md
+@@ -47,10 +47,13 @@ An agent sets `--actor-kind agent_of_human`. Each item then records that a machi
+ 
+ ## HTTP API
+ 
+-A Cloudflare Worker (Hono) serves `/api/v1/drive` and mirrors the CLI. It uses D1 and R2.
++A Cloudflare Worker (Hono) serves `/api/v1/drive` and mirrors the CLI. It uses D1 and R2
++through the shared adapters of `agentic-identity`.
+ 
+ ```sh
+ npx wrangler secret put DRIVE_API_TOKENS   # {"<token of 32+ characters>":{"owner":"u1","actor":"u1","kind":"human"}}
++npx wrangler secret put DRIVE_URL_SECRET   # 32 bytes or more. It signs download URLs.
++npx wrangler secret put DRIVE_PUBLIC_URL   # The origin of the Worker, such as https://drive.example.com
+ npx wrangler deploy
+ curl -H "authorization: Bearer <token>" "$URL/api/v1/drive/items?path=/"
+ ```
+@@ -58,6 +61,7 @@ curl -H "authorization: Bearer <token>" "$URL/api/v1/drive/items?path=/"
+ Routes: `GET /items`, `GET /stat`, `POST /folders`, `PUT /files`, `GET /files`, `GET /url`,
+ `POST /move`, `POST /trash`, `GET /trash`, `POST /restore`, `POST /purge`, `GET /search`,
+ `GET /export`, `DELETE /account?confirm=yes`. Without `DRIVE_API_TOKENS`, every request gets 401.
++Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every request gets 503.
+ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--location weur`.
+ 
+ ## Features
+@@ -67,9 +71,10 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
+ - Move, rename, trash, restore, and purge. Trashing a folder hides its whole tree.
+ - Names compare without regard to case or Unicode form. A clash fails, or renames, or replaces.
+ - Each item records its size, type, owner, and who made and last changed it, with the actor kind.
+-- Storage sits behind `Store` and `Blobs` shapes. Memory and local file adapters ship now.
++- Storage sits behind the `Store` and `Blobs` ports of `agentic-identity`. Tests use its memory adapters. The CLI uses a local file adapter that passes the same contract suites. The Worker uses its D1 and R2 adapters.
++- Two live items never share a name in one folder. A claim document holds each name. It is written in the same transaction as the item, and it is deleted when the item goes to the trash.
+ - `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
+-- `downloadUrl()` returns a signed URL. The R2 adapter signs with AWS Signature V4 for the `eu` jurisdiction. A link lasts 15 minutes by default and 1 hour at most. It always serves an attachment with the stored type. Trashing a file does not revoke a link already issued.
++- `downloadUrl()` returns a signed URL. The Worker verifies it and serves the bytes as an attachment with a safe type, so the link holder cannot change how the bytes are served. A link lasts 15 minutes by default and 1 hour at most. Trashing a file does not revoke a link already issued.
+ - `search()` finds live items by name, type, kind, size, and who made them.
+ - `buildExport()` writes everything one owner has to a zip with a `manifest.json`. Trashed items are flagged. Entries are named by item id. A file whose bytes are gone is marked `missing`.
+ - `deleteAll()` deletes all items and bytes of one owner for good. Only the owner can call it.
+@@ -78,8 +83,9 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
+ ## Limits
+ 
+ - Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.
+-- The R2 adapter needs an R2 API token for signed URLs. A bucket binding cannot sign.
+-- Local file blobs have no signed URLs.
++- A signed URL serves an attachment without a file name. The shared port cannot sign a file name yet. That comes with agentic-identity 0.2.0.
++- Local file blobs return a `file:` URL that nothing serves or checks.
++- Blob writes are not conditional yet. Conditional writes (`ifMatch`, `ifNoneMatch`) come with agentic-identity 0.2.0. Drive then writes a new blob only when its key is free.
+ - Only `upload()` enforces the size cap. A caller of `putFile()` must check size first.
+ - A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.
+ - The file adapters allow one process at a time.
+@@ -88,13 +94,12 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
+ - The export holds every file in memory. A very large drive needs a streaming export, which is not built yet.
+ - The zip export stores entries without compression and has no Zip64 support.
+ - No access log for personal data yet. That comes with agentic-identity.
+-- The D1 store checks every document a transaction read. If another Worker changed one, the transaction runs again, and after four tries it fails with a conflict. A unique index stops two live items from sharing a name in one folder.
+-- One lock covers all owners in a Worker isolate, and there is no index on `owner` and `parentId` yet. A busy deployment needs both.
+-- `region: "eu"` on the D1 and R2 adapters is a promise made at deploy time. The code cannot check where the database or the bucket lives.
++- The D1 store checks every document a transaction read. If another Worker changed one, the transaction runs again, and after 50 tries it fails with a `BUSY` error.
++- The D1 store keeps one generic table. A busy deployment needs an expression index on `owner` and `parentId`.
++- `region: "eu"` on the D1 and R2 adapters is a promise made at deploy time. The D1 adapter refuses a query that a non-EU region served. The code cannot check where the bucket lives.
+ - Every API token is at least 32 characters. Its grant names an owner, an actor id, and an actor kind. A grant with a missing part gets 401.
+ - Tokens in `DRIVE_API_TOKENS` are a stopgap for sign-in. OIDC comes with agentic-identity.
+ - No sharing or roles yet. Roles come from agentic-identity.
+-- The `Store` and `Blobs` shapes are a local copy. They move to agentic-identity later.
+ 
+ ## Develop
+ 
+diff --git a/package-lock.json b/package-lock.json
+index 4a3da7b..be8e851 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -10,6 +10,7 @@
+       "license": "MIT",
+       "dependencies": {
+         "@modelcontextprotocol/sdk": "^1.12.0",
++        "agentic-identity": "^0.1.0",
+         "hono": "^4.13.14",
+         "zod": "^3.25.0"
+       },
+@@ -1180,7 +1181,7 @@
+       "version": "1.6.0",
+       "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz",
+       "integrity": "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/@jridgewell/trace-mapping": {
+@@ -1654,7 +1655,7 @@
+       "version": "5.2.3",
+       "resolved": "https://registry.npmjs.org/@types/chai/-/chai-5.2.3.tgz",
+       "integrity": "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/deep-eql": "*",
+@@ -1665,14 +1666,14 @@
+       "version": "4.0.2",
+       "resolved": "https://registry.npmjs.org/@types/deep-eql/-/deep-eql-4.0.2.tgz",
+       "integrity": "sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/@types/estree": {
+       "version": "1.0.9",
+       "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz",
+       "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/@types/node": {
+@@ -1689,7 +1690,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-3.2.7.tgz",
+       "integrity": "sha512-E8eBXaKibuvH2pSZErOjdVb5vF4PbKYcrnluBTYxEk1l/VhhwZg1kZQsdtjq+CsF5CFydf2Rdkz7jDHKSisi3w==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/chai": "^5.2.2",
+@@ -1706,7 +1707,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-3.2.7.tgz",
+       "integrity": "sha512-Trr0hYO9CM3Wj6ksWHRhK9IZpIY6wTMO5u/MqXurMxT57sWBaOPEtP3Oq60ihZuh5JsiagKfz95OcxdEP6dBrA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@vitest/spy": "3.2.7",
+@@ -1733,7 +1734,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-3.2.7.tgz",
+       "integrity": "sha512-KUHlwqVu0sRlhCdyPdQ/wBoTfRahjUky1MubOmYw9fWfIZy1gNoHpuaaQBPAaMaVYdQYHJLurzj8ECCj5OwTqA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "tinyrainbow": "^2.0.0"
+@@ -1746,7 +1747,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/runner/-/runner-3.2.7.tgz",
+       "integrity": "sha512-sB9y4ovltoQP+WaUPwmSxO9WIg9Ig694Di5PalVPsYHklAdE027mehpWF2SQSVq+k6sFgaivbTjTJwZLSHbedA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@vitest/utils": "3.2.7",
+@@ -1761,7 +1762,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-3.2.7.tgz",
+       "integrity": "sha512-7C+MwShwtBSI5Buwoyg3s/iY1eHL9PKAf+O1wVh/TdnjXUtkoL/9YQtre90i4MtNXM6edP1wJ2zOBpfCyhIS7g==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@vitest/pretty-format": "3.2.7",
+@@ -1776,7 +1777,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-3.2.7.tgz",
+       "integrity": "sha512-Q2eQGI6d2L/hBtZ0qNuKcAGid68XK6cv1xsoaIma6PaJhHPoqcEJhYpXZ/5myCMqkNgtP6UKuBhbc0nHKnrkuQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "tinyspy": "^4.0.3"
+@@ -1789,7 +1790,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/@vitest/utils/-/utils-3.2.7.tgz",
+       "integrity": "sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@vitest/pretty-format": "3.2.7",
+@@ -1826,6 +1827,23 @@
+         "node": ">=0.4.0"
+       }
+     },
++    "node_modules/agentic-identity": {
++      "version": "0.1.0",
++      "resolved": "https://registry.npmjs.org/agentic-identity/-/agentic-identity-0.1.0.tgz",
++      "integrity": "sha512-TR937EsNwqAWCAqY7QOkOdmRgrxssamTdRbPwi390eo7fD9LJvkQnJIcfmawuGEaDSjYo2icHKjWHvwElu5n6Q==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=20"
++      },
++      "peerDependencies": {
++        "vitest": ">=3"
++      },
++      "peerDependenciesMeta": {
++        "vitest": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/ajv": {
+       "version": "8.20.0",
+       "resolved": "https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz",
+@@ -1870,7 +1888,7 @@
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/assertion-error/-/assertion-error-2.0.1.tgz",
+       "integrity": "sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=12"
+@@ -1949,7 +1967,7 @@
+       "version": "6.7.14",
+       "resolved": "https://registry.npmjs.org/cac/-/cac-6.7.14.tgz",
+       "integrity": "sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=8"
+@@ -1988,7 +2006,7 @@
+       "version": "5.3.3",
+       "resolved": "https://registry.npmjs.org/chai/-/chai-5.3.3.tgz",
+       "integrity": "sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "assertion-error": "^2.0.1",
+@@ -2005,7 +2023,7 @@
+       "version": "2.1.3",
+       "resolved": "https://registry.npmjs.org/check-error/-/check-error-2.1.3.tgz",
+       "integrity": "sha512-PAJdDJusoxnwm1VwW07VWwUN1sl7smmC3OKggvndJFadxxDRyFJBX/ggnu/KE4kQAB7a3Dp8f/YXC1FlUprWmA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">= 16"
+@@ -2146,7 +2164,7 @@
+       "version": "5.0.2",
+       "resolved": "https://registry.npmjs.org/deep-eql/-/deep-eql-5.0.2.tgz",
+       "integrity": "sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=6"
+@@ -2232,7 +2250,7 @@
+       "version": "1.7.0",
+       "resolved": "https://registry.npmjs.org/es-module-lexer/-/es-module-lexer-1.7.0.tgz",
+       "integrity": "sha512-jEQoCwk8hyb2AZziIOLhDqpm5+2ww5uIE6lkO/6jcOCusfk6LhMHpXXfBLXTZ7Ydyt0j4VoUQv6uGNYbdW+kBA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/es-object-atoms": {
+@@ -2251,7 +2269,7 @@
+       "version": "0.27.7",
+       "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.27.7.tgz",
+       "integrity": "sha512-IxpibTjyVnmrIQo5aqNpCgoACA/dTKLTlhMHihVHhdkxKyPO1uBBthumT0rdHmcsk9uMonIWS0m4FljWzILh3w==",
+-      "dev": true,
++      "devOptional": true,
+       "hasInstallScript": true,
+       "license": "MIT",
+       "bin": {
+@@ -2299,7 +2317,7 @@
+       "version": "3.0.3",
+       "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
+       "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/estree": "^1.0.0"
+@@ -2339,7 +2357,7 @@
+       "version": "1.4.0",
+       "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.4.0.tgz",
+       "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "Apache-2.0",
+       "engines": {
+         "node": ">=12.0.0"
+@@ -2446,7 +2464,7 @@
+       "version": "6.5.0",
+       "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+       "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=12.0.0"
+@@ -2712,7 +2730,7 @@
+       "version": "9.0.1",
+       "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-9.0.1.tgz",
+       "integrity": "sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/json-schema-traverse": {
+@@ -2771,14 +2789,14 @@
+       "version": "3.2.1",
+       "resolved": "https://registry.npmjs.org/loupe/-/loupe-3.2.1.tgz",
+       "integrity": "sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/magic-string": {
+       "version": "0.30.21",
+       "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz",
+       "integrity": "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@jridgewell/sourcemap-codec": "^1.5.5"
+@@ -2899,7 +2917,7 @@
+       "version": "3.3.20",
+       "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.20.tgz",
+       "integrity": "sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==",
+-      "dev": true,
++      "devOptional": true,
+       "funding": [
+         {
+           "type": "github",
+@@ -3017,14 +3035,14 @@
+       "version": "2.0.3",
+       "resolved": "https://registry.npmjs.org/pathe/-/pathe-2.0.3.tgz",
+       "integrity": "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/pathval": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/pathval/-/pathval-2.0.1.tgz",
+       "integrity": "sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">= 14.16"
+@@ -3034,14 +3052,14 @@
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+       "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "ISC"
+     },
+     "node_modules/picomatch": {
+       "version": "4.0.7",
+       "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
+       "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=12"
+@@ -3085,7 +3103,7 @@
+       "version": "8.5.29",
+       "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.29.tgz",
+       "integrity": "sha512-49cGhUbXj8Qenv0iTMxA1cFBzxXoctpC9Ujd77t1WcbJIr6nF/eI7g/8MgxrYldFRuAXvja7xQRwavoW7kgrxQ==",
+-      "dev": true,
++      "devOptional": true,
+       "funding": [
+         {
+           "type": "opencollective",
+@@ -3251,7 +3269,7 @@
+       "version": "4.64.5",
+       "resolved": "https://registry.npmjs.org/rollup/-/rollup-4.64.5.tgz",
+       "integrity": "sha512-EAP5ZHcz2ijbgCWwPkpI7zh6bfsri2Ez5FtCy2dCp1k62duXzfG7DLGGh7RU2QQXWwavT+u4qpvDF/TWOiiGTw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/estree": "1.0.9"
+@@ -3521,7 +3539,7 @@
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/siginfo/-/siginfo-2.0.0.tgz",
+       "integrity": "sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "ISC"
+     },
+     "node_modules/source-map": {
+@@ -3538,7 +3556,7 @@
+       "version": "1.2.2",
+       "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz",
+       "integrity": "sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "BSD-3-Clause",
+       "engines": {
+         "node": ">=0.10.0"
+@@ -3548,7 +3566,7 @@
+       "version": "0.0.2",
+       "resolved": "https://registry.npmjs.org/stackback/-/stackback-0.0.2.tgz",
+       "integrity": "sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/statuses": {
+@@ -3564,14 +3582,14 @@
+       "version": "3.10.0",
+       "resolved": "https://registry.npmjs.org/std-env/-/std-env-3.10.0.tgz",
+       "integrity": "sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/strip-literal": {
+       "version": "3.1.0",
+       "resolved": "https://registry.npmjs.org/strip-literal/-/strip-literal-3.1.0.tgz",
+       "integrity": "sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "js-tokens": "^9.0.1"
+@@ -3643,21 +3661,21 @@
+       "version": "2.9.0",
+       "resolved": "https://registry.npmjs.org/tinybench/-/tinybench-2.9.0.tgz",
+       "integrity": "sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/tinyexec": {
+       "version": "0.3.2",
+       "resolved": "https://registry.npmjs.org/tinyexec/-/tinyexec-0.3.2.tgz",
+       "integrity": "sha512-KQQR9yN7R5+OSwaK0XQoj22pwHoTlgYqmUscPYoknOoWCWfj/5/ABTMRi69FrKU5ffPVh5QcFikpWJI/P1ocHA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/tinyglobby": {
+       "version": "0.2.17",
+       "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
+       "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "fdir": "^6.5.0",
+@@ -3674,7 +3692,7 @@
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/tinypool/-/tinypool-1.1.1.tgz",
+       "integrity": "sha512-Zba82s87IFq9A9XmjiX5uZA/ARWDrB03OHlq+Vw1fSdt0I+4/Kutwy8BP4Y/y/aORMo61FQ0vIb5j44vSo5Pkg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": "^18.0.0 || >=20.0.0"
+@@ -3684,7 +3702,7 @@
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/tinyrainbow/-/tinyrainbow-2.0.0.tgz",
+       "integrity": "sha512-op4nsTR47R6p0vMUUoYl/a+ljLFVtlfaXkLQmqfLR1qHma1h/ysYk4hEXZ880bf2CYgTskvTa/e196Vd5dDQXw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=14.0.0"
+@@ -3694,7 +3712,7 @@
+       "version": "4.0.6",
+       "resolved": "https://registry.npmjs.org/tinyspy/-/tinyspy-4.0.6.tgz",
+       "integrity": "sha512-u8KszXvGfU68hVcZpRHKG28T0krMuv2G5nDhiHaMLen/gIuFEgIJhaJuO69qjnXg5paSrbPMFfx3brNuN8eVSg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=14.0.0"
+@@ -3888,7 +3906,7 @@
+       "version": "7.3.7",
+       "resolved": "https://registry.npmjs.org/vite/-/vite-7.3.7.tgz",
+       "integrity": "sha512-AHEzTORMbi7/7aXp7w7KZ5+DCUdSeLsJz0grY8xHpc9DHdYb0vQu6DqJfm2tOw3gDExNgPgnJTXxM6syYFHaCA==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "esbuild": "^0.27.0 || ^0.28.0",
+@@ -3963,7 +3981,7 @@
+       "version": "3.2.4",
+       "resolved": "https://registry.npmjs.org/vite-node/-/vite-node-3.2.4.tgz",
+       "integrity": "sha512-EbKSKh+bh1E1IFxeO0pg1n4dvoOTt0UDiXMd/qn++r98+jPO1xtJilvXldeuQ8giIB5IkpjCgMleHMNEsGH6pg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "cac": "^6.7.14",
+@@ -3986,7 +4004,7 @@
+       "version": "3.2.7",
+       "resolved": "https://registry.npmjs.org/vitest/-/vitest-3.2.7.tgz",
+       "integrity": "sha512-KrxIJ62Fd89gfysR4WotlgZABiz2dqFPgqGzX7s+CwsqLFomRH7777ZcrOD6+WVAh7khPQP41A+BKbpcJFrdEg==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/chai": "^5.2.2",
+@@ -4074,7 +4092,7 @@
+       "version": "2.3.0",
+       "resolved": "https://registry.npmjs.org/why-is-node-running/-/why-is-node-running-2.3.0.tgz",
+       "integrity": "sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "siginfo": "^2.0.0",
+diff --git a/package.json b/package.json
+index 787178e..d0913bc 100644
+--- a/package.json
++++ b/package.json
+@@ -53,6 +53,7 @@
+   },
+   "dependencies": {
+     "@modelcontextprotocol/sdk": "^1.12.0",
++    "agentic-identity": "^0.1.0",
+     "hono": "^4.13.14",
+     "zod": "^3.25.0"
+   },
+diff --git a/src/adapters/d1.test.ts b/src/adapters/d1.test.ts
+deleted file mode 100644
+index 88e4729..0000000
+--- a/src/adapters/d1.test.ts
++++ /dev/null
+@@ -1,110 +0,0 @@
+-// Failure modes first. Each store below is its own lock, like a second Worker isolate on one database.
+-import { Miniflare } from "miniflare";
+-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+-import { createDrive, DRIVE_UNIQUE_INDEXES, type Ctx } from "../drive.js";
+-import { StoreConflictError } from "../ports.js";
+-import { createD1Store, type D1Like } from "./d1.js";
+-import { createMemoryBlobs } from "./memory.js";
+-
+-let mf: Miniflare;
+-let db: D1Like;
+-beforeAll(async () => {
+-  mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok'); } }", d1Databases: ["DB"] });
+-  db = (await mf.getD1Database("DB")) as unknown as D1Like;
+-});
+-afterAll(() => mf.dispose());
+-
+-const store = () => createD1Store(db, { unique: DRIVE_UNIQUE_INDEXES });
+-const drive = (s = store()) => createDrive({ store: s, blobs: createMemoryBlobs() });
+-let n = 0;
+-const owner = (): Ctx => ({ owner: `o${++n}`, actor: { id: `o${n}`, kind: "human" } });
+-const bytes = (s: string) => new TextEncoder().encode(s);
+-
+-describe("name uniqueness across isolates", () => {
+-  it("lets only one of two isolates create a live name", { timeout: 60_000 }, async () => {
+-    for (let round = 0; round < 15; round++) {
+-      const me = owner();
+-      const [a, b] = [drive(), drive()];
+-      const results = await Promise.allSettled([a.putFile(me, "/r.txt", bytes("1")), b.putFile(me, "/r.txt", bytes("2"))]);
+-      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+-      const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+-      expect(lost.reason).toMatchObject({ code: "NAME_TAKEN" });
+-      expect(await a.list(me, "/")).toHaveLength(1);
+-    }
+-  });
+-  it("makes the database refuse a second live row with the same name", async () => {
+-    const me = owner();
+-    const row = (id: string, trashed: boolean) => ({ id, owner: me.owner, parentId: "root", nameKey: "x", trashed });
+-    await store().put("drive_nodes", `${me.owner}-1`, row("1", false));
+-    await expect(store().put("drive_nodes", `${me.owner}-2`, row("2", false))).rejects.toBeInstanceOf(StoreConflictError);
+-    await store().put("drive_nodes", `${me.owner}-3`, row("3", true));
+-  });
+-});
+-
+-describe("transactions across isolates", () => {
+-  it("reruns a transaction whose reads changed before the commit", async () => {
+-    const [one, two] = [store(), store()];
+-    const key = `k${++n}`;
+-    await one.put("counters", key, { v: 1 });
+-    let runs = 0;
+-    const seen: number[] = [];
+-    await one.transaction(async (tx) => {
+-      runs++;
+-      const doc = (await tx.get<{ v: number }>("counters", key))!;
+-      seen.push(doc.v);
+-      if (runs === 1) await two.put("counters", key, { v: 10 });
+-      await tx.put("counters", key, { v: doc.v + 1 });
+-    });
+-    expect(seen).toEqual([1, 10]);
+-    expect((await one.get<{ v: number }>("counters", key))!.v).toBe(11);
+-  });
+-  it("gives up with a conflict error when the data keeps changing", async () => {
+-    const [one, two] = [store(), store()];
+-    const key = `k${++n}`;
+-    await one.put("counters", key, { v: 0 });
+-    let runs = 0;
+-    await expect(
+-      one.transaction(async (tx) => {
+-        await tx.get("counters", key);
+-        await two.put("counters", key, { v: ++runs });
+-        await tx.put("counters", `${key}-out`, { v: 1 });
+-      }),
+-    ).rejects.toBeInstanceOf(StoreConflictError);
+-    expect(await one.get("counters", `${key}-out`)).toBeNull();
+-  });
+-  it("never lets two isolates move two folders into each other", { timeout: 60_000 }, async () => {
+-    for (let round = 0; round < 15; round++) {
+-      const me = owner();
+-      const [a, b] = [drive(), drive()];
+-      await a.mkdir(me, "/A");
+-      await a.mkdir(me, "/B");
+-      const results = await Promise.allSettled([a.move(me, "/A", "/B"), b.move(me, "/B", "/A")]);
+-      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+-      // The loser sees the winner's move, so its own path no longer exists or would loop.
+-      expect(["MOVE_INTO_SELF", "NOT_FOUND"]).toContain(((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason as { code: string }).code);
+-      const [top] = await a.list(me, "/");
+-      expect(await a.list(me, "/")).toHaveLength(1);
+-      expect(await a.list(me, top!.id)).toHaveLength(1);
+-    }
+-  });
+-});
+-
+-describe("D1 behavior the in-memory store hides", () => {
+-  it("purges a nested folder with more than 100 children", { timeout: 60_000 }, async () => {
+-    const me = owner();
+-    const d = drive();
+-    await d.mkdir(me, "/big/inbox", { parents: true });
+-    for (let i = 0; i < 101; i++) await d.putRef(me, `/big/inbox/r${i}`, `docs:${i}`);
+-    await d.trash(me, "/big");
+-    const top = (await d.listTrash(me))[0]!;
+-    expect(await d.purge(me, top.id)).toEqual({ removed: 103 });
+-    expect(await d.list(me, "/")).toEqual([]);
+-  });
+-  it("retries setup after a failed first call", async () => {
+-    let failures = 1;
+-    const flaky: D1Like = { ...db, prepare: db.prepare.bind(db), batch: async (s) => { if (failures-- > 0) throw new Error("D1 503"); return db.batch(s); } };
+-    const s = createD1Store(flaky);
+-    await expect(s.get("c", "x")).rejects.toThrow("D1 503");
+-    expect(await s.get("c", "x")).toBeNull();
+-  });
+-});
+diff --git a/src/adapters/d1.ts b/src/adapters/d1.ts
+deleted file mode 100644
+index efd5320..0000000
+--- a/src/adapters/d1.ts
++++ /dev/null
+@@ -1,201 +0,0 @@
+-import { StoreConflictError, type AdapterOptions, type Doc, type Json, type Page, type Query, type Scalar, type Store, type StoreOps } from "../ports.js";
+-
+-/** The part of a D1 database that this adapter uses. */
+-export interface D1Like {
+-  prepare(sql: string): D1Statement;
+-  batch(statements: D1Statement[]): Promise<unknown[]>;
+-}
+-export interface D1Statement {
+-  bind(...values: unknown[]): D1Statement;
+-  first<T>(): Promise<T | null>;
+-  all<T>(): Promise<{ results: T[] }>;
+-}
+-
+-/** A unique rule on live rows of one collection. D1 enforces it with a partial unique index. */
+-export interface UniqueIndex {
+-  name: string;
+-  collection: string;
+-  fields: string[];
+-  /** Only rows whose fields equal these values count. Use it to leave out trashed rows. */
+-  where?: Record<string, Scalar>;
+-}
+-
+-export interface D1Options extends AdapterOptions {
+-  unique?: UniqueIndex[];
+-}
+-
+-/** How often a transaction runs again after another writer changed what it read. */
+-const ATTEMPTS = 4;
+-const FIELD = /^[A-Za-z0-9_]+$/;
+-const sqlValue = (v: Scalar) => (typeof v === "boolean" ? (v ? 1 : 0) : v);
+-const encode = (value: unknown) => btoa(unescape(encodeURIComponent(JSON.stringify(value))));
+-const decode = (cursor: string) => JSON.parse(decodeURIComponent(escape(atob(cursor)))) as [Json, string];
+-
+-const literal = (v: Scalar) => (typeof v === "string" ? `'${v.replace(/'/g, "''")}'` : v === null ? "NULL" : String(sqlValue(v)));
+-function uniqueSql(rule: UniqueIndex): string {
+-  for (const part of [rule.name, rule.collection, ...rule.fields, ...Object.keys(rule.where ?? {})]) {
+-    if (!FIELD.test(part)) throw new Error(`invalid name "${part}" in a unique rule`);
+-  }
+-  const keys = rule.fields.map((f) => `json_extract(data, '$.${f}')`).join(", ");
+-  const where = [`collection = ${literal(rule.collection)}`, ...Object.entries(rule.where ?? {}).map(([k, v]) => `json_extract(data, '$.${k}') = ${literal(v)}`)];
+-  return `CREATE UNIQUE INDEX IF NOT EXISTS ${rule.name} ON docs (${keys}) WHERE ${where.join(" AND ")}`;
+-}
+-
+-/**
+- * A Store on one D1 table. Many Workers can share it.
+- *
+- * A transaction reads freely, then sends its writes in one atomic batch. The batch also starts with a
+- * check for every document the transaction read: if one changed, the whole batch fails and the
+- * transaction runs again on fresh data. After a few tries it throws `StoreConflictError`.
+- * `unique` rules become unique indexes, so two Workers cannot both create the same name.
+- * Create the database in an EU location with `wrangler d1 create --location weur`.
+- */
+-export function createD1Store(db: D1Like, options: D1Options = {}): Store {
+-  let ready: Promise<unknown> | undefined;
+-  const init = () =>
+-    (ready ??= db
+-      .batch([
+-        db.prepare("CREATE TABLE IF NOT EXISTS docs (collection TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (collection, id))"),
+-        db.prepare("CREATE TABLE IF NOT EXISTS docs_guard (ok INTEGER NOT NULL)"),
+-        ...(options.unique ?? []).map((rule) => db.prepare(uniqueSql(rule))),
+-      ])
+-      .catch((error: unknown) => {
+-        ready = undefined;
+-        throw error;
+-      }));
+-  const conflict = (error: unknown) => error instanceof Error && /UNIQUE constraint failed|docs_guard/i.test(error.message);
+-  // An upsert, never INSERT OR REPLACE: that would delete the other row that holds a unique name.
+-  const putSql = (c: string, id: string, doc: Doc) => db.prepare("INSERT INTO docs (collection, id, data) VALUES (?, ?, ?) ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data").bind(c, id, JSON.stringify(doc));
+-  const delSql = (c: string, id: string) => db.prepare("DELETE FROM docs WHERE collection = ? AND id = ?").bind(c, id);
+-
+-  async function readText(c: string, id: string): Promise<string | null> {
+-    await init();
+-    const row = await db.prepare("SELECT data FROM docs WHERE collection = ? AND id = ?").bind(c, id).first<{ data: string }>();
+-    return row ? row.data : null;
+-  }
+-  async function read(c: string, id: string): Promise<Doc | null> {
+-    const text = await readText(c, id);
+-    return text === null ? null : (JSON.parse(text) as Doc);
+-  }
+-
+-  async function find<T extends Doc>(c: string, q: Query, seen?: (id: string, text: string) => void): Promise<Page<T>> {
+-    await init();
+-    const limit = q.limit ?? 100;
+-    if (!Number.isInteger(limit) || limit < 1) throw new RangeError("limit must be an integer of 1 or more");
+-    const field = q.orderBy?.field;
+-    if (field !== undefined && !FIELD.test(field)) throw new Error(`invalid field "${field}"`);
+-    const dir = q.orderBy?.direction === "desc" ? "DESC" : "ASC";
+-    const key = field === undefined ? "id" : `json_extract(data, '$.${field}')`;
+-    const where = ["collection = ?"];
+-    const args: unknown[] = [c];
+-    for (const [name, value] of Object.entries(q.where ?? {})) {
+-      if (!FIELD.test(name)) throw new Error(`invalid field "${name}"`);
+-      where.push(value === null ? `json_extract(data, '$.${name}') IS NULL` : `json_extract(data, '$.${name}') = ?`);
+-      if (value !== null) args.push(sqlValue(value));
+-    }
+-    if (field !== undefined) where.push(`${key} IS NOT NULL`);
+-    if (q.cursor !== undefined) {
+-      let after: [Json, string];
+-      try {
+-        after = decode(q.cursor);
+-        if (typeof after[1] !== "string") throw new Error();
+-      } catch {
+-        throw new Error("invalid cursor");
+-      }
+-      const op = dir === "ASC" ? ">" : "<";
+-      where.push(`(${key} ${op} ? OR (${key} = ? AND id ${op} ?))`);
+-      args.push(sqlValue(after[0] as Scalar), sqlValue(after[0] as Scalar), after[1]);
+-    }
+-    const { results } = await db
+-      .prepare(`SELECT id, data, ${key} AS sortkey FROM docs WHERE ${where.join(" AND ")} ORDER BY ${key} ${dir}, id ${dir} LIMIT ?`)
+-      .bind(...args, limit + 1)
+-      .all<{ id: string; data: string; sortkey: Json }>();
+-    const page = results.slice(0, limit);
+-    for (const r of page) seen?.(r.id, r.data);
+-    const last = page[page.length - 1];
+-    return {
+-      items: page.map((r) => ({ id: r.id, data: JSON.parse(r.data) as T })),
+-      ...(results.length > limit && last ? { nextCursor: encode([last.sortkey, last.id]) } : {}),
+-    };
+-  }
+-
+-  let lock: Promise<unknown> = Promise.resolve();
+-  const exclusive = <R>(fn: () => Promise<R>): Promise<R> => {
+-    const run = lock.then(fn, fn);
+-    lock = run.catch(() => undefined);
+-    return run;
+-  };
+-  const direct: StoreOps = {
+-    get: async <T extends Doc>(c: string, id: string) => (await read(c, id)) as T | null,
+-    put: async (c, id, doc) => {
+-      await init();
+-      try {
+-        await putSql(c, id, doc).first();
+-      } catch (error) {
+-        throw conflict(error) ? new StoreConflictError() : error;
+-      }
+-    },
+-    delete: async (c, id) => {
+-      await init();
+-      await delSql(c, id).first();
+-    },
+-    query: find,
+-  };
+-
+-  return {
+-    region: options.region ?? "eu",
+-    get: (c, id) => exclusive(() => direct.get(c, id)),
+-    put: (c, id, doc) => exclusive(() => direct.put(c, id, doc)),
+-    delete: (c, id) => exclusive(() => direct.delete(c, id)),
+-    query: (c, q) => exclusive(() => direct.query(c, q)),
+-    transaction: (fn) =>
+-      exclusive(async () => {
+-        for (let attempt = 1; ; attempt++) {
+-          const pending = new Map<string, { c: string; id: string; doc: Doc | null }>();
+-          // The first text this attempt saw for each document, or null for a missing one.
+-          const reads = new Map<string, { c: string; id: string; text: string | null }>();
+-          const note = (c: string, id: string, text: string | null) => {
+-            const key = `${c}/${id}`;
+-            if (!pending.has(key) && !reads.has(key)) reads.set(key, { c, id, text });
+-          };
+-          const tx: StoreOps = {
+-            async get<T extends Doc>(c: string, id: string) {
+-              const hit = pending.get(`${c}/${id}`);
+-              if (hit) return hit.doc as T | null;
+-              const text = await readText(c, id);
+-              note(c, id, text);
+-              return (text === null ? null : JSON.parse(text)) as T | null;
+-            },
+-            async put(c, id, doc) {
+-              pending.set(`${c}/${id}`, { c, id, doc: JSON.parse(JSON.stringify(doc)) as Doc });
+-            },
+-            async delete(c, id) {
+-              pending.set(`${c}/${id}`, { c, id, doc: null });
+-            },
+-            async query<T extends Doc>(c: string, q: Query = {}) {
+-              if (pending.size > 0 && (q.orderBy || q.cursor)) throw new Error("ordered queries after a write in a transaction are not supported");
+-              const page = await find<T>(c, q, (id, text) => note(c, id, text));
+-              const mine = [...pending.values()].filter((p) => p.c === c);
+-              const match = (doc: Doc) => Object.entries(q.where ?? {}).every(([k, v]) => doc[k] === v);
+-              const items = page.items.filter((i) => !mine.some((p) => p.id === i.id));
+-              for (const p of mine) if (p.doc && match(p.doc)) items.push({ id: p.id, data: p.doc as T });
+-              return { items: items.sort((a, b) => (a.id < b.id ? -1 : 1)), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+-            },
+-          };
+-          const result = await fn(tx);
+-          if (pending.size === 0) return result;
+-          const guards = [...reads.values()].map((r) =>
+-            db.prepare("INSERT INTO docs_guard (ok) SELECT CASE WHEN (SELECT data FROM docs WHERE collection = ? AND id = ?) IS ? THEN 1 END").bind(r.c, r.id, r.text),
+-          );
+-          const writes = [...pending.values()].map((p) => (p.doc ? putSql(p.c, p.id, p.doc) : delSql(p.c, p.id)));
+-          try {
+-            await db.batch([...guards, ...writes, db.prepare("DELETE FROM docs_guard")]);
+-            return result;
+-          } catch (error) {
+-            if (!conflict(error)) throw error;
+-            if (attempt >= ATTEMPTS) throw new StoreConflictError();
+-          }
+-        }
+-      }),
+-  };
+-}
+diff --git a/src/adapters/fs.test.ts b/src/adapters/fs.test.ts
+new file mode 100644
+index 0000000..52f267c
+--- /dev/null
++++ b/src/adapters/fs.test.ts
+@@ -0,0 +1,55 @@
++// The file adapters run the shared contract suites. Two more ways they can fail:
++//  1. A restart loses a committed write, or replays a write that a transaction rolled back.
++//  2. A transaction that reran writes twice into the journal.
++import { mkdtempSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { runBlobsContract, runStoreContract } from "agentic-identity/testing";
++import { describe, expect, it } from "vitest";
++import { createFileBlobs, createFileStore } from "./fs.js";
++
++const fresh = () => mkdtempSync(join(tmpdir(), "drive-fs-"));
++const shared = new Map<string, string>();
++
++runStoreContract((options) => {
++  // Stores that share a name share one directory and one live dataset.
++  const dir = options.shared === undefined ? fresh() : (shared.get(options.shared) ?? shared.set(options.shared, fresh()).get(options.shared)!);
++  return createFileStore(dir, options);
++});
++runBlobsContract((options) => createFileBlobs(fresh(), options));
++
++describe("file store journal", () => {
++  it("keeps committed writes across a restart and drops rolled-back ones", async () => {
++    const dir = fresh();
++    const one = createFileStore(dir);
++    await one.put("docs", "a", { v: 1 });
++    await one.transaction(async (tx) => {
++      await tx.put("docs", "b", { v: 2 });
++      await tx.delete("docs", "a");
++    });
++    await expect(
++      one.transaction(async (tx) => {
++        await tx.put("docs", "c", { v: 3 });
++        throw new Error("boom");
++      }),
++    ).rejects.toThrow("boom");
++    const two = createFileStore(dir);
++    expect(await two.get("docs", "a")).toBeNull();
++    expect(await two.get("docs", "b")).toEqual({ v: 2 });
++    expect(await two.get("docs", "c")).toBeNull();
++  });
++  it("writes one journal line for a transaction that ran twice", async () => {
++    const dir = fresh();
++    const store = createFileStore(dir, { shared: `rerun-${dir}` });
++    const other = createFileStore(dir, { shared: `rerun-${dir}` });
++    await store.put("counters", "k", { v: 1 });
++    let runs = 0;
++    await store.transaction(async (tx) => {
++      const doc = (await tx.get<{ v: number }>("counters", "k"))!;
++      if (++runs === 1) await other.put("counters", "k", { v: 10 });
++      await tx.put("counters", "k", { v: doc.v + 1 });
++    });
++    expect(runs).toBe(2);
++    expect((await createFileStore(dir).get<{ v: number }>("counters", "k"))!.v).toBe(11);
++  });
++});
+diff --git a/src/adapters/fs.ts b/src/adapters/fs.ts
+index fc83916..fa6348e 100644
+--- a/src/adapters/fs.ts
++++ b/src/adapters/fs.ts
+@@ -1,47 +1,101 @@
+ import { createHash } from "node:crypto";
+-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
++import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+ import { join } from "node:path";
+-import type { AdapterOptions, Blobs, Store } from "../ports.js";
+-import { createMemoryStore, type Tables } from "./memory.js";
++import { createMemoryStore, parseRegion, type AdapterOptions, type Blobs, type Doc, type Store, type StoreOps } from "agentic-identity";
+ 
+-/** A Store kept in one JSON file. One process at a time. */
+-export function createFileStore(dir: string, options: AdapterOptions = {}): Store {
++type Change = [collection: string, id: string, doc: Doc | null];
++
++/**
++ * A Store kept in a journal file: one JSON line per committed write set, replayed on open.
++ * It is the shared memory store plus the journal, so it follows the same rules. One process at a time.
++ */
++export function createFileStore(dir: string, options: AdapterOptions & { shared?: string } = {}): Store {
+   mkdirSync(dir, { recursive: true });
+-  const file = join(dir, "store.json");
+-  const snapshot = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Tables) : {};
+-  return createMemoryStore({
+-    ...options,
+-    snapshot,
+-    onCommit(tables) {
+-      const tmp = `${file}.tmp`;
+-      writeFileSync(tmp, JSON.stringify(tables));
+-      renameSync(tmp, file);
++  const file = join(dir, "store.jsonl");
++  const inner = createMemoryStore(options);
++  const ready = (async () => {
++    if (!existsSync(file)) return;
++    for (const line of readFileSync(file, "utf8").split("\n")) {
++      if (line === "") continue;
++      for (const [collection, id, doc] of JSON.parse(line) as Change[]) await (doc ? inner.put(collection, id, doc) : inner.delete(collection, id));
++    }
++  })();
++  const keep = (changes: Change[]) => {
++    if (changes.length > 0) appendFileSync(file, `${JSON.stringify(changes)}\n`);
++  };
++  const recording = (ops: StoreOps, changes: Change[]): StoreOps => ({
++    ...ops,
++    put: async (collection, id, doc) => {
++      await ops.put(collection, id, doc);
++      changes.push([collection, id, doc]);
++    },
++    delete: async (collection, id) => {
++      await ops.delete(collection, id);
++      changes.push([collection, id, null]);
+     },
+   });
++  return {
++    region: inner.region,
++    get: async (c, id) => (await ready, inner.get(c, id)),
++    query: async (c, q) => (await ready, inner.query(c, q)),
++    async put(collection, id, doc) {
++      await ready;
++      await inner.put(collection, id, doc);
++      keep([[collection, id, doc]]);
++    },
++    async delete(collection, id) {
++      await ready;
++      await inner.delete(collection, id);
++      keep([[collection, id, null]]);
++    },
++    async transaction(fn) {
++      await ready;
++      // A rerun starts over, so only the last run's writes are the committed ones.
++      let changes: Change[] = [];
++      const result = await inner.transaction((tx) => {
++        changes = [];
++        return fn(recording(tx, changes));
++      });
++      keep(changes);
++      return result;
++    },
++  };
+ }
+ 
+ /** Blobs kept as files under `dir`. File names are key hashes, so no key escapes the folder. */
+ export function createFileBlobs(dir: string, options: AdapterOptions = {}): Blobs {
+   mkdirSync(dir, { recursive: true });
+   const path = (key: string) => join(dir, createHash("sha256").update(key).digest("hex"));
++  const need = (key: string) => {
++    if (key === "") throw new Error("blob key must not be empty");
++  };
++  const now = options.now ?? Date.now;
+   return {
+-    region: options.region ?? "eu",
++    region: options.region === undefined ? "unknown" : parseRegion(options.region),
+     async put(key, data, opts) {
++      need(key);
+       writeFileSync(path(key), data);
+       if (opts?.contentType) writeFileSync(`${path(key)}.type`, opts.contentType);
+       else rmSync(`${path(key)}.type`, { force: true });
+     },
+     async get(key) {
++      need(key);
+       if (!existsSync(path(key))) return null;
+       const type = existsSync(`${path(key)}.type`) ? readFileSync(`${path(key)}.type`, "utf8") : undefined;
+       return { data: new Uint8Array(readFileSync(path(key))), ...(type ? { contentType: type } : {}) };
+     },
+     async delete(key) {
++      need(key);
+       rmSync(path(key), { force: true });
+       rmSync(`${path(key)}.type`, { force: true });
+     },
+-    async signedUrl() {
+-      throw new Error("local file blobs have no signed URLs");
++    /** A local path with its expiry. Nothing serves or checks it: it exists so the port is whole. */
++    async signedUrl(key, { method, expiresInSeconds }) {
++      need(key);
++      if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
++        throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
++      }
++      return `file://${path(key)}?method=${method}&expires=${now() + expiresInSeconds * 1000}`;
+     },
+   };
+ }
+diff --git a/src/adapters/memory.ts b/src/adapters/memory.ts
+deleted file mode 100644
+index 55c3af7..0000000
+--- a/src/adapters/memory.ts
++++ /dev/null
+@@ -1,117 +0,0 @@
+-import type { AdapterOptions, BlobObject, Blobs, Doc, Json, Page, Query, Store, StoreOps } from "../ports.js";
+-
+-export type Tables = Record<string, Record<string, Doc>>;
+-
+-export interface MemoryStoreOptions extends AdapterOptions {
+-  /** Starting data. */
+-  snapshot?: Tables;
+-  /** Called with the full data after each committed write. */
+-  onCommit?: (tables: Tables) => void;
+-}
+-
+-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+-const compare = (a: Json, b: Json): number =>
+-  typeof a !== typeof b ? (typeof a < typeof b ? -1 : 1) : (a as string) < (b as string) ? -1 : (a as string) > (b as string) ? 1 : 0;
+-
+-function ops(tables: Tables): StoreOps {
+-  return {
+-    async get<T extends Doc>(collection: string, id: string) {
+-      const doc = tables[collection]?.[id];
+-      return doc ? clone(doc) as T : null;
+-    },
+-    async put(collection, id, doc) {
+-      (tables[collection] ??= {})[id] = clone(doc);
+-    },
+-    async delete(collection, id) {
+-      delete tables[collection]?.[id];
+-    },
+-    async query<T extends Doc>(collection: string, query: Query = {}): Promise<Page<T>> {
+-      const limit = query.limit ?? 100;
+-      if (!Number.isInteger(limit) || limit < 1) throw new RangeError("limit must be an integer of 1 or more");
+-      const sign = query.orderBy?.direction === "desc" ? -1 : 1;
+-      const field = query.orderBy?.field;
+-      const order = (x: { v: Json; id: string }, y: { v: Json; id: string }) => sign * (compare(x.v, y.v) || compare(x.id, y.id));
+-      let rows = Object.entries(tables[collection] ?? {})
+-        .filter(([, doc]) => Object.entries(query.where ?? {}).every(([k, v]) => doc[k] === v))
+-        .map(([id, doc]) => ({ id, doc, v: (field === undefined ? id : doc[field]) as Json }))
+-        .filter((row) => row.v !== undefined && row.v !== null)
+-        .sort(order);
+-      if (query.cursor !== undefined) {
+-        let after: { v: Json; id: string };
+-        try {
+-          const [v, id] = JSON.parse(Buffer.from(query.cursor, "base64url").toString()) as [Json, string];
+-          if (typeof id !== "string") throw new Error();
+-          after = { v, id };
+-        } catch {
+-          throw new Error("invalid cursor");
+-        }
+-        rows = rows.filter((row) => order(row, after) > 0);
+-      }
+-      const page = rows.slice(0, limit);
+-      const last = page[page.length - 1];
+-      return {
+-        items: page.map((row) => ({ id: row.id, data: clone(row.doc) as T })),
+-        ...(rows.length > limit && last ? { nextCursor: Buffer.from(JSON.stringify([last.v, last.id])).toString("base64url") } : {}),
+-      };
+-    },
+-  };
+-}
+-
+-export function createMemoryStore(options: MemoryStoreOptions = {}): Store {
+-  let tables: Tables = clone(options.snapshot ?? {});
+-  let lock: Promise<unknown> = Promise.resolve();
+-  // One operation at a time, so a transaction sees no other writer.
+-  const exclusive = <R>(fn: () => Promise<R>, write: boolean): Promise<R> => {
+-    const run = lock.then(fn, fn).then((result) => {
+-      if (write) options.onCommit?.(tables);
+-      return result;
+-    });
+-    lock = run.catch(() => undefined);
+-    return run;
+-  };
+-  const base = ops(tables);
+-  return {
+-    region: options.region ?? "eu",
+-    get: (c, id) => exclusive(() => base.get(c, id), false),
+-    put: (c, id, doc) => exclusive(() => base.put(c, id, doc), true),
+-    delete: (c, id) => exclusive(() => base.delete(c, id), true),
+-    query: (c, q) => exclusive(() => base.query(c, q), false),
+-    transaction: (fn) =>
+-      exclusive(async () => {
+-        const draft = clone(tables);
+-        const result = await fn(ops(draft));
+-        // Copy in place so `base` keeps pointing at the live tables.
+-        for (const key of Object.keys(tables)) delete tables[key];
+-        Object.assign(tables, draft);
+-        return result;
+-      }, true),
+-  };
+-}
+-
+-export function createMemoryBlobs(options: AdapterOptions = {}): Blobs {
+-  const objects = new Map<string, BlobObject>();
+-  const now = options.now ?? Date.now;
+-  return {
+-    region: options.region ?? "eu",
+-    async put(key, data, opts) {
+-      objects.set(key, { data: data.slice(), ...(opts?.contentType ? { contentType: opts.contentType } : {}) });
+-    },
+-    async get(key) {
+-      const found = objects.get(key);
+-      return found ? { ...found, data: found.data.slice() } : null;
+-    },
+-    async delete(key) {
+-      objects.delete(key);
+-    },
+-    async signedUrl(key, { method, expiresInSeconds, responseContentDisposition, responseContentType }) {
+-      if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
+-        throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
+-      }
+-      const extra = [
+-        responseContentDisposition && `&disposition=${encodeURIComponent(responseContentDisposition)}`,
+-        responseContentType && `&type=${encodeURIComponent(responseContentType)}`,
+-      ].filter(Boolean).join("");
+-      return `memory://blobs/${encodeURIComponent(key)}?method=${method}&expires=${now() + expiresInSeconds * 1000}${extra}`;
+-    },
+-  };
+-}
+diff --git a/src/adapters/r2.test.ts b/src/adapters/r2.test.ts
+deleted file mode 100644
+index c0f40c4..0000000
+--- a/src/adapters/r2.test.ts
++++ /dev/null
+@@ -1,62 +0,0 @@
+-import { Miniflare } from "miniflare";
+-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+-import { createDrive } from "../drive.js";
+-import { createMemoryStore } from "./memory.js";
+-import { createR2Blobs, type R2BucketLike } from "./r2.js";
+-import { presignUrl } from "./sigv4.js";
+-
+-const signing = { accountId: "acct", bucketName: "drive", accessKeyId: "AK", secretAccessKey: "SK", jurisdiction: "eu" as const };
+-
+-describe("signed URLs", () => {
+-  it("match the published AWS Signature V4 example", async () => {
+-    const url = await presignUrl({
+-      method: "GET", host: "examplebucket.s3.amazonaws.com", path: "/test.txt", region: "us-east-1",
+-      accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+-      expiresInSeconds: 86400, at: new Date("2013-05-24T00:00:00Z"),
+-    });
+-    expect(url).toContain("X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404");
+-  });
+-});
+-
+-describe("R2 adapter on Miniflare", () => {
+-  let mf: Miniflare;
+-  let bucket: R2BucketLike;
+-  beforeAll(async () => {
+-    mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok'); } }", r2Buckets: ["BUCKET"] });
+-    bucket = (await mf.getR2Bucket("BUCKET")) as unknown as R2BucketLike;
+-  });
+-  afterAll(() => mf.dispose());
+-
+-  it("refuses an eu adapter without an eu jurisdiction", () => {
+-    expect(() => createR2Blobs({ bucket, signing: { ...signing, jurisdiction: undefined } })).toThrow(/jurisdiction/);
+-    expect(createR2Blobs({ bucket, signing, region: "any" }).region).toBe("any");
+-  });
+-  it("stores, reads, and deletes bytes with their type", async () => {
+-    const blobs = createR2Blobs({ bucket, signing });
+-    expect(blobs.region).toBe("eu");
+-    await blobs.put("u1/a", new Uint8Array([1, 2, 3]), { contentType: "image/png" });
+-    expect(await blobs.get("u1/a")).toEqual({ data: new Uint8Array([1, 2, 3]), contentType: "image/png" });
+-    await blobs.delete("u1/a");
+-    expect(await blobs.get("u1/a")).toBeNull();
+-    await blobs.delete("u1/a");
+-  });
+-  it("signs download URLs for the EU endpoint and rejects bad lifetimes", async () => {
+-    const blobs = createR2Blobs({ bucket, signing, now: () => Date.UTC(2026, 9, 28) });
+-    const url = new URL(await blobs.signedUrl("u1/a b", { method: "GET", expiresInSeconds: 60 }));
+-    expect(url.host).toBe("acct.eu.r2.cloudflarestorage.com");
+-    expect(url.pathname).toBe("/drive/u1/a%20b");
+-    expect(url.searchParams.get("X-Amz-Expires")).toBe("60");
+-    expect(url.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
+-    await expect(blobs.signedUrl("k", { method: "GET", expiresInSeconds: 0 })).rejects.toThrow(RangeError);
+-    await expect(blobs.signedUrl("k", { method: "GET", expiresInSeconds: 604801 })).rejects.toThrow(RangeError);
+-  });
+-  it("runs the whole drive on R2 bytes", async () => {
+-    const drive = createDrive({ store: createMemoryStore(), blobs: createR2Blobs({ bucket, signing }) });
+-    const me = { owner: "u1", actor: { id: "u1", kind: "human" as const } };
+-    const node = await drive.putFile(me, "/x.txt", new TextEncoder().encode("on r2"), { mime: "text/plain" });
+-    expect(new TextDecoder().decode((await drive.read(me, "/x.txt")).data)).toBe("on r2");
+-    await drive.trash(me, "/x.txt");
+-    await drive.purge(me, node.id);
+-    expect(await bucket.get(node.blobKey!)).toBeNull();
+-  });
+-});
+diff --git a/src/adapters/r2.ts b/src/adapters/r2.ts
+deleted file mode 100644
+index 055e460..0000000
+--- a/src/adapters/r2.ts
++++ /dev/null
+@@ -1,69 +0,0 @@
+-import type { AdapterOptions, Blobs, Region } from "../ports.js";
+-import { presignUrl } from "./sigv4.js";
+-
+-/** The part of an R2 bucket binding that this adapter uses. */
+-export interface R2BucketLike {
+-  put(key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
+-  get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer>; httpMetadata?: { contentType?: string } } | null>;
+-  delete(key: string): Promise<void>;
+-}
+-
+-/** Keys for S3 signed URLs. A binding cannot sign, so these come from an R2 API token. */
+-export interface R2Signing {
+-  accountId: string;
+-  bucketName: string;
+-  accessKeyId: string;
+-  secretAccessKey: string;
+-  /** The bucket's jurisdiction. Create the bucket with the same one. */
+-  jurisdiction?: "eu" | "fedramp";
+-}
+-
+-export interface R2Options extends AdapterOptions {
+-  bucket: R2BucketLike;
+-  /** Needed only for signed URLs. Without it, `signedUrl` throws. */
+-  signing?: R2Signing;
+-}
+-
+-/**
+- * Blobs on Cloudflare R2. The region defaults to "eu". An "eu" adapter needs an
+- * "eu" jurisdiction in `signing`, so a signed URL never points at a bucket outside the EU.
+- * Create the bucket itself with the same jurisdiction. A binding cannot report it.
+- */
+-export function createR2Blobs(options: R2Options): Blobs {
+-  const region: Region = options.region ?? "eu";
+-  const { signing, bucket } = options;
+-  if (region === "eu" && signing && signing.jurisdiction !== "eu") {
+-    throw new Error('an "eu" R2 adapter needs signing.jurisdiction "eu"');
+-  }
+-  const now = options.now ?? Date.now;
+-  const host = signing && `${signing.accountId}.${signing.jurisdiction ? `${signing.jurisdiction}.` : ""}r2.cloudflarestorage.com`;
+-  return {
+-    region,
+-    async put(key, data, opts) {
+-      await bucket.put(key, data, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
+-    },
+-    async get(key) {
+-      const found = await bucket.get(key);
+-      if (!found) return null;
+-      const contentType = found.httpMetadata?.contentType;
+-      return { data: new Uint8Array(await found.arrayBuffer()), ...(contentType ? { contentType } : {}) };
+-    },
+-    async delete(key) {
+-      await bucket.delete(key);
+-    },
+-    async signedUrl(key, { method, expiresInSeconds, responseContentDisposition, responseContentType }) {
+-      if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
+-        throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
+-      }
+-      if (!signing || !host) throw new Error("signed URLs need R2 signing keys");
+-      return presignUrl({
+-        method, host, path: `/${signing.bucketName}/${key}`, region: "auto", expiresInSeconds,
+-        extraQuery: {
+-          ...(responseContentDisposition ? { "response-content-disposition": responseContentDisposition } : {}),
+-          ...(responseContentType ? { "response-content-type": responseContentType } : {}),
+-        },
+-        accessKeyId: signing.accessKeyId, secretAccessKey: signing.secretAccessKey, at: new Date(now()),
+-      });
+-    },
+-  };
+-}
+diff --git a/src/adapters/sigv4.ts b/src/adapters/sigv4.ts
+deleted file mode 100644
+index 136e418..0000000
+--- a/src/adapters/sigv4.ts
++++ /dev/null
+@@ -1,44 +0,0 @@
+-const enc = new TextEncoder();
+-const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+-const uriEncode = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+-
+-async function hmac(key: ArrayBuffer | Uint8Array, data: string): Promise<ArrayBuffer> {
+-  const k = await globalThis.crypto.subtle.importKey("raw", key as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+-  return globalThis.crypto.subtle.sign("HMAC", k, enc.encode(data) as BufferSource);
+-}
+-
+-export interface PresignInput {
+-  method: "GET" | "PUT";
+-  host: string;
+-  /** The URL path, such as `/bucket/some/key`. Each segment is encoded here. */
+-  path: string;
+-  region: string;
+-  accessKeyId: string;
+-  secretAccessKey: string;
+-  expiresInSeconds: number;
+-  /** More query parameters to sign, such as `response-content-disposition`. */
+-  extraQuery?: Record<string, string>;
+-  at: Date;
+-}
+-
+-/** An AWS Signature V4 query-string signed URL for an S3 compatible service. */
+-export async function presignUrl(input: PresignInput): Promise<string> {
+-  const stamp = input.at.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+-  const day = stamp.slice(0, 8);
+-  const scope = `${day}/${input.region}/s3/aws4_request`;
+-  const path = input.path.split("/").map(uriEncode).join("/");
+-  const params: [string, string][] = [
+-    ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
+-    ["X-Amz-Credential", `${input.accessKeyId}/${scope}`],
+-    ["X-Amz-Date", stamp],
+-    ["X-Amz-Expires", String(input.expiresInSeconds)],
+-    ["X-Amz-SignedHeaders", "host"],
+-  ];
+-  for (const [k, v] of Object.entries(input.extraQuery ?? {})) params.push([k, v]);
+-  const query = params.map(([k, v]) => [uriEncode(k), uriEncode(v)] as const).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => `${k}=${v}`).join("&");
+-  const canonical = [input.method, path, query, `host:${input.host}`, "", "host", "UNSIGNED-PAYLOAD"].join("\n");
+-  const toSign = ["AWS4-HMAC-SHA256", stamp, scope, hex(await globalThis.crypto.subtle.digest("SHA-256", enc.encode(canonical) as BufferSource))].join("\n");
+-  let key = await hmac(enc.encode(`AWS4${input.secretAccessKey}`), day);
+-  for (const part of [input.region, "s3", "aws4_request"]) key = await hmac(key, part);
+-  return `https://${input.host}${path}?${query}&X-Amz-Signature=${hex(await hmac(key, toSign))}`;
+-}
+diff --git a/src/download.test.ts b/src/download.test.ts
+index 6bf8865..25113ec 100644
+--- a/src/download.test.ts
++++ b/src/download.test.ts
+@@ -1,9 +1,8 @@
+ // Failure modes first. Each case names a way a signed URL can serve bytes the owner never meant to share.
+ import { describe, expect, it } from "vitest";
+-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+-import { createR2Blobs, type R2BucketLike } from "./adapters/r2.js";
++import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
+ import { createDrive, safeMime, type Ctx } from "./drive.js";
+-import type { Blobs } from "./ports.js";
++import type { Blobs } from "agentic-identity";
+ import { upload } from "./upload.js";
+ 
+ const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };
+@@ -39,51 +38,20 @@ describe("signed URL lifetime", () => {
+   });
+ });
+ 
+-describe("signed URL response headers", () => {
+-  const mimeOf = async (claimed: string) => {
+-    const { drive, calls } = spyDrive();
+-    const node = await upload(drive, me, "/f", one("<script>alert(1)</script>"), { mime: claimed });
+-    await drive.downloadUrl(me, "/f");
+-    return { node, call: calls[0]! };
+-  };
+-  it("always asks for an attachment with the stored type", async () => {
+-    const { node, call } = await mimeOf("text/csv");
+-    expect(call.responseContentDisposition).toBe("attachment");
+-    expect(call.responseContentType).toBe(node.mime);
+-    expect(node.mime).toBe("text/csv");
+-  });
++describe("stored types", () => {
+   it.each(["text/html", "TEXT/HTML", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/javascript", "text/javascript"])(
+     "stores a claimed %s as an opaque download",
+     async (claimed) => {
+-      const { node, call } = await mimeOf(claimed);
++      const { drive } = spyDrive();
++      const node = await upload(drive, me, "/f", one("<script>alert(1)</script>"), { mime: claimed });
+       expect(node.mime).toBe("application/octet-stream");
+-      expect(call.responseContentType).toBe("application/octet-stream");
+     },
+   );
++  it("keeps a safe claimed type", async () => {
++    const { drive } = spyDrive();
++    expect((await upload(drive, me, "/f", one("a,b"), { mime: "text/csv" })).mime).toBe("text/csv");
++  });
+   it.each(["text/plain\r\nx-evil: 1", "no-slash", "", "a/b c", `text/${"x".repeat(200)}`])("replaces the malformed type %j", (claimed) => {
+     expect(safeMime(claimed)).toBe("application/octet-stream");
+   });
+-  it("sends an unsafe stored type as octet-stream even when a node holds it", async () => {
+-    const store = createMemoryStore();
+-    const inner = createMemoryBlobs();
+-    const calls: Parameters<Blobs["signedUrl"]>[1][] = [];
+-    const drive = createDrive({ store, blobs: { ...inner, signedUrl: async (k, o) => { calls.push(o); return inner.signedUrl(k, o); } } });
+-    const node = await drive.putFile(me, "/f", new Uint8Array([1]));
+-    await store.put("drive_nodes", node.id, { ...node, mime: "text/html" });
+-    await drive.downloadUrl(me, "/f");
+-    expect(calls[0]!.responseContentType).toBe("application/octet-stream");
+-  });
+-});
+-
+-describe("R2 signed URL", () => {
+-  const bucket = {} as R2BucketLike;
+-  const signing = { accountId: "acct", bucketName: "drive", accessKeyId: "AK", secretAccessKey: "SK", jurisdiction: "eu" as const };
+-  it("signs the disposition and type into the query", async () => {
+-    const blobs = createR2Blobs({ bucket, signing });
+-    const url = new URL(await blobs.signedUrl("u1/a", { method: "GET", expiresInSeconds: 60, responseContentDisposition: "attachment", responseContentType: "text/csv" }));
+-    expect(url.searchParams.get("response-content-disposition")).toBe("attachment");
+-    expect(url.searchParams.get("response-content-type")).toBe("text/csv");
+-    const bare = new URL(await blobs.signedUrl("u1/a", { method: "GET", expiresInSeconds: 60 }));
+-    expect(url.searchParams.get("X-Amz-Signature")).not.toBe(bare.searchParams.get("X-Amz-Signature"));
+-  });
+ });
+diff --git a/src/drive.test.ts b/src/drive.test.ts
+index 7c2e44c..3aad84f 100644
+--- a/src/drive.test.ts
++++ b/src/drive.test.ts
+@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { beforeEach, describe, expect, it } from "vitest";
+ import { createFileBlobs, createFileStore } from "./adapters/fs.js";
+-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
++import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
+ import { createDrive, DriveError, type Ctx, type Drive } from "./drive.js";
+-import type { Blobs, Store } from "./ports.js";
++import type { Blobs, Store } from "agentic-identity";
+ 
+ const bytes = (text: string) => new TextEncoder().encode(text);
+ const human: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };
+diff --git a/src/drive.ts b/src/drive.ts
+index cb7499e..e488ea6 100644
+--- a/src/drive.ts
++++ b/src/drive.ts
+@@ -1,15 +1,13 @@
+-import { StoreConflictError, type Blobs, type Scalar, type Store, type StoreOps } from "./ports.js";
++import type { Blobs, Doc, Store, StoreOps } from "agentic-identity";
+ 
+ export const ROOT_ID = "root";
+ const NODES = "drive_nodes";
++/** One claim doc per live name. Its id is a hash of the owner, the folder, and the name. */
++const NAMES = "drive_names";
+ 
+ export const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"] as const;
+ export type ActorKind = (typeof ACTOR_KINDS)[number];
+ 
+-/** Rules a database must enforce itself. Two live items never share a name in one folder. */
+-export const DRIVE_UNIQUE_INDEXES: { name: string; collection: string; fields: string[]; where: Record<string, Scalar> }[] = [
+-  { name: "drive_live_names", collection: NODES, fields: ["owner", "parentId", "nameKey"], where: { trashed: false } },
+-];
+ export type Actor = { id: string; kind: ActorKind };
+ /** `owner` is the drive's owner. `actor` is who acts for them. */
+ export type Ctx = { owner: string; actor: Actor };
+@@ -122,6 +120,26 @@ function splitPath(path: string) {
+   return parts.map(parseName);
+ }
+ 
++type Claim = { nodeId: string; owner: string; parentId: string };
++type Write = { collection: string; id: string; doc: Doc | null };
++
++/** The writes of one transaction. Every read comes first, then `apply` writes them all. */
++function batch() {
++  const writes: Write[] = [];
++  /** Folders made in this batch. They have no children yet, so nobody needs to read them. */
++  const fresh = new Set<string>();
++  return {
++    fresh,
++    put: (collection: string, id: string, doc: Doc) => void writes.push({ collection, id, doc }),
++    remove: (collection: string, id: string) => void writes.push({ collection, id, doc: null }),
++    async apply(ops: StoreOps) {
++      for (const w of writes) await (w.doc ? ops.put(w.collection, w.id, w.doc) : ops.delete(w.collection, w.id));
++    },
++  };
++}
++
++const claimId = (owner: string, parentId: string, key: string) => sha256Hex(new TextEncoder().encode(`${owner}\0${parentId}\0${key}`));
++
+ export function createDrive(deps: DriveDeps) {
+   const { store, blobs } = deps;
+   const now = deps.now ?? Date.now;
+@@ -153,8 +171,17 @@ export function createDrive(deps: DriveDeps) {
+       cursor = page.nextCursor;
+     }
+   }
+-  const liveChild = async (ops: StoreOps, ctx: Ctx, parentId: string, key: string) =>
+-    (await children(ops, ctx.owner, parentId, { nameKey: key })).find((n) => !n.trashed) ?? null;
++  /**
++   * Who holds a name in a folder. `taken` is true for any claim doc, even one that names no live item:
++   * a claim that cannot be explained still blocks the name. `node` is set only for a live item.
++   */
++  async function claimed(ops: StoreOps, owner: string, parentId: string, key: string) {
++    const claim = await ops.get<Claim>(NAMES, await claimId(owner, parentId, key));
++    const found = claim ? await ops.get<Node>(NODES, claim.nodeId) : null;
++    const node = found && !found.trashed && found.parentId === parentId && found.nameKey === key ? found : null;
++    return { taken: claim !== null, node };
++  }
++  const liveChild = async (ops: StoreOps, ctx: Ctx, parentId: string, key: string) => (await claimed(ops, ctx.owner, parentId, key)).node;
+ 
+   /** True when the node and each ancestor are out of the trash. */
+   async function isLive(ops: StoreOps, ctx: Ctx, node: Node) {
+@@ -191,19 +218,20 @@ export function createDrive(deps: DriveDeps) {
+     const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+     for (let n = 2; ; n++) {
+       const candidate = `${base} (${n})${ext}`;
+-      if (!(await liveChild(ops, ctx, parentId, parseName(candidate).key))) return candidate;
++      if (!(await claimed(ops, ctx.owner, parentId, parseName(candidate).key)).taken) return candidate;
+     }
+   }
+ 
+-  /** Walks the parents of a path. With `create`, missing folders appear. */
+-  async function folderAt(ops: StoreOps, ctx: Ctx, segs: ReturnType<typeof splitPath>, create: boolean) {
++  /** Walks the parents of a path. With `create`, missing folders are added to the batch. */
++  async function folderAt(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, segs: ReturnType<typeof splitPath>, create: boolean) {
+     let node = rootNode(ctx);
+     for (const seg of segs) {
+       if (node.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${node.name} is not a folder`);
+-      let next = await liveChild(ops, ctx, node.id, seg.key);
++      let next = w.fresh.has(node.id) ? null : await liveChild(ops, ctx, node.id, seg.key);
+       if (!next) {
+         if (!create) throw new DriveError("NOT_FOUND", `no folder ${seg.name}`);
+-        next = (await insert(ops, ctx, node, seg.name, { kind: "folder" }, "fail")).node;
++        next = (await insert(ops, w, ctx, node, seg.name, { kind: "folder" }, "fail")).node;
++        w.fresh.add(next.id);
+       }
+       node = next;
+     }
+@@ -212,15 +240,16 @@ export function createDrive(deps: DriveDeps) {
+   }
+ 
+   type NewFields = Partial<Pick<Node, "kind" | "size" | "mime" | "hash" | "ref" | "blobKey">>;
+-  async function insert(ops: StoreOps, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict) {
++  async function insert(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict) {
+     let { name, key } = parseName(rawName);
+-    await need(ctx, "write", parent);
+-    const clash = await liveChild(ops, ctx, parent.id, key);
+-    if (clash) {
+-      if (onConflict === "replace" && clash.kind === "file" && fields.kind === "file") {
+-        const node: Node = { ...clash, ...fields, updatedAt: now(), updatedBy: who(ctx) } as Node;
+-        await ops.put(NODES, node.id, node);
+-        return { node, replacedBlob: clash.blobKey };
++    const empty = w.fresh.has(parent.id);
++    if (!empty) await need(ctx, "write", parent);
++    const slot = empty ? null : await claimed(ops, ctx.owner, parent.id, key);
++    if (slot?.taken) {
++      if (onConflict === "replace" && slot.node?.kind === "file" && fields.kind === "file") {
++        const node: Node = { ...slot.node, ...fields, updatedAt: now(), updatedBy: who(ctx) } as Node;
++        w.put(NODES, node.id, node);
++        return { node, replacedBlob: slot.node.blobKey };
+       }
+       if (onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
+       name = await freeName(ops, ctx, parent.id, name);
+@@ -232,19 +261,20 @@ export function createDrive(deps: DriveDeps) {
+       ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null,
+       ...fields,
+     };
+-    await ops.put(NODES, node.id, node);
++    w.put(NODES, node.id, node);
++    w.put(NAMES, await claimId(ctx.owner, parent.id, key), { nodeId: node.id, owner: ctx.owner, parentId: parent.id });
+     return { node, replacedBlob: null as string | null };
+   }
+ 
+   /** Splits a path into its parent folder and the new item's name. */
+-  async function parentAndName(ops: StoreOps, ctx: Ctx, path: string, parents: boolean) {
++  async function parentAndName(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, path: string, parents: boolean) {
+     const segs = splitPath(path);
+     const last = segs.pop();
+     if (!last) throw new DriveError("IS_ROOT", "the root already exists");
+-    return { parent: await folderAt(ops, ctx, segs, parents), name: last.name };
++    return { parent: await folderAt(ops, w, ctx, segs, parents), name: last.name };
+   }
+ 
+-  async function relocate(ops: StoreOps, ctx: Ctx, node: Node, destLoc: string, opts: { name?: string; onConflict?: OnConflict }) {
++  async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string, opts: { name?: string; onConflict?: OnConflict }) {
+     if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
+     const dest = await resolve(ops, ctx, destLoc);
+     if (dest.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${dest.name} is not a folder`);
+@@ -259,14 +289,19 @@ export function createDrive(deps: DriveDeps) {
+     await need(ctx, "write", node);
+     await need(ctx, "write", dest);
+     let { name, key } = parseName(opts.name ?? node.name);
+-    const clash = await liveChild(ops, ctx, dest.id, key);
+-    if (clash && clash.id !== node.id) {
++    const slot = await claimed(ops, ctx.owner, dest.id, key);
++    if (slot.taken && slot.node?.id !== node.id) {
+       if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
+       name = await freeName(ops, ctx, dest.id, name);
+       key = parseName(name).key;
+     }
+     const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), updatedBy: who(ctx) };
+-    await ops.put(NODES, moved.id, moved);
++    w.put(NODES, moved.id, moved);
++    const [from, to] = [await claimId(ctx.owner, node.parentId, node.nameKey), await claimId(ctx.owner, dest.id, key)];
++    if (from !== to) {
++      w.remove(NAMES, from);
++      w.put(NAMES, to, { nodeId: moved.id, owner: ctx.owner, parentId: dest.id });
++    }
+     return moved;
+   }
+ 
+@@ -310,12 +345,15 @@ export function createDrive(deps: DriveDeps) {
+     return null;
+   }
+ 
+-  /** A store conflict means another writer won the name, or the data kept changing. Say so as a drive error. */
++  /**
++   * A transaction that loses a name race runs again, finds the claim, and fails with NAME_TAKEN.
++   * One that keeps losing for another reason gives up, and the store says so in its message.
++   */
+   async function transact<R>(fn: (tx: StoreOps) => Promise<R>): Promise<R> {
+     try {
+       return await store.transaction(fn);
+     } catch (error) {
+-      if (error instanceof StoreConflictError) throw new DriveError("NAME_TAKEN", "that name was taken, or the drive changed at the same time. Try again.");
++      if (error instanceof Error && /transaction kept conflicting/.test(error.message)) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
+       throw error;
+     }
+   }
+@@ -329,7 +367,11 @@ export function createDrive(deps: DriveDeps) {
+     const rows = [...nodes].reverse();
+     for (let i = 0; i < rows.length; i += 400) {
+       await store.transaction(async (tx) => {
+-        for (const node of rows.slice(i, i + 400)) await tx.delete(NODES, node.id);
++        for (const node of rows.slice(i, i + 400)) {
++          await tx.delete(NODES, node.id);
++          // A trashed item gave up its name when it was trashed, and another item may hold it now.
++          if (!node.trashed) await tx.delete(NAMES, await claimId(node.owner, node.parentId, node.nameKey));
++        }
+       });
+     }
+   }
+@@ -350,10 +392,13 @@ export function createDrive(deps: DriveDeps) {
+ 
+     async mkdir(ctx: Ctx, path: string, opts: { parents?: boolean } = {}): Promise<Node> {
+       return transact(async (tx) => {
+-        const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
+-        const existing = await liveChild(tx, ctx, parent.id, parseName(name).key);
++        const w = batch();
++        const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
++        const existing = w.fresh.has(parent.id) ? null : await liveChild(tx, ctx, parent.id, parseName(name).key);
+         if (opts.parents && existing?.kind === "folder") return existing;
+-        return (await insert(tx, ctx, parent, name, { kind: "folder" }, "fail")).node;
++        const { node } = await insert(tx, w, ctx, parent, name, { kind: "folder" }, "fail");
++        await w.apply(tx);
++        return node;
+       });
+     },
+ 
+@@ -369,8 +414,11 @@ export function createDrive(deps: DriveDeps) {
+       let committed: { node: Node; replacedBlob: string | null };
+       try {
+         committed = await transact(async (tx) => {
+-          const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
+-          return insert(tx, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
++          const w = batch();
++          const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
++          const result = await insert(tx, w, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
++          await w.apply(tx);
++          return result;
+         });
+       } catch (error) {
+         // The commit may have landed before the error. Keep the blob unless no node holds it.
+@@ -385,8 +433,11 @@ export function createDrive(deps: DriveDeps) {
+     async putRef(ctx: Ctx, path: string, ref: string, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
+       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
+       return transact(async (tx) => {
+-        const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
+-        return (await insert(tx, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "replace" ? "fail" : opts.onConflict ?? "fail")).node;
++        const w = batch();
++        const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
++        const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "replace" ? "fail" : opts.onConflict ?? "fail");
++        await w.apply(tx);
++        return node;
+       });
+     },
+ 
+@@ -399,8 +450,9 @@ export function createDrive(deps: DriveDeps) {
+     },
+ 
+     /**
+-     * A time-limited URL to fetch the bytes straight from the blob store. It always serves an
+-     * attachment with the stored type. Trashing an item does not revoke a link already issued.
++     * A time-limited URL to fetch the bytes. The Worker that verifies it serves an attachment with a
++     * safe type, because the shared Blobs port cannot sign those headers yet. Trashing an item does
++     * not revoke a link already issued.
+      */
+     async downloadUrl(ctx: Ctx, loc: string, expiresInSeconds = DEFAULT_URL_SECONDS): Promise<string> {
+       if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > MAX_URL_SECONDS) {
+@@ -408,19 +460,25 @@ export function createDrive(deps: DriveDeps) {
+       }
+       const node = await resolve(store, ctx, loc);
+       if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
+-      return blobs.signedUrl(node.blobKey, {
+-        method: "GET", expiresInSeconds, responseContentDisposition: "attachment", responseContentType: safeMime(node.mime),
+-      });
++      return blobs.signedUrl(node.blobKey, { method: "GET", expiresInSeconds });
+     },
+ 
+     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
+-      return transact(async (tx) => relocate(tx, ctx, await resolve(tx, ctx, src), destLoc, opts));
++      return transact(async (tx) => {
++        const w = batch();
++        const moved = await relocate(tx, w, ctx, await resolve(tx, ctx, src), destLoc, opts);
++        await w.apply(tx);
++        return moved;
++      });
+     },
+ 
+     async rename(ctx: Ctx, loc: string, name: string): Promise<Node> {
+       return transact(async (tx) => {
++        const w = batch();
+         const node = await resolve(tx, ctx, loc);
+-        return relocate(tx, ctx, node, node.parentId, { name });
++        const renamed = await relocate(tx, w, ctx, node, node.parentId, { name });
++        await w.apply(tx);
++        return renamed;
+       });
+     },
+ 
+@@ -430,9 +488,13 @@ export function createDrive(deps: DriveDeps) {
+         const node = await resolve(tx, ctx, loc);
+         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot trash the root");
+         await need(ctx, "delete", node);
++        const claim = await claimId(node.owner, node.parentId, node.nameKey);
++        const held = await tx.get<Claim>(NAMES, claim);
+         const t = now();
+         const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, updatedBy: who(ctx) };
+         await tx.put(NODES, node.id, trashed);
++        // Trashing frees the name. Release only a claim that this item holds.
++        if (held?.nodeId === node.id) await tx.delete(NAMES, claim);
+         return trashed;
+       });
+     },
+@@ -457,13 +519,14 @@ export function createDrive(deps: DriveDeps) {
+           throw new DriveError("PARENT_GONE", `the folder of ${node.name} is gone or in the trash`);
+         }
+         let { name, key } = parseName(node.name);
+-        if (await liveChild(tx, ctx, parent.id, key)) {
++        if ((await claimed(tx, ctx.owner, parent.id, key)).taken) {
+           if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
+           name = await freeName(tx, ctx, parent.id, name);
+           key = parseName(name).key;
+         }
+         const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), updatedBy: who(ctx) };
+         await tx.put(NODES, restored.id, restored);
++        await tx.put(NAMES, await claimId(ctx.owner, parent.id, key), { nodeId: restored.id, owner: ctx.owner, parentId: parent.id });
+         return restored;
+       });
+     },
+diff --git a/src/failures.test.ts b/src/failures.test.ts
+index 63fc574..f0a9ed3 100644
+--- a/src/failures.test.ts
++++ b/src/failures.test.ts
+@@ -1,8 +1,8 @@
+ // Failure modes first. Each case names a way the drive can lose bytes or build a cycle.
+ import { describe, expect, it } from "vitest";
+-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
++import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
+ import { createDrive, type Ctx } from "./drive.js";
+-import type { Blobs, Store } from "./ports.js";
++import type { Blobs, Store } from "agentic-identity";
+ 
+ const bytes = (text: string) => new TextEncoder().encode(text);
+ const text = (data: Uint8Array) => new TextDecoder().decode(data);
+diff --git a/src/hardening.test.ts b/src/hardening.test.ts
+index 7e621d2..3d3fec6 100644
+--- a/src/hardening.test.ts
++++ b/src/hardening.test.ts
+@@ -1,9 +1,9 @@
+ // Failure modes first. Each case names a way hard delete or export can leak, lose, or escape.
+ import { describe, expect, it } from "vitest";
+-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
++import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
+ import { createDrive, type Ctx, type Drive } from "./drive.js";
+ import { buildExport } from "./export.js";
+-import type { Blobs, Store } from "./ports.js";
++import type { Blobs, Store } from "agentic-identity";
+ import { readZip, safeEntryName, writeZip } from "./zip.js";
+ 
+ const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };
+diff --git a/src/index.ts b/src/index.ts
+index b59d58e..e7d5f9d 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,17 +1,10 @@
+ export { VERSION } from "./version.js";
+-export { ACTOR_KINDS, createDrive, DRIVE_UNIQUE_INDEXES, DriveError, parseName, ROOT_ID } from "./drive.js";
++export { ACTOR_KINDS, createDrive, DriveError, parseName, ROOT_ID } from "./drive.js";
+ export type { Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, Node, OnConflict } from "./drive.js";
+-export { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+ export { createFileBlobs, createFileStore } from "./adapters/fs.js";
+-export { StoreConflictError } from "./ports.js";
+-export type { AdapterOptions, BlobObject, Blobs, Doc, Page, Query, Region, Store, StoreOps } from "./ports.js";
+ export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";
+ export type { UploadOptions } from "./upload.js";
+-export { createR2Blobs } from "./adapters/r2.js";
+-export type { R2BucketLike, R2Options, R2Signing } from "./adapters/r2.js";
+ export { buildExport } from "./export.js";
+ export { readZip, writeZip } from "./zip.js";
+ export type { SearchQuery } from "./drive.js";
+ export { openLocal, publicNode } from "./local.js";
+-export { createD1Store } from "./adapters/d1.js";
+-export type { D1Like, D1Options, D1Statement, UniqueIndex } from "./adapters/d1.js";
+diff --git a/src/names.test.ts b/src/names.test.ts
+new file mode 100644
+index 0000000..1c858fe
+--- /dev/null
++++ b/src/names.test.ts
+@@ -0,0 +1,149 @@
++// Failure modes first. Each case names a way two writers, or a half-finished write, can break the rule
++// that a live name is unique in its folder. Each store below is its own lock, like a second Worker isolate
++// on one database.
++//  1. Two stores create the same name at once: both win.
++//  2. Two stores move different items to one name at once: both win.
++//  3. A trashed item keeps its name, so a new item cannot take it.
++//  4. Restore puts a second item under a name that a new item took.
++//  5. A claim whose item is gone still blocks the name (fail closed).
++//  6. Purge or erase leaves a claim behind, so the name is lost for good.
++//  7. Purge of a trashed item deletes the claim of the live item that took its name.
++import { Miniflare } from "miniflare";
++import { D1_SCHEMA, createD1Store, type D1Like } from "agentic-identity/cloudflare";
++import { createMemoryBlobs } from "agentic-identity";
++import { afterAll, beforeAll, describe, expect, it } from "vitest";
++import { createDrive, type Ctx } from "./drive.js";
++
++let mf: Miniflare;
++let db: D1Like;
++beforeAll(async () => {
++  mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok'); } }", d1Databases: ["DB"] });
++  db = (await mf.getD1Database("DB")) as unknown as D1Like;
++  await (db as unknown as { prepare(sql: string): { run(): Promise<unknown> } }).prepare(D1_SCHEMA).run();
++});
++afterAll(() => mf.dispose());
++
++const store = () => createD1Store(db, { region: "eu" });
++const blobs = createMemoryBlobs();
++const drive = (s = store()) => createDrive({ store: s, blobs });
++let n = 0;
++const owner = (): Ctx => ({ owner: `o${++n}`, actor: { id: `o${n}`, kind: "human" } });
++const bytes = (s: string) => new TextEncoder().encode(s);
++const claims = async (me: Ctx) => (await store().query("drive_names", { where: { owner: me.owner }, limit: 100 })).items.length;
++
++describe("name uniqueness across stores", () => {
++  it("lets only one of two stores create a live name", { timeout: 60_000 }, async () => {
++    for (let round = 0; round < 15; round++) {
++      const me = owner();
++      const [a, b] = [drive(), drive()];
++      const results = await Promise.allSettled([a.putFile(me, "/r.txt", bytes("1")), b.putFile(me, "/r.txt", bytes("2"))]);
++      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
++      expect(((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason as { code: string }).code).toBe("NAME_TAKEN");
++      expect(await a.list(me, "/")).toHaveLength(1);
++    }
++  });
++  it("lets only one of two stores move into the same name", { timeout: 60_000 }, async () => {
++    for (let round = 0; round < 10; round++) {
++      const me = owner();
++      const [a, b] = [drive(), drive()];
++      await a.putFile(me, "/x.txt", bytes("1"));
++      await a.putFile(me, "/y.txt", bytes("2"));
++      await a.mkdir(me, "/dest");
++      const results = await Promise.allSettled([a.move(me, "/x.txt", "/dest", { name: "t.txt" }), b.move(me, "/y.txt", "/dest", { name: "t.txt" })]);
++      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
++      expect(await a.list(me, "/dest")).toHaveLength(1);
++    }
++  });
++  it("never lets two stores move two folders into each other", { timeout: 60_000 }, async () => {
++    for (let round = 0; round < 10; round++) {
++      const me = owner();
++      const [a, b] = [drive(), drive()];
++      await a.mkdir(me, "/A");
++      await a.mkdir(me, "/B");
++      const results = await Promise.allSettled([a.move(me, "/A", "/B"), b.move(me, "/B", "/A")]);
++      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
++      const [top] = await a.list(me, "/");
++      expect(await a.list(me, "/")).toHaveLength(1);
++      expect(await a.list(me, top!.id)).toHaveLength(1);
++    }
++  });
++  it("reruns a transaction whose reads changed before the commit", async () => {
++    const [one, two] = [store(), store()];
++    const key = `k${++n}`;
++    await one.put("counters", key, { v: 1 });
++    const seen: number[] = [];
++    await one.transaction(async (tx) => {
++      const doc = (await tx.get<{ v: number }>("counters", key))!;
++      seen.push(doc.v);
++      if (seen.length === 1) await two.put("counters", key, { v: 10 });
++      await tx.put("counters", key, { v: doc.v + 1 });
++    });
++    expect(seen).toEqual([1, 10]);
++  });
++});
++
++describe("claims follow the life of an item", () => {
++  it("frees a name when its item is trashed, and refuses to restore into a name that was taken", async () => {
++    const me = owner();
++    const d = drive();
++    const first = await d.putFile(me, "/a.txt", bytes("1"));
++    await d.trash(me, "/a.txt");
++    expect(await claims(me)).toBe(0);
++    await d.putFile(me, "/a.txt", bytes("2"));
++    await expect(d.restore(me, first.id)).rejects.toMatchObject({ code: "NAME_TAKEN" });
++    expect((await d.restore(me, first.id, { onConflict: "rename" })).name).toBe("a (2).txt");
++    expect(await claims(me)).toBe(2);
++  });
++  it("moves the claim with a move and a rename", async () => {
++    const me = owner();
++    const d = drive();
++    await d.mkdir(me, "/dest");
++    await d.putFile(me, "/a.txt", bytes("1"));
++    await d.move(me, "/a.txt", "/dest");
++    await d.putFile(me, "/a.txt", bytes("2"));
++    await expect(d.move(me, "/a.txt", "/dest")).rejects.toMatchObject({ code: "NAME_TAKEN" });
++    await d.rename(me, "/dest/a.txt", "b.txt");
++    await d.putFile(me, "/dest/a.txt", bytes("3"));
++    expect(await claims(me)).toBe(4);
++  });
++  it("still blocks a name when its claim names no item", async () => {
++    const me = owner();
++    const s = store();
++    const d = drive(s);
++    const a = await d.putFile(me, "/ghost.txt", bytes("1"));
++    await s.delete("drive_nodes", a.id);
++    await expect(d.putFile(me, "/ghost.txt", bytes("2"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
++    await expect(d.stat(me, "/ghost.txt")).rejects.toMatchObject({ code: "NOT_FOUND" });
++  });
++  it("leaves no claim after a purge or an erase", async () => {
++    const me = owner();
++    const d = drive();
++    await d.putFile(me, "/p/q/r.txt", bytes("1"), { parents: true });
++    await d.trash(me, "/p");
++    await d.purge(me, (await d.listTrash(me))[0]!.id);
++    expect(await claims(me)).toBe(0);
++    await d.putFile(me, "/s/t.txt", bytes("2"), { parents: true });
++    await d.deleteAll(me);
++    expect(await claims(me)).toBe(0);
++    await d.putFile(me, "/s/t.txt", bytes("3"), { parents: true });
++  });
++  it("keeps the claim of a live item when a trashed item of the same name is purged", async () => {
++    const me = owner();
++    const d = drive();
++    const old = await d.putFile(me, "/same.txt", bytes("1"));
++    await d.trash(me, "/same.txt");
++    await d.putFile(me, "/same.txt", bytes("2"));
++    await d.purge(me, old.id);
++    await expect(d.putFile(me, "/same.txt", bytes("3"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
++  });
++  it("purges a nested folder with more than 100 children", { timeout: 60_000 }, async () => {
++    const me = owner();
++    const d = drive();
++    await d.mkdir(me, "/big/inbox", { parents: true });
++    for (let i = 0; i < 101; i++) await d.putRef(me, `/big/inbox/r${i}`, `docs:${i}`);
++    await d.trash(me, "/big");
++    expect(await d.purge(me, (await d.listTrash(me))[0]!.id)).toEqual({ removed: 103 });
++    expect(await d.list(me, "/")).toEqual([]);
++    expect(await claims(me)).toBe(0);
++  });
++});
+diff --git a/src/ports.ts b/src/ports.ts
+deleted file mode 100644
+index 40c31b5..0000000
+--- a/src/ports.ts
++++ /dev/null
+@@ -1,64 +0,0 @@
+-// Local copy of the Store and Blobs port shapes from agentic-identity.
+-// Swap this file for `import ... from "agentic-identity"` when that package ships.
+-export type Region = "eu" | "us" | "any";
+-
+-export interface AdapterOptions {
+-  region?: Region;
+-  now?: () => number;
+-}
+-
+-export type Scalar = string | number | boolean | null;
+-export type Json = Scalar | Json[] | { [key: string]: Json };
+-export type Doc = { [key: string]: Json };
+-
+-export interface Query {
+-  where?: Record<string, Scalar>;
+-  orderBy?: { field: string; direction?: "asc" | "desc" };
+-  limit?: number;
+-  cursor?: string;
+-}
+-
+-export interface Page<T extends Doc = Doc> {
+-  items: { id: string; data: T }[];
+-  nextCursor?: string;
+-}
+-
+-/** A write broke a uniqueness rule, or the data kept changing under a transaction. */
+-export class StoreConflictError extends Error {
+-  constructor(message = "the data changed during the transaction") {
+-    super(message);
+-    this.name = "StoreConflictError";
+-  }
+-}
+-
+-export interface StoreOps {
+-  get<T extends Doc = Doc>(collection: string, id: string): Promise<T | null>;
+-  put<T extends Doc = Doc>(collection: string, id: string, doc: T): Promise<void>;
+-  delete(collection: string, id: string): Promise<void>;
+-  query<T extends Doc = Doc>(collection: string, query?: Query): Promise<Page<T>>;
+-}
+-
+-export interface Store extends StoreOps {
+-  readonly region: Region;
+-  transaction<R>(fn: (tx: StoreOps) => Promise<R>): Promise<R>;
+-}
+-
+-export interface BlobObject {
+-  data: Uint8Array;
+-  contentType?: string;
+-}
+-
+-export interface Blobs {
+-  readonly region: Region;
+-  put(key: string, data: Uint8Array, options?: { contentType?: string }): Promise<void>;
+-  get(key: string): Promise<BlobObject | null>;
+-  delete(key: string): Promise<void>;
+-  /**
+-   * `responseContentDisposition` and `responseContentType` are signed into a GET URL, so the
+-   * holder of the link cannot change how the bytes are served.
+-   */
+-  signedUrl(
+-    key: string,
+-    options: { method: "GET" | "PUT"; expiresInSeconds: number; responseContentDisposition?: string; responseContentType?: string },
+-  ): Promise<string>;
+-}
+diff --git a/src/search.test.ts b/src/search.test.ts
+index 1c80f63..2ac21c9 100644
+--- a/src/search.test.ts
++++ b/src/search.test.ts
+@@ -1,9 +1,9 @@
+ // Ways search, export, and hard delete can leak or lose data.
+ import { describe, expect, it, beforeEach } from "vitest";
+-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
++import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
+ import { createDrive, type Ctx, type Drive } from "./drive.js";
+ import { buildExport } from "./export.js";
+-import type { Blobs } from "./ports.js";
++import type { Blobs } from "agentic-identity";
+ import { readZip } from "./zip.js";
+ 
+ const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };
+diff --git a/src/upload.test.ts b/src/upload.test.ts
+index d9c6ee2..f141b11 100644
+--- a/src/upload.test.ts
++++ b/src/upload.test.ts
+@@ -1,9 +1,9 @@
+ // Ways an upload can fail: too big, wrong type claim, broken stream, name clash.
+ import { createHash } from "node:crypto";
+ import { beforeEach, describe, expect, it, vi } from "vitest";
+-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
++import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
+ import { createDrive, type Ctx, type Drive } from "./drive.js";
+-import type { Blobs, Store } from "./ports.js";
++import type { Blobs, Store } from "agentic-identity";
+ import { sniffMime, upload } from "./upload.js";
+ 
+ const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };
+diff --git a/src/worker.e2e.test.ts b/src/worker.e2e.test.ts
+index f69fdfa..2e64457 100644
+--- a/src/worker.e2e.test.ts
++++ b/src/worker.e2e.test.ts
+@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterAll, beforeAll, describe, expect, it } from "vitest";
+-import { authenticate } from "./worker.js";
++import { authenticate, createApp } from "./worker.js";
+ import { readZip } from "./zip.js";
+ 
+ const root = join(import.meta.dirname, "..");
+@@ -17,6 +17,7 @@ const TOK_U2 = tok("u2");
+ const TOK_NO_ACTOR = tok("noactor");
+ const TOK_AGENT_NO_ACTOR = tok("agentnoactor");
+ const TOK_SHORT = "short-token";
++const URL_SECRET = "drive-url-secret-".padEnd(40, "s");
+ const tokens = {
+   [TOK_U1]: { owner: "u1", actor: "u1", kind: "human" },
+   [TOK_BOT]: { owner: "u1", actor: "bot", kind: "agent_of_human" },
+@@ -42,7 +43,7 @@ const put = (path: string, data: string | Uint8Array, token?: string | null, q =
+ 
+ beforeAll(async () => {
+   const persist = mkdtempSync(join(tmpdir(), "drive-wrangler-"));
+-  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000"], {
++  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`], {
+     cwd: root, stdio: "ignore", env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
+   });
+   for (let i = 0; i < 120; i++) {
+@@ -162,8 +163,54 @@ describe("files", () => {
+     const res = await call("PUT", "/files?path=/note.txt", { body: "hello", headers: { "content-type": "application/x-www-form-urlencoded" } });
+     expect((await json(res)).mime).toBe("text/plain");
+   });
+-  it("has no signed URLs until R2 keys are set", async () => {
+-    expect((await call("GET", "/url?path=/dup.txt")).status).toBe(501);
++  it("refuses every API call while the URL settings are missing", async () => {
++    const app = createApp();
++    const request = () => new Request("http://x/api/v1/drive/items", { headers: { authorization: `Bearer ${TOK_U1}` } });
++    const env = { DB: {}, FILES: {}, DRIVE_API_TOKENS: JSON.stringify(tokens) };
++    for (const extra of [{}, { DRIVE_PUBLIC_URL: base }, { DRIVE_URL_SECRET: URL_SECRET }, { DRIVE_PUBLIC_URL: base, DRIVE_URL_SECRET: "too-short" }, { DRIVE_PUBLIC_URL: "not a url", DRIVE_URL_SECRET: URL_SECRET }]) {
++      const res = await app.fetch(request(), { ...env, ...extra } as never);
++      expect(res.status, JSON.stringify(extra)).toBe(503);
++      expect((await json(res)).error.code).toBe("NOT_CONFIGURED");
++    }
++  });
++});
++
++describe("signed download URLs", () => {
++  const signed = async (path: string, expires = "") => (await json(await call("GET", `/url?path=${encodeURIComponent(path)}${expires}`))).url as string;
++  it("serve the bytes as an attachment with the stored type, with no bearer token", async () => {
++    await put("/sig/data.csv", "a,b\n1,2\n", TOK_U1, "&parents=true&mime=text/csv");
++    const url = await signed("/sig/data.csv");
++    expect(url.startsWith(`${base}/api/v1/drive/blob?`)).toBe(true);
++    const res = await fetch(url);
++    expect(res.status).toBe(200);
++    expect(res.headers.get("content-type")).toBe("text/csv");
++    expect(res.headers.get("content-disposition")).toBe("attachment");
++    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
++    expect(await res.text()).toBe("a,b\n1,2\n");
++  });
++  it("serve a stored page as opaque bytes, never as a page", async () => {
++    await put("/sig/page.html", "<script>alert(1)</script>", TOK_U1, "&mime=text/html");
++    const res = await fetch(await signed("/sig/page.html"));
++    expect(res.headers.get("content-type")).toBe("application/octet-stream");
++    expect(res.headers.get("content-disposition")).toBe("attachment");
++  });
++  it("refuse a changed key, a changed signature, a missing part, and another route's token", async () => {
++    const url = new URL(await signed("/sig/data.csv"));
++    const other = new URL(await signed("/sig/page.html"));
++    const swapped = new URL(url);
++    swapped.searchParams.set("key", other.searchParams.get("key")!);
++    const bad = new URL(url);
++    bad.searchParams.set("sig", "0".repeat(64));
++    const noSig = new URL(url);
++    noSig.searchParams.delete("sig");
++    for (const target of [swapped, bad, noSig]) expect((await fetch(target)).status, target.search).toBe(403);
++    expect((await fetch(`${base}/api/v1/drive/blob`)).status).toBe(403);
++  });
++  it("stop working at the expiry", async () => {
++    const url = await signed("/sig/data.csv", "&expires=1");
++    expect((await fetch(url)).status).toBe(200);
++    await new Promise((r) => setTimeout(r, 2100));
++    expect((await fetch(url)).status).toBe(403);
+   });
+ });
+ 
+diff --git a/src/worker.ts b/src/worker.ts
+index 83f9c83..0be2619 100644
+--- a/src/worker.ts
++++ b/src/worker.ts
+@@ -1,14 +1,13 @@
+ import { Hono } from "hono";
+-import { createD1Store, type D1Like } from "./adapters/d1.js";
+-import { createR2Blobs, type R2BucketLike } from "./adapters/r2.js";
+-import { ACTOR_KINDS, createDrive, DEFAULT_URL_SECONDS, DRIVE_UNIQUE_INDEXES, DriveError, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
++import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
++import { ACTOR_KINDS, createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
+ import { buildExport } from "./export.js";
+ import { publicNode } from "./local.js";
+ import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
+ 
+ export interface WorkerEnv {
+   DB: D1Like;
+-  FILES: R2BucketLike;
++  FILES: R2Like;
+   /**
+    * JSON: `{ "<token>": { "owner": "u1", "actor": "u1", "kind": "human" } }`. A token is at least 32 characters.
+    * Every grant needs an owner, an actor id, and an actor kind. A token with a missing or bad part gets 401.
+@@ -16,11 +15,10 @@ export interface WorkerEnv {
+    */
+   DRIVE_API_TOKENS?: string;
+   DRIVE_MAX_BYTES?: string;
+-  /** All four are needed for signed URLs. */
+-  R2_ACCOUNT_ID?: string;
+-  R2_BUCKET_NAME?: string;
+-  R2_ACCESS_KEY_ID?: string;
+-  R2_SECRET_ACCESS_KEY?: string;
++  /** The origin of this Worker, such as `https://drive.example.com`. Signed download URLs start with it. */
++  DRIVE_PUBLIC_URL?: string;
++  /** At least 32 bytes. Signs download URLs. Without it, every request gets 503. */
++  DRIVE_URL_SECRET?: string;
+ }
+ 
+ const MIN_TOKEN_LENGTH = 32;
+@@ -32,7 +30,7 @@ const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
+   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
+ };
+ 
+-const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 501) =>
++const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 503) =>
+   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } });
+ 
+ function sameText(a: string, b: string): boolean {
+@@ -71,17 +69,36 @@ export function authenticate(request: Request, env: WorkerEnv): Ctx | null {
+   return principalOf(found);
+ }
+ 
+-const stores = new WeakMap<object, ReturnType<typeof createD1Store>>();
++/** The database is ready once its table exists. The check runs once per binding. */
++const schemas = new WeakMap<object, Promise<unknown>>();
+ 
+-const hasSigning = (env: WorkerEnv) => Boolean(env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY);
++function settings(env: WorkerEnv): { publicUrl: string; urlSecret: string } | null {
++  let publicUrl: string;
++  try {
++    publicUrl = new URL(env.DRIVE_PUBLIC_URL ?? "").origin;
++  } catch {
++    return null;
++  }
++  const urlSecret = env.DRIVE_URL_SECRET;
++  return typeof urlSecret === "string" && new TextEncoder().encode(urlSecret).length >= 32 ? { publicUrl, urlSecret } : null;
++}
++
++/** The R2 bucket is declared as "eu": create it with `--jurisdiction eu`. */
++function blobsFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>) {
++  return createR2Blobs(env.FILES, { region: "eu", urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
++}
+ 
+-function driveFor(env: WorkerEnv): Drive {
+-  let store = stores.get(env.DB);
+-  if (!store) stores.set(env.DB, (store = createD1Store(env.DB, { unique: DRIVE_UNIQUE_INDEXES })));
+-  const signing = hasSigning(env)
+-    ? { accountId: env.R2_ACCOUNT_ID!, bucketName: env.R2_BUCKET_NAME!, accessKeyId: env.R2_ACCESS_KEY_ID!, secretAccessKey: env.R2_SECRET_ACCESS_KEY!, jurisdiction: "eu" as const }
+-    : undefined;
+-  return createDrive({ store, blobs: createR2Blobs({ bucket: env.FILES, signing }) });
++async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<Drive> {
++  let ready = schemas.get(env.DB);
++  if (!ready) {
++    ready = env.DB.prepare(D1_SCHEMA).run().catch((error: unknown) => {
++      schemas.delete(env.DB);
++      throw error;
++    });
++    schemas.set(env.DB, ready);
++  }
++  await ready;
++  return createDrive({ store: createD1Store(env.DB, { region: "eu" }), blobs: blobsFor(env, config) });
+ }
+ 
+ const number = (v: string | undefined, name: string) => {
+@@ -101,10 +118,12 @@ export function createApp(): Hono<App> {
+ 
+   const api = new Hono<App>();
+   api.use("*", async (c, next) => {
++    const config = settings(c.env);
++    if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
+     const ctx = authenticate(c.req.raw, c.env);
+     if (!ctx) return fail("UNAUTHORIZED", "send a valid bearer token", 401);
+     c.set("ctx", ctx);
+-    c.set("drive", driveFor(c.env));
++    c.set("drive", await driveFor(c.env, config));
+     await next();
+   });
+   const q = (c: { req: { query(k: string): string | undefined } }, k: string) => c.req.query(k);
+@@ -158,7 +177,6 @@ export function createApp(): Hono<App> {
+     });
+   });
+   api.get("/url", async (c) => {
+-    if (!hasSigning(c.env)) return fail("SIGNING_NOT_CONFIGURED", "signed URLs need R2 signing keys", 501);
+     const expires = number(q(c, "expires"), "expires") ?? DEFAULT_URL_SECONDS;
+     return c.json({ url: await c.var.drive.downloadUrl(c.var.ctx, need(q(c, "path"), "path"), expires), expiresInSeconds: expires });
+   });
+@@ -189,6 +207,23 @@ export function createApp(): Hono<App> {
+     return c.json(await c.var.drive.deleteAll(c.var.ctx));
+   });
+ 
++  // The signature is the credential here, so this route sits outside the bearer-token check.
++  app.get("/api/v1/drive/blob", async (c) => {
++    const config = settings(c.env);
++    if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
++    const signed = await verifySignedBlobUrl(c.req.url, { secret: config.urlSecret });
++    if (!signed || signed.method !== "GET") return fail("INVALID_LINK", "this link is not valid, or it has expired", 403);
++    const blob = await blobsFor(c.env, config).get(signed.key);
++    if (!blob) return fail("NOT_FOUND", "the bytes are gone", 404);
++    return new Response(blob.data as BodyInit, {
++      headers: {
++        "content-type": safeMime(blob.contentType),
++        "content-disposition": "attachment",
++        "x-content-type-options": "nosniff",
++        "cache-control": "private, no-store",
++      },
++    });
++  });
+   app.route("/api/v1/drive", api);
+   app.notFound(() => fail("NOT_FOUND", "no such route", 404));
+   app.onError((error) => {
+diff --git a/wrangler.jsonc b/wrangler.jsonc
+index 6a1c572..323e3d4 100644
+--- a/wrangler.jsonc
++++ b/wrangler.jsonc
+@@ -2,6 +2,7 @@
+   // Local and deploy config. Create the bucket with `wrangler r2 bucket create agentic-drive-files --jurisdiction eu`.
+   // Create the database with `wrangler d1 create agentic-drive --location weur`, then put its id below.
+   // Set tokens with `wrangler secret put DRIVE_API_TOKENS`. Without it, every request gets 401.
++  // Set `DRIVE_URL_SECRET` (32 bytes or more) and `DRIVE_PUBLIC_URL`. Without them, every request gets 503.
+   "name": "agentic-drive",
+   "main": "src/worker.ts",
+   "compatibility_date": "2026-01-01",

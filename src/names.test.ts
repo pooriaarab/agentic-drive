@@ -10,7 +10,7 @@
 //  7. Purge of a trashed item deletes the claim of the live item that took its name.
 import { Miniflare } from "miniflare";
 import { D1_SCHEMA, createD1Store, type D1Like } from "agentic-identity/cloudflare";
-import { createMemoryBlobs } from "agentic-identity";
+import { createMemoryBlobs, createMemoryStore, type Blobs, type Doc, type Query, type Store } from "agentic-identity";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDrive, type Ctx } from "./drive.js";
 
@@ -145,5 +145,80 @@ describe("claims follow the life of an item", () => {
     expect(await d.purge(me, (await d.listTrash(me))[0]!.id)).toEqual({ removed: 103 });
     expect(await d.list(me, "/")).toEqual([]);
     expect(await claims(me)).toBe(0);
+  });
+});
+
+// A purge works from a snapshot. Each case is a way a change that lands during the purge goes wrong.
+//  8. A restore lands after the purge read the tree: the item is deleted, and its claim stays and blocks the name.
+//  9. A restore lands between the blob delete and the row delete: the same.
+//  10. A move or rename deletes a claim that another item holds.
+describe("a purge that races with other changes", () => {
+  const setup = () => {
+    const inner = createMemoryStore();
+    const hooks: { afterQuery?: () => Promise<void>; onBlobDelete?: () => Promise<void> } = {};
+    const store: Store = {
+      ...inner,
+      query: async <T extends Doc>(c: string, q?: Query) => {
+        const page = await inner.query<T>(c, q);
+        const run = hooks.afterQuery;
+        hooks.afterQuery = undefined;
+        await run?.();
+        return page;
+      },
+    };
+    const plain = createMemoryBlobs();
+    const racing: Blobs = {
+      ...plain,
+      delete: async (key) => {
+        const run = hooks.onBlobDelete;
+        hooks.onBlobDelete = undefined;
+        await run?.();
+        await plain.delete(key);
+      },
+    };
+    return { store, inner, hooks, d: createDrive({ store, blobs: racing }) };
+  };
+  const names = async (store: Store) => (await store.query("drive_names", { limit: 100 })).items;
+
+  const dangling = async (store: Store) => {
+    const out: string[] = [];
+    for (const { data } of await names(store)) if (!(await store.get("drive_nodes", data.nodeId as string))) out.push(data.nodeId as string);
+    return out;
+  };
+
+  it("keeps a folder and its files when the folder was restored after the purge read the tree", async () => {
+    const me = owner();
+    const { store, hooks, d } = setup();
+    await d.putFile(me, "/box/a.txt", bytes("1"), { parents: true });
+    await d.trash(me, "/box");
+    const box = (await d.listTrash(me))[0]!;
+    hooks.afterQuery = async () => void (await d.restore(me, box.id));
+    await d.purge(me, box.id);
+    expect((await d.list(me, "/box")).map((n) => n.name)).toEqual(["a.txt"]);
+    expect(await dangling(store)).toEqual([]);
+    expect(await names(store)).toHaveLength(2);
+  });
+  it("leaves no claim that names a missing item when a restore lands during the byte delete", async () => {
+    const me = owner();
+    const { store, hooks, d } = setup();
+    await d.putFile(me, "/box/a.txt", bytes("1"), { parents: true });
+    await d.trash(me, "/box");
+    const box = (await d.listTrash(me))[0]!;
+    hooks.onBlobDelete = async () => void (await d.restore(me, box.id));
+    await d.purge(me, box.id);
+    expect((await d.stat(me, box.id)).name).toBe("box");
+    expect(await dangling(store)).toEqual([]);
+    await expect(d.putFile(me, "/box", bytes("2"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
+  });
+  it("does not delete the claim of another item when a move leaves a name", async () => {
+    const me = owner();
+    const { store, d } = setup();
+    await d.mkdir(me, "/dest");
+    const a = await d.putFile(me, "/a.txt", bytes("1"));
+    const [claim] = await names(store);
+    const taker = { ...claim!.data, nodeId: "someone-else" };
+    await store.put("drive_names", claim!.id, taker);
+    await d.move(me, a.id, "/dest");
+    expect((await store.get("drive_names", claim!.id))?.nodeId).toBe("someone-else");
   });
 });

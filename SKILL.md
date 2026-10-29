@@ -10,7 +10,8 @@ Store, sort, and share files and folders.
 ## Use the SDK
 
 ```js
-import { createDrive, createMemoryStore, createMemoryBlobs } from "agentic-drive";
+import { createDrive } from "agentic-drive";
+import { createMemoryStore, createMemoryBlobs } from "agentic-identity";
 
 const drive = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });
 const me = { owner: "u1", actor: { id: "u1", kind: "human" } };
