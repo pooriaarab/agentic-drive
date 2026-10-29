@@ -207,7 +207,7 @@ describe("the client on the real Worker", () => {
 describe("the client without a server", () => {
   it("imports nothing from Node, so a browser or a Worker can run it", () => {
     const source = readFileSync(join(import.meta.dirname, "client.ts"), "utf8");
-    expect(source.match(/^import .* from "(.*)";$/gm)).toEqual(['import type { ErrorCode, Node, SearchQuery } from "./drive.js";']);
+    expect(source.match(/^import .* from "(.*)";$/gm)).toEqual(['import type { ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";']);
     expect(source.match(/\bimport\s*\(|\brequire\s*\(|\bimport\s+[^t(]|from\s+"node:|process\./g)).toBeNull();
   });
   const counting = (status: number) => {

@@ -1,5 +1,5 @@
 // A typed client for the HTTP API of the Worker. It uses only `fetch`, so it runs in browsers, Workers, and Node 22.
-import type { ErrorCode, Node, SearchQuery } from "./drive.js";
+import type { ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";
 
 export type Role = "viewer" | "commenter" | "editor" | "owner";
 export type OnConflict = "fail" | "rename" | "replace";
@@ -60,10 +60,11 @@ const record = (v: unknown): v is Record<string, unknown> => typeof v === "objec
 const text = (v: unknown) => typeof v === "string";
 const orNull = (test: (v: unknown) => boolean) => (v: unknown) => v === null || test(v);
 const num = (v: unknown) => typeof v === "number";
-const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"];
+// The client imports no value, so it cannot use PRINCIPAL_KINDS. This record fails to compile when a kind is added or removed.
+const ACTOR_KINDS: Record<ActorKind, true> = { human: true, agent_of_human: true, agent_of_agent: true, agent: true, user_token: true };
 const ROLES = ["viewer", "commenter", "editor", "owner"];
 const oneOf = (list: string[]) => (v: unknown) => typeof v === "string" && list.includes(v);
-const actor = (v: unknown) => record(v) && text(v.id) && oneOf(ACTOR_KINDS)(v.kind);
+const actor = (v: unknown) => record(v) && text(v.id) && oneOf(Object.keys(ACTOR_KINDS))(v.kind);
 const isItem: Check<Item> = (v): v is Item =>
   record(v) && text(v.id) && text(v.owner) && text(v.parentId) && text(v.name) && (v.kind === "folder" || v.kind === "file" || v.kind === "ref") && num(v.size) && orNull(text)(v.mime) && orNull(text)(v.hash) &&
   orNull(text)(v.ref) && num(v.createdAt) && num(v.updatedAt) && actor(v.createdBy) && actor(v.updatedBy) && text(v.createdById) && text(v.updatedById) && typeof v.trashed === "boolean" && orNull(num)(v.trashedAt);
