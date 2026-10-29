@@ -6,7 +6,7 @@ const pkg = JSON.parse(
 ) as { version: string };
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/cli.ts", "src/mcp.ts", "src/worker.ts"],
+  entry: ["src/index.ts", "src/client.ts", "src/cli.ts", "src/mcp.ts", "src/worker.ts"],
   format: ["esm"],
   dts: true,
   clean: true,

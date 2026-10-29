@@ -74,6 +74,31 @@ Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every request gets 503.
 Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--location weur`.
 The Worker declares region `eu` and refuses a D1 query that a non-EU region served. `DRIVE_REGION=unknown` turns this off for local runs.
 
+## SDK
+
+`agentic-drive/client` is a typed client for the HTTP API. It uses only `fetch`, so it runs in browsers, Workers, and Node 22.
+
+```ts
+import { createClient, DriveApiError } from "agentic-drive/client";
+
+const drive = createClient({ baseUrl: "https://drive.example.com", token: process.env.DRIVE_TOKEN });
+await drive.mkdir("/docs", { parents: true });
+const file = await drive.upload("/docs/a.txt", "hello", { mime: "text/plain" });
+const { data } = await drive.download(file.id);
+try {
+  await drive.stat("/missing");
+} catch (error) {
+  if (error instanceof DriveApiError) console.log(error.code, error.status); // NOT_FOUND 404
+}
+```
+
+- One method for each route: `list`, `stat`, `mkdir`, `upload`, `download`, `url`, `move`, `trash`, `listTrash`, `restore`, `purge`, `search`, `export`, `deleteAccount`, `home`, `registerDocument`, `forgetDocument`, `shares`, `share`, `unshare`, `invite`, `acceptInvite`, `createLink`, `revokeLink`, `openShared`, `listShared`, and `readShared`.
+- Each method has typed input and output. The last argument takes `{ signal }` to stop the call with an `AbortSignal`.
+- A failed call throws `DriveApiError`. It has the `code` of the API and the HTTP `status`. A call that gets no answer has the code `NETWORK_ERROR` and status 0. An abort stays the abort error of `fetch`.
+- The client never sends a write again. `retries` (default 0) sends a read (GET) again after a network error or a 502, 503, or 504.
+- `fetch` is an option, for tests and for runtimes with their own. `openShared`, `listShared`, and `readShared` work without a token, with a `linkToken`.
+- Share with a subject: `share("/pub", { kind: "human", id: "u2" }, "viewer")`.
+
 ## Features
 
 - Folders, files, and typed references to documents in other apps (`docs:<id>`).

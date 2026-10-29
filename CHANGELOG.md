@@ -8,6 +8,10 @@
 - **`shareWith` and `unshare` take a subject.** The subject is `{ kind: "human" | "agent", id }`, not a bare id. A subject with no kind, or with another kind, fails with `INVALID_SHARE`. The HTTP routes take `subjectKind` next to `subjectId`: in the body of `POST /shares`, and in the query of `DELETE /shares`. `GET /shares` lists `subjectKind` on each grant.
 - **Erase and export read grants by kind.** A person's erase and export touch the grants of that person and of their agents with their own identity. A grant of an agent with the same id as a person stays.
 
+### Added
+
+- **`agentic-drive/client`.** A typed client for the HTTP API: `createClient({ baseUrl, token, fetch?, retries? })`. It has one method for each route, a typed `DriveApiError` with the API `code` and the HTTP `status`, and `AbortSignal` support. It sends a write once. It uses only `fetch`.
+
 ### Changed
 
 - A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item.
