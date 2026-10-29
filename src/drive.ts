@@ -1,4 +1,4 @@
-import { EraseRefusedError, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { EraseRefusedError, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -58,12 +58,12 @@ export type ErrorCode =
   | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY" | "CROSS_DRIVE" | "INVALID_SHARE" | "TOO_MANY_ITEMS";
 
 /** The HTTP status of each error code. A host that serves the drive reuses it. */
-export const ERROR_STATUS: Readonly<Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500>> = {
+export const ERROR_STATUS: Readonly<Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500>> = Object.freeze({
   CROSS_DRIVE: 409, INVALID_SHARE: 400, TOO_MANY_ITEMS: 409,
   TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409, BLOB_EXISTS: 500,
   NOT_FOUND: 404, NAME_TAKEN: 409, INVALID_NAME: 400, INVALID_PATH: 400, INVALID_REF: 400, NOT_A_FOLDER: 400, NOT_A_FILE: 400,
   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
-};
+});
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -936,7 +936,7 @@ export function createDrive(deps: DriveDeps) {
       return out.sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
     },
 
-    /** Items trashed on their own, newest first, each with the path it had before it went to the trash. */
+    /** Everything that is in the trash, newest first, each with the path it had before. It reads the whole drive, so a big drive costs more than `listTrash`. */
     async listTrashWithPaths(ctx: Ctx): Promise<{ node: Node; path: string }[]> {
       const all = await ownerNodes(ctx);
       const byId = new Map(all.map((n) => [n.id, n]));
@@ -1091,7 +1091,7 @@ export function createDrive(deps: DriveDeps) {
       return api.putRef(ctx, dir.endsWith("/") ? `${dir}${input.name}` : `${dir}/${input.name}`, input.ref, { parents: true, onConflict: "rename" });
     },
 
-    /** The live references to `ref` that the caller can read, with their paths, sorted by path. */
+    /** The live references to `ref` in the caller's own drive that the caller can read, with their paths, sorted by path. */
     async findByRef(ctx: Ctx, ref: string): Promise<{ node: Node; path: string }[]> {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
       const all = await ownerNodes(ctx);
@@ -1108,19 +1108,23 @@ export function createDrive(deps: DriveDeps) {
     /**
      * Puts a reference at `path` and gives `claim.subject` the role `claim.role` on it, as one step. If the
      * grant fails (the caller is not an owner of the item, or the subject is invalid), the reference is
-     * deleted again and the error is thrown, so no half-made item stays. Needs `sharing`.
+     * deleted again and the error is thrown, so no half-made item stays. Needs `sharing`. Folders that
+     * `parents` made stay, and an invalid role or subject is refused before anything is written.
      */
     async claimRef(ctx: Ctx, path: string, ref: string, claim: { subject: Subject; role: Role }, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       if (!sharing) throw new DriveError("INVALID_SHARE", "sharing is not set up");
       const subject = parseSubject(claim.subject);
+      if (!(ROLES as readonly unknown[]).includes(claim.role)) throw new DriveError("INVALID_SHARE", `a role is one of ${ROLES.join(", ")}`);
       const node = await api.putRef(ctx, path, ref, opts);
       try {
         await viaSharing(ctx, (s, p) => s.grant(p, node.id, subject, claim.role));
       } catch (error) {
-        try {
-          await removeNodes([node], undefined, ctx.principal);
-        } catch {
-          // The item is marked as being erased, so nobody sees it. A purge finishes it.
+        // The item was made a moment ago. If it changed since (a rename or a move), the first try skips it, so read it again.
+        let removed = 0;
+        for (let i = 0; i < 3 && removed === 0; i++) {
+          const current = await rawNode(store, node.id, node.owner, ctx.actor, true);
+          if (current === null) break;
+          removed = await removeNodes([current], undefined, ctx.principal).catch(() => 0);
         }
         throw error;
       }

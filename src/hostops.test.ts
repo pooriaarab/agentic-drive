@@ -91,6 +91,15 @@ describe("claimRef", () => {
     expect(await drive.list(A, "/team")).toEqual([]);
     expect(await drive.findByRef(A, "docs:1")).toEqual([]);
   });
+  it("removes the reference but keeps the folders that parents made", async () => {
+    await drive.mkdir(A, "/team");
+    const team = await drive.stat(A, "/team");
+    await drive.shareWith(A, "/team", { kind: "human", id: "bob" }, "editor");
+    await fails(drive.claimRef(B, `${team.id}/new/plan`, "docs:1", { subject: { kind: "human", id: "carol" }, role: "viewer" }, { parents: true }), "FORBIDDEN");
+    expect(await drive.findByRef(A, "docs:1")).toEqual([]);
+    expect((await drive.list(A, "/team")).map((n) => n.name)).toEqual(["new"]);
+    expect(await drive.list(A, "/team/new")).toEqual([]);
+  });
   it("checks the input before it writes anything", async () => {
     await fails(drive.claimRef(A, "/plan", "bad", { subject: { kind: "human", id: "bob" }, role: "viewer" }), "INVALID_REF");
     await fails(drive.claimRef(A, "/plan", "docs:1", { subject: { kind: "robot" as never, id: "bob" }, role: "viewer" }), "INVALID_SHARE");
@@ -116,6 +125,7 @@ describe("exports for hosts", () => {
     expect(pkg.ERROR_STATUS).toBe(ERROR_STATUS);
     expect(worker.ERROR_STATUS).toBe(ERROR_STATUS);
     expect(Object.keys(ERROR_STATUS).sort()).toEqual([...all].sort());
+    expect(Object.isFrozen(ERROR_STATUS)).toBe(true);
     expect(ERROR_STATUS).toMatchObject({ NOT_FOUND: 404, FORBIDDEN: 403, NAME_TAKEN: 409, TOO_LARGE: 413, INVALID_REF: 400 });
   });
 });

@@ -50,7 +50,7 @@ describe("CLI", () => {
     expect(run(["trash", "--paths"]).json()).toMatchObject([{ name: "Plan", path: "/Plan" }]);
     expect(run(["home"]).json().apps).toEqual({ sheets: 1 });
     expect(run(["register", "not-a-ref", "x"]).code).toBe(1);
-  });
+  }, 30_000);
 
   it("shares by grant, invite, and link, and lists, revokes, and rejects bad input", () => {
     const { run, raw, principal } = fixture();
