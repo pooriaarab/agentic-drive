@@ -323,7 +323,7 @@ bun run dev        # or: npm run dev
 curl http://localhost:8787/health
 ```
 
-The script builds the UI, then runs `wrangler dev --local` with `DRIVE_PUBLIC_URL=http://127.0.0.1:8787` and `DRIVE_REGION=unknown`. `/health` needs no token and no secret. Every `/api/v1/drive` call answers 503 until you set a secret: copy `.dev.vars.example` to `.dev.vars` and set `DRIVE_URL_SECRET` to a random value of 32 bytes or more (`openssl rand -hex 32`). `.dev.vars` stays out of git. A fresh local database has no tokens: see `e2e/serve.mjs` to seed one.
+The script builds the UI, then runs `wrangler dev --local` with `DRIVE_PUBLIC_URL=http://127.0.0.1:8787` and `DRIVE_REGION=unknown`. `/health` needs no token and no secret. Every `/api/v1/drive` call answers 503 until you set a secret: copy `.dev.vars.example` to `.dev.vars` and set `DRIVE_URL_SECRET` to a random value of 32 bytes or more (`openssl rand -hex 32`). `.dev.vars` stays out of git. If you change the port, also pass `--var DRIVE_PUBLIC_URL:http://127.0.0.1:<port>`, or the signed links point at port 8787. A fresh local database has no tokens: see `e2e/serve.mjs` to seed one.
 
 The scripts call `npm` and `node` (Node 22 or newer), so install both, even if you use bun. They need a POSIX shell.
 

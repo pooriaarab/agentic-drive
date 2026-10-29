@@ -18,6 +18,10 @@ const server = spawn("npm", ["run", "dev", "--", "--ip", "127.0.0.1", "--port", 
   stdio: ["ignore", "inherit", "inherit"],
   env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
 });
+server.on("error", (error) => {
+  console.error(`dev smoke failed: ${error.message}`);
+  process.exit(1);
+});
 let exited = false;
 server.on("exit", () => { exited = true; });
 
@@ -31,7 +35,7 @@ const stop = async () => {
   signalGroup("SIGKILL");
 };
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => { stop().finally(() => process.exit(130)); });
+  process.on(signal, () => { stop().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)); });
 }
 
 let status = 0;
