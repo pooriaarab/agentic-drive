@@ -151,6 +151,16 @@ describe("exportAccount", () => {
     expect(JSON.parse(JSON.stringify(out))).toStrictEqual(out);
   });
 
+  it("marks a file whose bytes are gone, so a lost file is not read as an empty one", async () => {
+    const blobs = createMemoryBlobs();
+    const own = createDrive({ store, blobs, sharing: createSharing(store) });
+    await own.putFile(A, "/gone.txt", bytes("lost"));
+    const [entry] = await own.exportData(A);
+    await blobs.delete(entry!.node.blobKey!);
+    const out = await driveAccount.exportAccount(ALICE, { drive: own, ctx: A });
+    expect(out.items.find((i) => i.name === "gone.txt")).toMatchObject({ data: null, missing: true });
+  });
+
   it("lists only the shares on drive items, as erase sweeps them", async () => {
     const team = await seed();
     const sharing = createSharing(store);
@@ -186,6 +196,7 @@ describe("exportAccount", () => {
     expect((await drive.exportData(A)).map((e) => e.path)).toEqual(["/secret.txt"]);
     // With a root, the role check runs too.
     await expect(drive.exportData(weak)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(drive.exportPerson(weak)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("gives an agent subject no person data", async () => {
