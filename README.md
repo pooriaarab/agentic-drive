@@ -133,6 +133,35 @@ try {
 - A browser page needs the Worker on its own origin for now: the Worker sends no CORS headers.
 - Share with a subject: `share("/pub", { kind: "human", id: "u2" }, "viewer")`.
 
+### Other exports
+
+The root export, `agentic-drive`, also exports these names. The package typings give the type of each one.
+
+- `VERSION` is the package version. `ROOT_ID` is the id of a drive's root folder, `"root"`. `ACTOR_KINDS` lists
+  the five principal kinds that `agentic-identity` names.
+- `DEFAULT_MAX_BYTES` is the upload cap: 25 MiB (26,214,400 bytes). `sniffMime(head)` returns the type that
+  the first bytes name: PNG, JPEG, GIF, PDF, ZIP, gzip, or WebP. It returns `null` for any other bytes.
+- `parseName(raw)` returns `{ name, key }`. It normalizes the name to NFC, and `key` is the lowercase name.
+  It throws a `DriveError` with the code `INVALID_NAME` for a blank name, `.`, `..`, a lone surrogate, a `/`,
+  a control character (U+0000 to U+001F, or U+007F), or a name over 255 bytes in UTF-8. `parseSubject(input)` returns `{ kind, id }` for a valid subject, and throws
+  `INVALID_SHARE` for any other input. `subjectKindOf(kind)` returns `human` or `agent`, and throws
+  `INVALID_SHARE` for any other kind.
+- A `DriveError` has a `code` from `ErrorCode`, such as `NOT_FOUND` or `NAME_TAKEN`.
+- `readZip(bytes)` reads a zip that `writeZip` made, with stored (uncompressed) entries only. It returns a `Map`
+  from each entry name to its bytes. It throws for a compressed entry. `writeZip(entries, at)` writes a zip with
+  one `{ name, data }` entry for each file, and `at` sets the time in milliseconds. It throws for an unsafe
+  name, such as one with `..` or a leading `/`.
+- The local drive has the functions behind the CLI. `openLocal(dir)` returns `{ drive, store }` for a folder.
+  `addPrincipal(store, id, { parent?, scopes? })` makes a principal. `issueKey(store, principalId, label?)`
+  returns the key. Keep it: the store keeps no plain copy. `resolveToken(store, token)` returns the caller, or throws `AuthError`
+  with the code `UNAUTHENTICATED`. `revokeKey(store, token)` stops one key. `revokePrincipal(store, id)` stops a
+  principal, its keys, and every agent below it.
+  `publicNode(node, path?)` returns an item without its storage keys and its `purging` flag, and adds `machineMade`. When `path` is
+  given, it also adds `path`.
+
+  The local functions trust their caller. Local data is the trust boundary: anyone who can write the folder
+  can act as any principal in it.
+
 ## UI
 
 The Worker serves a small web UI. It uses the [agentic-design](https://www.npmjs.com/package/agentic-design) package and the typed client of this package (`agentic-drive/client`). It has a folder tree, breadcrumbs, a file list and grid, upload by button or by drag and drop, new folder, rename, move, trash and restore, and a share dialog with roles and a link. An item that an agent made shows a "Created by agent" label while a person is its last editor. "Edited by" names the last editor, a person or an agent. It works with the keyboard. An automated axe check for WCAG 2.2 AA passes on each view in the light and dark themes.
@@ -217,7 +246,7 @@ The UI does not make snapshot links yet. The address of a share link shows once,
 - `registerDocument` makes one item per document in a drive. Two calls at the same moment can make two.
 
 - Drive reads the `store_docs` table in D1 and `store.jsonl` in the CLI folder. It does not read older layouts. There is no import and no claim backfill.
-- Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.
+- Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB (`DEFAULT_MAX_BYTES`).
 - Local file blobs return a `file:` URL that nothing serves or checks.
 - Drive writes each new blob only when its key is free (`ifNoneMatch`). A write that finds the key taken fails with `BLOB_EXISTS`.
 - Only `upload()` enforces the size cap. A caller of `putFile()` must check size first.
