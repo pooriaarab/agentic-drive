@@ -2,7 +2,7 @@
 
 ## 0.9.1
 
-No change to the SDK, CLI, MCP or HTTP shape. One breaking change for hosts that pin `agentic-design` to `^0.4.0`, see the first item under Breaking.
+No change to the SDK, CLI, MCP or HTTP shape. Two breaking changes for hosts that pin `agentic-design` or `agentic-identity`, see Breaking.
 
 ### Breaking
 
@@ -12,7 +12,7 @@ No change to the SDK, CLI, MCP or HTTP shape. One breaking change for hosts that
 ### Changed
 
 - `agentic-identity` is `^0.9.0`. It was `^0.6.0`. The lockfile follows. The 0.7.0 to 0.9.0 additions are not used by the drive package.
-- `agentic-design` is `^0.5.0`. It was `^0.4.0`. The design release changes values only: colors, borders, shadows, the large radius, and the disabled and danger button styles. The token names and the `agd-` prefix do not change. The web UI and the embedded UI take the new look. The screenshots in `docs/ui` show the 0.4 look until they are refreshed.
+- `agentic-design` is `^0.5.0`. It was `^0.4.0`. The design release changes values only: colors, borders, shadows, the large radius, control height, heading sizes, dialog and menu padding, and the disabled and danger button styles. The token names and the `agd-` prefix do not change. The web UI and the embedded UI take the new look. The look of a page that the host renders follows the host's own `agentic-design` pin. The screenshots in `docs/ui` show the 0.4 look until they are refreshed.
 - The README embed section names `agentic-design@^0.5.0`.
 
 ## 0.9.0
