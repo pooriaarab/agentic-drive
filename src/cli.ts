@@ -26,6 +26,7 @@ Usage: agentic-drive <command> [flags]
 Commands:
   ls [path]                    List a folder.
   stat <path|id>               Show one item.
+  activity <path|id> [--limit] List the changes to an item: who (person or AI agent), what, when.
   mkdir <path> [-p]            Make a folder.
   upload <local> <remote>      Upload a file. End remote with "/" to keep the name.
   download <remote> [out]      Save a file. Use "-" for stdout.
@@ -69,7 +70,7 @@ Flags:
 Exit codes: 0 done, 1 error, 2 bad usage, 3 no principal or an invalid key.
 `;
 
-const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "find-ref", "claim-ref", "forget", "shares", "share", "unshare", "invite", "accept-invite", "link-create", "link-revoke", "delete-all", "mcp", "principal", "key"];
+const COMMANDS = ["ls", "stat", "activity", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "find-ref", "claim-ref", "forget", "shares", "share", "unshare", "invite", "accept-invite", "link-create", "link-revoke", "delete-all", "mcp", "principal", "key"];
 
 export class UsageError extends Error {}
 
@@ -143,6 +144,10 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       case "stat":
         need(1, "stat <path|id>");
         print(publicNode(await drive.stat(ctx, args[0]!)));
+        break;
+      case "activity":
+        need(1, "activity <path|id> [--limit n]");
+        print(await drive.listActivity(ctx, args[0]!, { limit: num(values.limit, "limit") }));
         break;
       case "mkdir":
         need(1, "mkdir <path> [-p]");

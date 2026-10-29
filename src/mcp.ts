@@ -47,6 +47,8 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string, store
 
   tool("drive_ls", "List a folder.", { path: loc.optional() }, async ({ path }) => (await drive.list(ctx, path ?? "/")).map((n) => publicNode(n)), { readOnlyHint: true });
   tool("drive_stat", "Show one item with its metadata and who made it.", { path: loc }, async ({ path }) => publicNode(await drive.stat(ctx, path)), { readOnlyHint: true });
+  tool("drive_activity", "List the changes to an item, newest first: who made each one (kind human or agent), what, and when.", { path: loc, limit: z.number().int().positive().optional() }, async ({ path, limit }) =>
+    drive.listActivity(ctx, path, { limit }), { readOnlyHint: true });
   tool("drive_mkdir", "Make a folder.", { path: z.string(), parents: z.boolean().optional() }, async ({ path, parents }) => publicNode(await drive.mkdir(ctx, path, { parents })));
   tool(
     "drive_upload",

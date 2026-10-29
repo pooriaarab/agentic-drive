@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- **An activity log for each item.** Drive now keeps an append-only entry for each create, rename, move, content update, share, unshare, delete (to the trash), and restore of an item. Each entry has the actor (`{ id, kind }`, where `kind` is `human` or `agent`), the time, and what changed (names and ids, never content). Every principal that is not a person counts as an agent, so a later change by an agent to an item that a person made carries the label. The entry is written in the same transaction as the change. The log uses the existing `Store` port, in the `drive_activity` collection. Items made before 0.9.0 have no entries until they change.
+- `listActivity(ctx, idOrPath, { limit })` in the SDK, `GET /api/v1/drive/items/:id/activity` in the HTTP API (and `listActivity` in the client), `activity <path|id> [--limit n]` in the CLI, and `drive_activity` in MCP. Anyone who may read an item may read its log. A purge deletes the log of the item.
+- The UI has an Activity page for an item (the Activity entry of the item menu). An entry made by an agent shows an "AI agent" label.
+- `buildExport` adds `activity` to the manifest: the entries made by the person and their agents, in any drive. `erasePerson` changes the actor id of those entries in other drives to `erased` and keeps the kind.
+
 ## 0.8.0
 
 Read the breaking changes before you upgrade.

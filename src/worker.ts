@@ -157,6 +157,8 @@ export function createApp<Env extends object = WorkerEnv>(options: AppOptions<En
   const opt = (v: unknown, name: string) => (v === undefined ? undefined : str(v, name));
 
   api.get("/items", async (c) => c.json((await c.var.drive.list(c.var.ctx, q(c, "path") ?? "/")).map((n) => publicNode(n))));
+  // The id may be percent-encoded, so a path works too.
+  api.get("/items/:id/activity", async (c) => c.json(await c.var.drive.listActivity(c.var.ctx, c.req.param("id"), { limit: number(q(c, "limit"), "limit") })));
   api.get("/stat", async (c) => c.json(publicNode(await c.var.drive.stat(c.var.ctx, need(q(c, "path"), "path")))));
   api.post("/folders", async (c) => {
     const b = await body(c);

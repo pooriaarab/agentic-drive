@@ -92,7 +92,7 @@ curl -H "authorization: Bearer <token>" "$URL/api/v1/drive/items?path=/"
 
 Routes: `GET /items`, `GET /stat`, `POST /folders`, `PUT /files`, `GET /files`, `GET /url`,
 `POST /move`, `POST /trash`, `GET /trash`, `POST /restore`, `POST /purge`, `GET /search`,
-`GET /export`, `DELETE /account?confirm=yes`, `GET /home`, `POST /documents`, `DELETE /documents?ref=`, `GET /trash/paths`, `GET /refs?ref=`, `POST /refs`.
+`GET /items/:id/activity`, `GET /export`, `DELETE /account?confirm=yes`, `GET /home`, `POST /documents`, `DELETE /documents?ref=`, `GET /trash/paths`, `GET /refs?ref=`, `POST /refs`.
 Sign in with a bearer token from agentic-identity. The token is a credential in the `credentials` collection of
 the same D1 database, and it names a principal in `principals`. The Worker resolves the whole delegation chain on
 every request. A missing, expired, or revoked credential, or a revoked or expired principal (or one above it), gets 401.
@@ -125,7 +125,7 @@ try {
 }
 ```
 
-- One method for each bearer route and each shared route: `list`, `stat`, `mkdir`, `upload`, `download`, `url`, `move`, `trash`, `listTrash`, `restore`, `purge`, `search`, `export`, `deleteAccount`, `home`, `registerDocument`, `forgetDocument`, `findByRef`, `listTrashWithPaths`, `claimRef`, `shares`, `share`, `unshare`, `invite`, `acceptInvite`, `createLink`, `revokeLink`, `openShared`, `listShared`, and `readShared`.
+- One method for each bearer route and each shared route: `list`, `stat`, `mkdir`, `upload`, `download`, `url`, `move`, `trash`, `listTrash`, `listActivity`, `restore`, `purge`, `search`, `export`, `deleteAccount`, `home`, `registerDocument`, `forgetDocument`, `findByRef`, `listTrashWithPaths`, `claimRef`, `shares`, `share`, `unshare`, `invite`, `acceptInvite`, `createLink`, `revokeLink`, `openShared`, `listShared`, and `readShared`.
 - Each method has typed input and output. The client checks the shape of every answer, and `download` checks the bytes against their hash (it needs WebCrypto). `readShared` does not: the Worker sends no hash there. An answer that fails a check throws `BAD_RESPONSE`. `url` gives a signed link that you fetch yourself. The last argument takes `{ signal }` to stop the call with an `AbortSignal`.
 - A failed call throws `DriveApiError`. It has the `code` of the API and the HTTP `status`. A call that gets no answer has the code `NETWORK_ERROR` and status 0. An abort stays the abort error of `fetch`. A code that the client does not know gives `BAD_RESPONSE`.
 - The client never sends a write again. `retries` (default 0) sends a read (GET) again after a network error or a 502, 503, or 504, with a short wait. A redirect is an error (`BAD_RESPONSE`, with the status of the redirect, or 0 in a browser): set `baseUrl` to the final URL.
@@ -270,6 +270,7 @@ export default { fetch: app.fetch };
 - Paths that start with `/`. Anything else is an item id.
 - Move, rename, trash, restore, and purge. Trashing a folder hides its whole tree.
 - Names compare without regard to case or Unicode form. A clash fails, or renames, or replaces.
+- Each item has an activity log: create, rename, move, content update, share, unshare, delete, and restore, each with the actor (`{ id, kind: "human" | "agent" }`) and the time. Read it with `listActivity`, `GET /items/:id/activity`, `agentic-drive activity <path|id>`, or the MCP tool `drive_activity`. The UI shows it with an "AI agent" label on each change that an agent made. The export holds the activity of the person and their agents. Purge deletes the log of the item. Items from before the log have no entries until they change.
 - Each item records its size, type, owner, and who made and last changed it, with the actor kind.
 - Storage sits behind the `Store` and `Blobs` ports of `agentic-identity`. Tests use its memory adapters. The CLI uses a local file adapter that passes the same contract suites. The Worker uses its D1 and R2 adapters.
 - Roles: viewer, commenter, editor, owner. A role on a folder reaches everything under it, and follows an item that moves. Identity decides every request through `can()`, which also writes the audit entry. A caller who cannot read an item gets `NOT_FOUND`. A caller who can read it but not change it gets `FORBIDDEN`. Editors write and trash. An item takes the roles of its new folder, so moving an item into a folder where the caller is owner needs owner on the item. Only owners share, purge, and read the share list.

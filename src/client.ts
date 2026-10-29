@@ -1,8 +1,8 @@
 // A typed client for the HTTP API of the Worker. It uses only `fetch`, so it runs in browsers, Workers, and Node 22.
-import type { ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";
+import type { ActivityAction, ActivityEntry, ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";
 
 /** `ErrorCode` is the codes of the drive. A failed call carries a `ClientErrorCode`, which adds the codes of the Worker and the network. */
-export type { ErrorCode, Node };
+export type { ActivityAction, ActivityEntry, ErrorCode, Node };
 
 export type Role = "viewer" | "commenter" | "editor" | "owner";
 export type OnConflict = "fail" | "rename" | "replace";
@@ -72,6 +72,10 @@ const actor = (v: unknown) => record(v) && text(v.id) && oneOf(Object.keys(ACTOR
 const isItem: Check<Item> = (v): v is Item =>
   record(v) && text(v.id) && text(v.owner) && text(v.parentId) && text(v.name) && (v.kind === "folder" || v.kind === "file" || v.kind === "ref") && num(v.size) && orNull(text)(v.mime) && orNull(text)(v.hash) &&
   orNull(text)(v.ref) && num(v.createdAt) && num(v.updatedAt) && actor(v.createdBy) && actor(v.updatedBy) && text(v.createdById) && text(v.updatedById) && typeof v.trashed === "boolean" && orNull(num)(v.trashedAt) && typeof v.machineMade === "boolean";
+const ACTIVITY_ACTIONS = ["create", "rename", "move", "update", "share", "unshare", "delete", "restore"];
+const isActivity: Check<ActivityEntry> = (v): v is ActivityEntry =>
+  record(v) && text(v.id) && text(v.itemId) && oneOf(ACTIVITY_ACTIONS)(v.action) && record(v.actor) && text(v.actor.id) && oneOf(["human", "agent"])(v.actor.kind) &&
+  oneOf(Object.keys(ACTOR_KINDS))(v.principalKind) && num(v.at) && (v.detail === undefined || record(v.detail));
 const isPathItem: Check<PathItem> = (v): v is PathItem => isItem(v) && typeof (v as { path?: unknown }).path === "string";
 const listOf = <T>(check: Check<T>): Check<T[]> => (v): v is T[] => Array.isArray(v) && v.every(check);
 const shape = <T>(test: (v: Record<string, unknown>) => boolean): Check<T> => (v): v is T => record(v) && test(v);
@@ -231,6 +235,9 @@ export function createClient(options: ClientOptions) {
   return {
     /** The live items of a folder. */
     list: (path = "/", o: CallOptions = {}) => json("GET", `/items${query({ path })}`, o, listOf(isItem)),
+    /** The changes made to an item, newest first. `idOrPath` is an id or a path. */
+    listActivity: (idOrPath: string, opts: { limit?: number } & CallOptions = {}) =>
+      json("GET", `/items/${encodeURIComponent(idOrPath)}/activity${query({ limit: opts.limit })}`, opts, listOf(isActivity)),
     stat: (path: string, o: CallOptions = {}) => json("GET", `/stat${query({ path })}`, o, isItem),
     mkdir: (path: string, opts: { parents?: boolean } = {}, o: CallOptions = {}) => json("POST", "/folders", { json: { path, parents: opts.parents === true }, ...o }, isItem),
     /** Writes a file. A `ReadableStream` body streams in runtimes that allow it. */

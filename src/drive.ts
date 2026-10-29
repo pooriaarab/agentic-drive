@@ -1,14 +1,32 @@
-import { EraseRefusedError, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
 /** One claim doc per live name. Its id is a hash of the owner, the folder, and the name. */
 const NAMES = "drive_names";
+/** The append-only activity log: one doc per change to an item. */
+const ACTIVITY = "drive_activity";
 
 export const ACTOR_KINDS = PRINCIPAL_KINDS;
 export type ActorKind = PrincipalKind;
 
 export type Actor = { id: string; kind: ActorKind };
+
+export type ActivityAction = "create" | "rename" | "move" | "update" | "share" | "unshare" | "delete" | "restore";
+/** One change to an item. `actor.kind` is `agent` for every principal that is not a person, so a reader can label machine-made changes. */
+export type ActivityEntry = {
+  id: string;
+  itemId: string;
+  action: ActivityAction;
+  actor: { id: string; kind: "human" | "agent" };
+  /** The kind of principal behind the change, such as `agent_of_human`. */
+  principalKind: ActorKind;
+  at: number;
+  /** What changed, such as `{ from, to }` for a rename. Never file content. */
+  detail?: Record<string, string | number | null>;
+};
+/** The stored form: the log doc, with the fields a store filters on at the top level. */
+type ActivityDoc = ActivityEntry & { owner: string; actorId: string };
 /**
  * `owner` is the drive's owner, and the root of the caller's chain. `actor` is who acts for them.
  * `principal` is the resolved caller. Drive needs it to check roles when `sharing` is set.
@@ -218,6 +236,8 @@ export function parseSubject(input: unknown): Subject {
 }
 const SHARE_ERROR = /^(invalid|give an|expiresAt|expiresInMs|resource exists|the last owner)/;
 
+const publicActivity = ({ owner: _owner, actorId: _actorId, ...entry }: ActivityDoc): ActivityEntry => entry;
+
 export function createDrive(deps: DriveDeps) {
   const { store, blobs } = deps;
   // The default clock never repeats a value, so two writes in one millisecond still sort in write order.
@@ -268,6 +288,20 @@ export function createDrive(deps: DriveDeps) {
   const stamp = (ctx: Ctx, node: Node) => ({ createdById: node.createdById ?? node.createdBy.id, updatedBy: who(ctx), updatedById: ctx.actor.id });
   /** What a node is, to sharing: the item itself, and its folder (or the drive root) above it. */
   const resourceDoc = async (node: Node, parent: Node): Promise<Resource> => ({ id: node.id, type: "drive", parentId: await resourceOf(parent) });
+
+  /** The log doc for one change. It is written in the same transaction as the change, so a change never lacks its entry. */
+  const activityDoc = (ctx: Ctx, node: Node, action: ActivityAction, detail?: ActivityEntry["detail"]): ActivityDoc => ({
+    id: newId(), itemId: node.id, owner: node.owner, action, actor: { id: ctx.actor.id, kind: isMachineMade(ctx.actor.kind) ? "agent" : "human" },
+    actorId: ctx.actor.id, principalKind: ctx.actor.kind, at: now(), ...(detail ? { detail } : {}),
+  });
+  const logDoc = (ctx: Ctx, node: Node, action: ActivityAction, detail?: ActivityEntry["detail"]): [string, Doc] => {
+    const doc = activityDoc(ctx, node, action, detail);
+    return [doc.id, doc as unknown as Doc];
+  };
+  const logIn = (w: ReturnType<typeof batch>, ctx: Ctx, node: Node, action: ActivityAction, detail?: ActivityEntry["detail"]) => {
+    const doc = activityDoc(ctx, node, action, detail);
+    w.put(ACTIVITY, doc.id, doc as unknown as Doc);
+  };
 
   /** A node with no permission check. Use it to walk ancestors, which a person with a shared folder may not read. */
   async function rawNode(ops: StoreOps, id: string, owner: string, by: Actor, withMarked = false): Promise<Node | null> {
@@ -453,6 +487,7 @@ export function createDrive(deps: DriveDeps) {
       if (onConflict === "replace" && slot.node?.kind === "file" && fields.kind === "file") {
         const node: Node = { ...slot.node, ...fields, updatedAt: now(), ...stamp(ctx, slot.node) } as Node;
         w.put(NODES, node.id, node);
+        logIn(w, ctx, node, "update", { size: node.size, hash: node.hash });
         return { node, replacedBlob: slot.node.blobKey };
       }
       if (onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
@@ -472,6 +507,7 @@ export function createDrive(deps: DriveDeps) {
       ...fields,
     };
     w.put(NODES, node.id, node);
+    logIn(w, ctx, node, "create", { name: node.name, kind: node.kind });
     w.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: node.id, owner: parent.owner, parentId: parent.id });
     if (sharing) w.put("resources", node.id, await resourceDoc(node, parent));
     return { node, replacedBlob: null as string | null };
@@ -514,6 +550,8 @@ export function createDrive(deps: DriveDeps) {
     }
     const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), ...stamp(ctx, node) };
     w.put(NODES, moved.id, moved);
+    if (moved.name !== node.name) logIn(w, ctx, moved, "rename", { from: node.name, to: moved.name });
+    if (moved.parentId !== node.parentId) logIn(w, ctx, moved, "move", { from: node.parentId, to: moved.parentId });
     const [from, to] = [await claimId(node.owner, node.parentId, node.nameKey), await claimId(dest.owner, dest.id, key)];
     if (from !== to) {
       // Release only a claim that this item holds.
@@ -771,6 +809,8 @@ export function createDrive(deps: DriveDeps) {
           if (claim && owns) await tx.delete(NAMES, claim);
         }
       });
+      // The log of a purged item goes with it. A failed call runs again, and a leftover entry is found by its item id.
+      for (const node of chunk) for (const entry of await allWhere(store, ACTIVITY, { itemId: node.id })) await store.delete(ACTIVITY, entry.id);
     }
     return marked.length;
   }
@@ -792,6 +832,19 @@ export function createDrive(deps: DriveDeps) {
   const api = {
     async stat(ctx: Ctx, loc: string): Promise<Node> {
       return resolve(store, ctx, loc);
+    },
+
+    /**
+     * The changes made to one item, newest first: who (a person or an agent), what, and when. Anyone who may read
+     * the item may read its log. A trashed item can be named by id, so its log can be read before a restore.
+     */
+    async listActivity(ctx: Ctx, loc: string, opts: { limit?: number } = {}): Promise<ActivityEntry[]> {
+      const limit = opts.limit ?? 100;
+      if (!Number.isInteger(limit) || limit < 1) throw new RangeError("limit must be an integer of 1 or more");
+      const node = loc.includes("/") ? await resolve(store, ctx, loc) : await fetch(store, ctx, loc);
+      if (!node) throw new DriveError("NOT_FOUND", `no item ${loc}`);
+      const entries = (await allWhere(store, ACTIVITY, { itemId: node.id })).map((e) => publicActivity(e.data as unknown as ActivityDoc));
+      return entries.sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1)).slice(0, limit);
     },
 
     /** Live children, sorted by name. */
@@ -921,6 +974,8 @@ export function createDrive(deps: DriveDeps) {
         const t = now();
         const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, ...stamp(ctx, node) };
         await tx.put(NODES, node.id, trashed);
+        const entry = activityDoc(ctx, node, "delete");
+        await tx.put(ACTIVITY, entry.id, entry as unknown as Doc);
         // Trashing frees the name. Release only a claim that this item holds.
         if (held?.nodeId === node.id) await tx.delete(NAMES, claim);
         return trashed;
@@ -984,6 +1039,8 @@ export function createDrive(deps: DriveDeps) {
         }
         const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), ...stamp(ctx, node) };
         await tx.put(NODES, restored.id, restored);
+        const entry = activityDoc(ctx, restored, "restore");
+        await tx.put(ACTIVITY, entry.id, entry as unknown as Doc);
         await tx.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: restored.id, owner: parent.owner, parentId: parent.id });
         if (sharing && parent.id !== node.parentId) await tx.put("resources", restored.id, await resourceDoc(restored, parent));
         return restored;
@@ -1179,7 +1236,7 @@ export function createDrive(deps: DriveDeps) {
     async exportPerson(ctx: Ctx) {
       await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
       const subject = subjectOf(ctx);
-      if (!isInPerson(ctx)) return { subject, partial: true, authored: [], agents: [], shares: { held: [], invitesCreated: [] }, audit: [] };
+      if (!isInPerson(ctx)) return { subject, partial: true, authored: [], agents: [], shares: { held: [], invitesCreated: [] }, audit: [], activity: [] };
       const { actors, ownedAgents } = await actorsOf(store, subject.id);
       const authored = (await madeBy(store, actors))
         .filter((n) => n.owner !== subject.id && n.purging !== true)
@@ -1208,7 +1265,11 @@ export function createDrive(deps: DriveDeps) {
         }
       }
       audit.sort((x, y) => (x.at as number) - (y.at as number));
-      return { subject, partial: false, authored, agents, shares: { held, invitesCreated }, audit };
+      // The activity of the person and their agents, in any drive, with the actor kind. Rename entries keep the names that the person chose. No file content.
+      const activity: ActivityEntry[] = [];
+      for (const actor of actors) for (const e of await allWhere(store, ACTIVITY, { actorId: actor })) activity.push(publicActivity(e.data as unknown as ActivityDoc));
+      activity.sort((x, y) => x.at - y.at || (x.id < y.id ? -1 : 1));
+      return { subject, partial: false, authored, agents, shares: { held, invitesCreated }, audit, activity };
     },
 
     /**
@@ -1258,18 +1319,33 @@ export function createDrive(deps: DriveDeps) {
           }
         });
       }
+      // The log of what they did in other drives stays with those items. Their id becomes "erased", and the kind stays.
+      for (const actor of actors) {
+        const mine = await allWhere(store, ACTIVITY, { actorId: actor });
+        for (let i = 0; i < mine.length; i += CHUNK) {
+          await transact(async (tx) => {
+            for (const e of mine.slice(i, i + CHUNK)) await tx.put(ACTIVITY, e.id, { ...e.data, actorId: ERASED, actor: { ...(e.data.actor as object), id: ERASED } });
+          });
+        }
+      }
       return { removed, grants, invites, anonymized: todo.length };
     },
 
     /** Gives a person or an agent a role on an item and everything under it. Only an owner may. */
     async shareWith(ctx: Ctx, loc: string, subject: Subject, role: Role): Promise<void> {
-      const resource = await resourceOf(await resolve(store, ctx, loc));
-      await viaSharing(ctx, (s, p) => s.grant(p, resource, parseSubject(subject), role));
+      const node = await resolve(store, ctx, loc);
+      const resource = await resourceOf(node);
+      const target = parseSubject(subject);
+      await viaSharing(ctx, (s, p) => s.grant(p, resource, target, role));
+      await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind: target.kind, subjectId: target.id, role }));
     },
 
     async unshare(ctx: Ctx, loc: string, subject: Subject): Promise<void> {
-      const resource = await resourceOf(await resolve(store, ctx, loc));
-      await viaSharing(ctx, (s, p) => s.revokeGrant(p, resource, parseSubject(subject)));
+      const node = await resolve(store, ctx, loc);
+      const resource = await resourceOf(node);
+      const target = parseSubject(subject);
+      await viaSharing(ctx, (s, p) => s.revokeGrant(p, resource, target));
+      await store.put(ACTIVITY, ...logDoc(ctx, node, "unshare", { subjectKind: target.kind, subjectId: target.id }));
     },
 
     /** Invite by `email` (a person) or `handle` (an agent). The invite lasts `expiresInMs`, if given. It sends no message. */

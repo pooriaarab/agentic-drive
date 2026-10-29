@@ -3,6 +3,7 @@ import {
   AppShell, Button, Dialog, DialogClose, EmptyState, FileIcon, FileList, FileRow, FolderIcon, IconButton, Input, Menu, MoreIcon, PlusIcon, PresenceChip,
   Select, ShareDialog, SidebarNav, Toolbar, ToolbarButton, useTheme, useToast, type LinkExpiry, type PresenceEntry, type ShareLink, type ShareRole,
 } from "agentic-design/react";
+import { ActivityList } from "./Activity.js";
 import { createClient, DriveApiError, type DriveClient, type Item, type Role } from "../src/client.js";
 
 const TOKEN_KEY = "agentic-drive-token";
@@ -44,6 +45,7 @@ const goHash = (loc: string) => {
 export function Routes({ hash, client, origin, go }: { hash: string; client: DriveClient; origin: string; go: (loc: string) => void }) {
   const parts = routeParts(hash);
   if (parts[0] === "trash") return <TrashView key="trash" client={client} />;
+  if (parts[0] === "a" && parts[1]) return <ActivityView key={hash} client={client} id={parts[1]} />;
   if (parts[0] === "f" && parts[1]) return <Download key={hash} client={client} id={parts[1]} origin={origin} go={go} />;
   return <Browser key={hash} client={client} loc={parts[0] || "/"} origin={origin} />;
 }
@@ -188,6 +190,7 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
               <Menu align="end" trigger={<IconButton label={`Actions for ${item.name}`} icon={<MoreIcon />} variant="ghost" />} items={[
                 { label: "Rename", onSelect: () => setDlg({ kind: "rename", item }) },
                 { label: "Move", onSelect: () => setDlg({ kind: "move", item }) },
+                { label: "Activity", onSelect: () => goHash(`a/${item.id}`) },
                 { label: "Share", onSelect: () => setDlg({ kind: "share", item }) },
                 "separator",
                 { label: "Move to trash", danger: true, onSelect: () => void act(() => client.trash(item.id), `Moved ${item.name} to trash`) },
@@ -368,6 +371,24 @@ function TrashView({ client }: { client: DriveClient }) {
             {[...state.data].sort(byName).map((i) => <FileRow key={i.id} name={i.name} href="#/trash" kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.trashedAt ?? i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<><MachineLabel item={i} /><Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button></>} />)}
           </FileList>
         ))}
+      </Status>
+    </section>
+  );
+}
+
+/** The changes made to one item. Each entry from an agent has an "AI agent" label. */
+function ActivityView({ client, id }: { client: DriveClient; id: string }) {
+  const [state, retry] = useLoad(async () => ({ item: await client.stat(id), entries: await client.listActivity(id) }));
+  return (
+    <section aria-label="Item activity">
+      <Status state={state} retry={retry}>
+        {state.status === "ok" && (
+          <>
+            <h1>Activity: {state.data.item.name}</h1>
+            <p><a href={state.data.item.kind === "folder" ? `#/${id}` : `#/${state.data.item.parentId === "root" ? "" : state.data.item.parentId}`}>Back to files</a></p>
+            <ActivityList entries={state.data.entries} />
+          </>
+        )}
       </Status>
     </section>
   );

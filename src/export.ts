@@ -4,7 +4,7 @@ import { writeZip, type ZipEntry } from "./zip.js";
 /**
  * Everything one owner has, as a zip. `manifest.json` names the person (id and kind), lists each item with its
  * metadata and, for a file, the entry that holds its bytes, and adds what the person made in other drives, the
- * shares they hold, the invites they sent, and the audit entries of what they did. Only the person in person gets
+ * shares they hold, the invites they sent, and the audit entries of what they did, and the activity log entries of their changes to items, each with the actor kind (`human` or `agent`). Only the person in person gets
  * those parts, and the items of their agents that have an identity of their own (no bytes). For an agent the
  * manifest says `partial: true`. Trashed items are included and flagged.
  * Entries are named by item id, never by file name. A file whose bytes are gone is marked `missing`.
@@ -21,6 +21,6 @@ export async function buildExport(drive: Drive, ctx: Ctx, now: () => number = Da
     };
   });
   const person = await drive.exportPerson(ctx);
-  const manifest = { format: "agentic-drive-export", version: 2, exportedAt: now(), owner: ctx.owner, subject: person.subject, partial: person.partial, items, authored: person.authored, agents: person.agents, shares: person.shares, audit: person.audit };
+  const manifest = { format: "agentic-drive-export", version: 2, exportedAt: now(), owner: ctx.owner, subject: person.subject, partial: person.partial, items, authored: person.authored, agents: person.agents, shares: person.shares, audit: person.audit, activity: person.activity };
   return writeZip([{ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) }, ...entries], now());
 }

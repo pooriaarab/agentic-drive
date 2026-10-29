@@ -27,3 +27,7 @@
 .drive-card__actions { display: flex; align-items: center; justify-content: space-between; gap: var(--agd-space-2); }
 .drive-root { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: var(--agd-space-6); color: var(--agd-color-text); }
 @media (max-width: 48rem) { .drive-root { grid-template-columns: 1fr; } }
+
+.drive-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--agd-space-2); }
+.drive-activity li { padding: var(--agd-space-2) 0; border-bottom: 1px solid var(--agd-color-border); }
+.drive-activity time { color: var(--agd-color-text-muted); font-size: 0.875em; }
