@@ -115,7 +115,7 @@ describe("two Workers on one database and one bucket", () => {
       const path = `/race/r${round}.txt`;
       const [x, y] = await Promise.all([put("a", path, "1", TOKENS.alice), put("b", path, "2", TOKENS.alice)]);
       expect([x.status, y.status].sort(), `round ${round}`).toEqual([201, 409]);
-      checks.push({ check: `name race round ${round}`, worker: "a+b", status: 201 });
+      checks.push({ check: `name race round ${round}, first creator`, worker: "a+b", status: Math.min(x.status, y.status) }, { check: `name race round ${round}, second creator`, worker: "a+b", status: Math.max(x.status, y.status) });
     }
     expect((await json(await call("a", "GET", "/items?path=/race"))).length).toBe(8);
   });
@@ -205,7 +205,7 @@ describe("two Workers on one database and one bucket", () => {
 
 describe("the report", () => {
   it("holds a check for every step, with no secret in it", () => {
-    expect(checks.length).toBeGreaterThan(30);
+    expect(checks.length).toBeGreaterThan(50);
     const text = JSON.stringify(checks);
     for (const secret of [...Object.values(TOKENS), URL_SECRET, linkToken, "http://"]) expect(text).not.toContain(secret);
     expect(bundle.length).toBeGreaterThan(1000);

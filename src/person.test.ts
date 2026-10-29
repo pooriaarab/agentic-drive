@@ -8,10 +8,18 @@
 //  6. An erase deletes what others own, or drops the machine label from what a machine made.
 //  7. An agent, or another person, erases or exports a person.
 //  8. An erase that stops halfway cannot run again.
+//  9. An agent exports a person, with their audit trail from every app.
+//  10. An export shows the person the current name, owner, or editor of an item they can no longer read.
+//  11. An erase leaves the person's id on items from before the author ids, or on half-updated items.
+//  12. An erase deletes grants and invites of other apps, and leaves a resource with no owner.
+//  13. An agent of the person leaves its id behind on items, in invites, or in the audit export.
+//  14. A document is registered twice because its first item is hidden, or because the folder is in another drive,
+//      or because more than 100 copies of its reference sit in the trash.
 import { createMemoryBlobs, createMemoryStore, createSharing, type Blobs, type PrincipalContext } from "agentic-identity";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
 import { buildExport } from "./export.js";
+import { backfillAuthorIds } from "./migrate.js";
 import { readZip } from "./zip.js";
 
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -57,7 +65,7 @@ describe("app documents", () => {
     expect(docs.apps).toEqual({ docs: 2, sheets: 1 });
     expect((await drive.search(A, { app: "sheets" })).map((r) => r.node.name)).toEqual(["Budget"]);
     expect((await drive.home(A, { limit: 1 })).items).toHaveLength(1);
-    await fails(drive.home(A, { limit: 0 }) as Promise<never>, "x").catch(() => undefined);
+    await expect(drive.home(A, { limit: 0 })).rejects.toThrow(RangeError);
   });
   it("leaves out a trashed item and an item in a trashed folder", async () => {
     await drive.registerDocument(A, { ref: "docs:d1", name: "Plan", folder: "/Old" });
@@ -79,6 +87,32 @@ describe("app documents", () => {
     const [a, b] = [await drive.registerDocument(A, { ref: "docs:d1", name: "Plan" }), await drive.registerDocument(B, { ref: "docs:d1", name: "Plan" })];
     expect(a.id).not.toBe(b.id);
     expect((await drive.home(B)).items.map((i) => i.node.owner)).toEqual(["bob"]);
+  });
+  it("does not return an item that a trashed folder hides, and registers the document again", async () => {
+    const hidden = await drive.registerDocument(A, { ref: "docs:d1", name: "Plan", folder: "/Old" });
+    await drive.trash(A, "/Old");
+    const again = await drive.registerDocument(A, { ref: "docs:d1", name: "Plan" });
+    expect(again.id).not.toBe(hidden.id);
+    expect((await drive.home(A)).items.map((i) => i.node.id)).toEqual([again.id]);
+  });
+  it("registers into a folder of another drive once, and finds it by the owner of that folder", async () => {
+    await drive.mkdir(B, "/shared");
+    const folder = await drive.stat(B, "/shared");
+    await drive.shareWith(B, "/shared", "alice", "editor");
+    const first = await drive.registerDocument(A, { ref: "docs:d1", name: "Plan", folder: folder.id });
+    const second = await drive.registerDocument(A, { ref: "docs:d1", name: "Plan", folder: folder.id });
+    expect(second.id).toBe(first.id);
+    expect(first.owner).toBe("bob");
+    await fails(drive.registerDocument(A, { ref: "docs:d2", name: "x", folder: "no-such-folder" }), "NOT_FOUND");
+  });
+  it("finds a document among more than 100 trashed copies of its reference", { timeout: 120_000 }, async () => {
+    for (let i = 0; i < 101; i++) {
+      await drive.putRef(A, `/old${i}`, "docs:busy");
+      await drive.trash(A, `/old${i}`);
+    }
+    const live = await drive.registerDocument(A, { ref: "docs:busy", name: "Live" });
+    expect((await drive.registerDocument(A, { ref: "docs:busy", name: "Again" })).id).toBe(live.id);
+    expect(await drive.forgetDocument(A, "docs:busy")).toEqual({ trashed: 1 });
   });
   it("refuses a bad reference or a name with a slash", async () => {
     for (const ref of ["", "docs", "Docs:1", "docs:a/b", "docs:a b", "1docs:x"]) await fails(drive.registerDocument(A, { ref, name: "x" }), "INVALID_REF");
@@ -128,13 +162,16 @@ describe("export and erase of a person", () => {
     expect(manifest).toMatchObject({ format: "agentic-drive-export", version: 2, owner: "alice", subject: { id: "alice", kind: "human" } });
     expect(manifest.items.map((i: { name: string }) => i.name).sort()).toEqual(["Plan", "a.txt", "mine"]);
     expect(manifest.authored.map((a: { id: string }) => a.id)).toEqual([byAlice.id]);
-    expect(manifest.authored[0]).toMatchObject({ owner: "bob", name: "renamed-by-bob.txt", createdBy: { id: "alice", kind: "human" }, updatedBy: { id: "bob" } });
+    expect(manifest.authored[0]).toMatchObject({ kind: "file", created: true, updated: false, by: [{ id: "alice", kind: "human" }] });
+    // Nothing about the owner of the item or its current name: only what the person wrote.
+    expect(Object.keys(manifest.authored[0]).sort()).toEqual(["by", "created", "createdAt", "id", "kind", "updated", "updatedAt"]);
+    expect(JSON.stringify(manifest.authored)).not.toContain("bob");
     expect(manifest.shares.held).toEqual(expect.arrayContaining([{ resourceId: team.id, role: "editor" }]));
     expect(manifest.shares.invitesCreated).toEqual([expect.objectContaining({ id: invite.id, role: "viewer", accepted: false })]);
     expect(manifest.audit.length).toBeGreaterThan(0);
     expect(manifest.audit.every((e: { principalKind: string }) => e.principalKind === "human")).toBe(true);
     const text = JSON.stringify(manifest);
-    for (const secret of [link.token, "friend@example.com", "bob/", byBot.id]) expect(text).not.toContain(secret);
+    for (const secret of [link.token, "friend@example.com", "renamed-by-bob", byBot.id]) expect(text).not.toContain(secret);
     expect(text).not.toContain("tokenHash");
   });
   it("exports an agent's work under its person, and nothing of another person", async () => {
@@ -144,8 +181,6 @@ describe("export and erase of a person", () => {
     expect(forBob.items.map((i: { name: string }) => i.name).sort()).toEqual(["b.txt", "from-alice.txt", "from-bot.txt", "team"].map((n) => (n === "from-alice.txt" ? "renamed-by-bob.txt" : n)).sort());
     expect(JSON.stringify(forBob)).not.toContain("alice file");
     expect(forBob.authored.map((a: { id: string }) => a.id)).toEqual([]);
-    const botExport = await drive.exportPerson(aliceBot);
-    expect(botExport.subject).toEqual({ id: "alice", kind: "human" });
     expect(byBot.createdBy).toEqual({ id: "bot", kind: "agent_of_human" });
   });
   it("erases the person, and only the person", async () => {
@@ -183,6 +218,7 @@ describe("export and erase of a person", () => {
     const byBobBot = await drive.putFile(bobBot, `${mine.id}/by-bobbot.txt`, bytes("2"));
     await drive.erasePerson(B);
     expect((await drive.stat(A, byBob.id)).createdBy).toEqual({ id: "erased", kind: "human" });
+    // The agent is not known as an agent of Bob here, so its id stays. The next test shows the known case.
     expect((await drive.stat(A, byBobBot.id)).createdBy).toEqual({ id: "bobbot", kind: "agent_of_human" });
     expect((await drive.list(A, mine.id)).map((n) => n.name).sort()).toEqual(["a.txt", "by-bob.txt", "by-bobbot.txt"]);
   });
@@ -203,6 +239,74 @@ describe("export and erase of a person", () => {
     expect((await store.query("invites", { limit: 10 })).items).toEqual([]);
     expect((await drive.stat(B, byAlice.id)).createdBy.id).toBe("erased");
     expect(await drive.erasePerson(A)).toMatchObject({ removed: 0, grants: 0, invites: 0, anonymized: 0 });
+  });
+  it("gives an agent no part of the person's export beyond the drive itself", async () => {
+    await setup();
+    const forBot = await manifestOf(aliceBot);
+    expect(forBot).toMatchObject({ partial: true, subject: { id: "alice", kind: "human" }, authored: [], shares: { held: [], invitesCreated: [] }, audit: [] });
+    const reader = ctxOf(principal("readbot", "agent_of_human", ["drive:read"], [{ id: "alice", kind: "human" }, { id: "readbot", kind: "agent_of_human" }]));
+    await sharing.can(A.principal!, "read", "docs-doc");
+    expect((await drive.exportPerson(reader)).audit).toEqual([]);
+    expect((await manifestOf(A)).partial).toBe(false);
+  });
+  it("shows no item the person can no longer read, and no name or owner", async () => {
+    const { team, byAlice } = await setup();
+    await drive.unshare(B, "/team", "alice");
+    await drive.rename(B, byAlice.id, "bob-secret-plans.txt");
+    await fails(drive.stat(A, byAlice.id), "NOT_FOUND");
+    const text = JSON.stringify((await manifestOf(A)).authored);
+    expect(text).not.toContain("bob-secret-plans");
+    expect(text).not.toContain("bob");
+    expect(team.id).toBeTruthy();
+  });
+  it("finds and anonymizes items from before the author ids, and a backfill makes them findable", async () => {
+    const { team, byAlice } = await setup();
+    const old = (await store.get("drive_nodes", byAlice.id))!;
+    const { createdById: _c, updatedById: _u, ...rest } = old;
+    await store.put("drive_nodes", byAlice.id, rest);
+    expect((await manifestOf(A)).authored).toEqual([]);
+    expect(await backfillAuthorIds(store)).toEqual({ fixed: expect.any(Number) });
+    expect((await manifestOf(A)).authored.map((a: { id: string }) => a.id)).toEqual([byAlice.id]);
+    expect(await backfillAuthorIds(store)).toEqual({ fixed: 0 });
+    // A half-updated item: made before the ids, changed after, with only the updated id set.
+    await store.put("drive_nodes", byAlice.id, { ...rest, updatedById: "alice" });
+    await drive.erasePerson(A);
+    const after = await drive.stat(B, byAlice.id);
+    expect(after.createdBy.id).toBe("erased");
+    expect(after.createdById).toBe("erased");
+    expect(team.id).toBeTruthy();
+  });
+  it("sets both author ids on an item from before them when anyone changes it", async () => {
+    const { byBot } = await setup();
+    const old = (await store.get("drive_nodes", byBot.id))!;
+    const { createdById: _c, updatedById: _u, ...rest } = old;
+    await store.put("drive_nodes", byBot.id, rest);
+    await drive.rename(B, byBot.id, "again.txt");
+    expect(await store.get("drive_nodes", byBot.id)).toMatchObject({ createdById: "bot", updatedById: "bob" });
+  });
+  it("leaves the grants, invites, and owners of other apps alone", async () => {
+    const wide = ctxOf(principal("alice", "human", ["*:admin"]));
+    await drive.putFile(A, "/mine.txt", bytes("m"));
+    await sharing.createResource(wide.principal!, { id: "doc-1", type: "docs" });
+    await sharing.grant(wide.principal!, "doc-1", "bob", "editor");
+    await sharing.createInvite(wide.principal!, "doc-1", { role: "viewer", email: "x@example.com" });
+    await drive.erasePerson(A);
+    expect((await store.get("resources", "doc-1"))?.type).toBe("docs");
+    expect((await store.query("grants", { where: { resourceId: "doc-1" } })).items.map((g) => g.data.subjectId).sort()).toEqual(["alice", "bob"]);
+    expect((await store.query("invites", { where: { resourceId: "doc-1" } })).items).toHaveLength(1);
+  });
+  it("treats the agents of a person as part of the person on export and erase", async () => {
+    await store.put("principals", "bot", { id: "bot", kind: "agent_of_human", parentId: "alice", scopes: ["drive:admin"] });
+    const { team, byBot } = await setup();
+    await drive.invite(aliceBot, "/mine", { role: "viewer", handle: "someone" });
+    const manifest = await manifestOf(A);
+    expect(manifest.authored.map((a: { id: string }) => a.id).sort()).toEqual([byBot.id, (await store.query("drive_nodes", { where: { createdById: "alice", parentId: team.id } })).items[0]!.id].sort());
+    expect(manifest.audit.some((e: { principalId: string }) => e.principalId === "bot")).toBe(true);
+    expect(manifest.shares.invitesCreated).toHaveLength(2);
+    await drive.erasePerson(A);
+    const botsFile = await drive.stat(B, byBot.id);
+    expect(botsFile.createdBy).toEqual({ id: "erased", kind: "agent_of_human" });
+    expect((await store.query("invites", { limit: 10 })).items).toEqual([]);
   });
   it("works on a local drive with no sharing", async () => {
     const local = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });

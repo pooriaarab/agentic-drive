@@ -196,7 +196,8 @@ export function createDrive(deps: DriveDeps) {
     ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: by, updatedBy: by, createdById: by.id, updatedById: by.id, trashed: false, trashedAt: null, purging: false,
   });
   const who = (ctx: Ctx): Actor => ({ id: ctx.actor.id, kind: ctx.actor.kind });
-  const stamp = (ctx: Ctx) => ({ updatedBy: who(ctx), updatedById: ctx.actor.id });
+  /** The author fields of a node that `ctx` changes. A node from before the id fields gets its `createdById` here. */
+  const stamp = (ctx: Ctx, node: Node) => ({ createdById: node.createdById ?? node.createdBy.id, updatedBy: who(ctx), updatedById: ctx.actor.id });
   /** What a node is, to sharing: the item itself, and its folder (or the drive root) above it. */
   const resourceDoc = async (node: Node, parent: Node): Promise<Resource> => ({ id: node.id, type: "drive", parentId: await resourceOf(parent) });
 
@@ -382,7 +383,7 @@ export function createDrive(deps: DriveDeps) {
     const slot = empty ? null : await claimed(ops, parent.owner, parent.id, key);
     if (slot?.taken) {
       if (onConflict === "replace" && slot.node?.kind === "file" && fields.kind === "file") {
-        const node: Node = { ...slot.node, ...fields, updatedAt: now(), ...stamp(ctx) } as Node;
+        const node: Node = { ...slot.node, ...fields, updatedAt: now(), ...stamp(ctx, slot.node) } as Node;
         w.put(NODES, node.id, node);
         return { node, replacedBlob: slot.node.blobKey };
       }
@@ -443,7 +444,7 @@ export function createDrive(deps: DriveDeps) {
       name = await freeName(ops, dest.owner, dest.id, name);
       key = parseName(name).key;
     }
-    const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), ...stamp(ctx) };
+    const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), ...stamp(ctx, node) };
     w.put(NODES, moved.id, moved);
     const [from, to] = [await claimId(node.owner, node.parentId, node.nameKey), await claimId(dest.owner, dest.id, key)];
     if (from !== to) {
@@ -511,20 +512,33 @@ export function createDrive(deps: DriveDeps) {
 
   /** Only the owner in person, never an agent for them, may do what cannot be undone. */
   function assertInPerson(ctx: Ctx, what: string) {
-    const inPerson = ctx.principal === undefined || (ctx.principal.kind === "human" && ctx.principal.chain.length === 1);
-    if (!inPerson || ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", `only the owner in person can ${what}`);
+    if (!isInPerson(ctx) || ctx.actor.kind !== "human") throw new DriveError("FORBIDDEN", `only the owner in person can ${what}`);
   }
   /** The person behind a call: the root of the chain. The kind is null when only an actor is known, and the actor is not the owner. */
   const subjectOf = (ctx: Ctx) => ({ id: ctx.owner, kind: ctx.principal?.chain[0]?.kind ?? (ctx.actor.id === ctx.owner ? ctx.actor.kind : null) });
-  /** Every doc of a collection that matches one field, page by page. */
-  async function allWhere(ops: StoreOps, collection: string, field: string, value: string, orderBy?: { field: string }) {
+  /** Every doc of a collection that matches every field, page by page. */
+  async function allWhere(ops: StoreOps, collection: string, where: Record<string, string>, orderBy?: { field: string }) {
     const out: { id: string; data: Doc }[] = [];
     for (let cursor: string | undefined; ; ) {
-      const page = await ops.query(collection, { where: { [field]: value }, ...(orderBy ? { orderBy } : {}), limit: 100, cursor });
+      const page = await ops.query(collection, { where, ...(orderBy ? { orderBy } : {}), limit: 100, cursor });
       out.push(...page.items);
       if (!page.nextCursor) return out;
       cursor = page.nextCursor;
     }
+  }
+  /** True when the caller is the person in person, not an agent for them. */
+  const isInPerson = (ctx: Ctx) => ctx.principal === undefined ? ctx.actor.kind === "human" && ctx.actor.id === ctx.owner : ctx.principal.kind === "human" && ctx.principal.chain.length === 1 && ctx.actor.id === ctx.owner;
+  /** The person and every agent that acts below them, from the `principals` collection. */
+  async function actorsOf(ops: StoreOps, id: string): Promise<string[]> {
+    const ids = [id];
+    for (let i = 0; i < ids.length && ids.length < 1000; i++) for (const child of await allWhere(ops, "principals", { parentId: ids[i]! })) if (!ids.includes(child.id)) ids.push(child.id);
+    return ids;
+  }
+  /** Items that any of these actors made or changed. A node from before the author ids existed is found by `createdBy` only when it also has an id field. */
+  async function madeBy(ops: StoreOps, actors: string[]): Promise<Node[]> {
+    const made = new Map<string, Node>();
+    for (const actor of actors) for (const field of ["createdById", "updatedById"]) for (const { data } of await allWhere(ops, NODES, { [field]: actor })) made.set(data.id as string, data as Node);
+    return [...made.values()];
   }
 
   /** Every grant, link, and invite of one resource, page by page. */
@@ -755,7 +769,7 @@ export function createDrive(deps: DriveDeps) {
         const claim = await claimId(node.owner, node.parentId, node.nameKey);
         const held = await tx.get<Claim>(NAMES, claim);
         const t = now();
-        const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, ...stamp(ctx) };
+        const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, ...stamp(ctx, node) };
         await tx.put(NODES, node.id, trashed);
         // Trashing frees the name. Release only a claim that this item holds.
         if (held?.nodeId === node.id) await tx.delete(NAMES, claim);
@@ -805,7 +819,7 @@ export function createDrive(deps: DriveDeps) {
           name = await freeName(tx, parent.owner, parent.id, name);
           key = parseName(name).key;
         }
-        const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), ...stamp(ctx) };
+        const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), ...stamp(ctx, node) };
         await tx.put(NODES, restored.id, restored);
         await tx.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: restored.id, owner: parent.owner, parentId: parent.id });
         if (sharing && parent.id !== node.parentId) await tx.put("resources", restored.id, await resourceDoc(restored, parent));
@@ -919,10 +933,13 @@ export function createDrive(deps: DriveDeps) {
       if (!REF.test(input.ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(input.ref)}`);
       parseName(input.name);
       await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
-      const held = (await store.query<Node>(NODES, { where: { owner: ctx.owner, ref: input.ref }, limit: 100 })).items.map((item) => item.data);
-      const existing = held.find((n) => n.kind === "ref" && !n.trashed && n.purging !== true);
-      if (existing) return existing;
       const dir = input.folder ?? "/";
+      // A folder named by id may sit in another person's drive, where the reference belongs.
+      const owner = dir.startsWith("/") ? ctx.owner : (await resolve(store, ctx, dir.split("/")[0] as string)).owner;
+      for (const { data } of await allWhere(store, NODES, { owner, ref: input.ref })) {
+        const node = data as Node;
+        if (node.kind === "ref" && !node.trashed && node.purging !== true && (await isLive(store, ctx, node))) return node;
+      }
       return api.putRef(ctx, dir.endsWith("/") ? `${dir}${input.name}` : `${dir}/${input.name}`, input.ref, { parents: true, onConflict: "rename" });
     },
 
@@ -931,10 +948,10 @@ export function createDrive(deps: DriveDeps) {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
       await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
       let trashed = 0;
-      for (const { data } of (await store.query<Node>(NODES, { where: { owner: ctx.owner, ref }, limit: 100 })).items) {
+      for (const { data } of await allWhere(store, NODES, { owner: ctx.owner, ref })) {
         if (data.kind !== "ref" || data.trashed || data.purging === true) continue;
         try {
-          await api.trash(ctx, data.id);
+          await api.trash(ctx, data.id as string);
           trashed++;
         } catch (error) {
           // A reference inside a folder that is already in the trash is hidden already.
@@ -945,39 +962,57 @@ export function createDrive(deps: DriveDeps) {
     },
 
     /**
-     * What drive holds about the person behind a call, besides their own drive (`exportData` has that): items
-     * they made or changed in other drives, the shares they hold, the invites they sent, and the audit
-     * entries of what they did. Invitee emails and link tokens are not in it.
+     * What drive holds about the person behind a call, besides their own drive (`exportData` has that). It is
+     * only for the person in person: an agent gets `partial: true` and nothing else. It holds the ids of the
+     * items they or their agents made or changed in other drives (no names, and nothing of the people who own
+     * them), the shares they hold, the invites they sent, and the audit entries of what they and their agents
+     * did. Invitee emails and link tokens are not in it.
      */
     async exportPerson(ctx: Ctx) {
       await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
       const subject = subjectOf(ctx);
-      const made = new Map<string, Node>();
-      for (const field of ["createdById", "updatedById"]) for (const { data } of await allWhere(store, NODES, field, subject.id)) made.set(data.id as string, data as Node);
-      const authored = [...made.values()]
+      if (!isInPerson(ctx)) return { subject, partial: true, authored: [], shares: { held: [], invitesCreated: [] }, audit: [] };
+      const actors = await actorsOf(store, subject.id);
+      const authored = (await madeBy(store, actors))
         .filter((n) => n.owner !== subject.id && n.purging !== true)
-        .map((n) => ({ id: n.id, owner: n.owner, kind: n.kind, name: n.name, createdAt: n.createdAt, updatedAt: n.updatedAt, createdBy: n.createdBy, updatedBy: n.updatedBy }))
+        .map((n) => ({
+          id: n.id, kind: n.kind, created: actors.includes(n.createdById), updated: actors.includes(n.updatedById),
+          createdAt: actors.includes(n.createdById) ? n.createdAt : null, updatedAt: actors.includes(n.updatedById) ? n.updatedAt : null,
+          by: [...new Set([actors.includes(n.createdById) ? n.createdBy : null, actors.includes(n.updatedById) ? n.updatedBy : null].filter((a) => a !== null).map((a) => JSON.stringify(a)))].map((a) => JSON.parse(a as string)),
+        }))
         .sort((x, y) => (x.id < y.id ? -1 : 1));
-      const held = (await allWhere(store, "grants", "subjectId", subject.id)).map((g) => ({ resourceId: g.data.resourceId, role: g.data.role }));
-      const invites = (await allWhere(store, "invites", "createdBy", subject.id)).map((i) => ({
-        id: i.data.id, resourceId: i.data.resourceId, role: i.data.role, expiresAt: i.data.expiresAt ?? null, accepted: i.data.acceptedAt !== undefined,
-      }));
-      const audit = (await allWhere(store, "audit", "principalId", subject.id, { field: "at" })).map((e) => ({
-        at: e.data.at, action: e.data.action, resourceId: e.data.resourceId ?? null, outcome: e.data.outcome, principalKind: e.data.principalKind, machineMade: e.data.machineMade,
-      }));
-      return { subject, authored, shares: { held, invitesCreated: invites }, audit };
+      const held = (await allWhere(store, "grants", { subjectId: subject.id })).map((g) => ({ resourceId: g.data.resourceId, role: g.data.role }));
+      const invitesCreated: { id: unknown; resourceId: unknown; role: unknown; expiresAt: unknown; accepted: boolean }[] = [];
+      const audit: { at: unknown; action: unknown; resourceId: unknown; outcome: unknown; principalId: unknown; principalKind: unknown; machineMade: unknown }[] = [];
+      for (const actor of actors) {
+        for (const i of await allWhere(store, "invites", { createdBy: actor })) {
+          invitesCreated.push({ id: i.data.id, resourceId: i.data.resourceId, role: i.data.role, expiresAt: i.data.expiresAt ?? null, accepted: i.data.acceptedAt !== undefined });
+        }
+        for (const e of await allWhere(store, "audit", { principalId: actor }, { field: "at" })) {
+          audit.push({ at: e.data.at, action: e.data.action, resourceId: e.data.resourceId ?? null, outcome: e.data.outcome, principalId: e.data.principalId, principalKind: e.data.principalKind, machineMade: e.data.machineMade });
+        }
+      }
+      audit.sort((x, y) => (x.at as number) - (y.at as number));
+      return { subject, partial: false, authored, shares: { held, invitesCreated }, audit };
     },
 
     /**
-     * Erases a person for good. Only the person in person may. Their drive and its shares go, and so do the
-     * shares they hold and the invites they sent. What they made in other drives stays, because it belongs to
-     * those drives: their id becomes "erased", and the kind stays, so machine-made work keeps its label.
-     * The audit trail stays: it holds ids and kinds only, and no content. A failed call can run again.
+     * Erases a person for good. Only the person in person may. Their drive and its shares go. So do the shares
+     * they hold and the invites they or their agents sent, on drive items only: the grants of other apps stay for
+     * those apps and for identity. What they or their agents made in other drives stays, because it belongs to
+     * those drives: the id becomes "erased", and the kind stays, so machine-made work keeps its label. The audit
+     * trail stays: it holds ids and kinds only. A failed call can run again.
      */
     async erasePerson(ctx: Ctx): Promise<{ removed: number; grants: number; invites: number; anonymized: number }> {
       assertInPerson(ctx, "erase a person");
       const { id } = subjectOf(ctx);
+      const actors = await actorsOf(store, id);
       const { removed } = await api.deleteAll(ctx);
+      const ofDrive = async (docs: { id: string; data: Doc }[]) => {
+        const out: { id: string }[] = [];
+        for (const doc of docs) if ((await store.get("resources", doc.data.resourceId as string))?.type === "drive") out.push({ id: doc.id });
+        return out;
+      };
       const sweep = async (docs: { id: string }[], collection: string) => {
         for (let i = 0; i < docs.length; i += 100) {
           await transact(async (tx) => {
@@ -986,11 +1021,10 @@ export function createDrive(deps: DriveDeps) {
         }
         return docs.length;
       };
-      const grants = await sweep(await allWhere(store, "grants", "subjectId", id), "grants");
-      const invites = await sweep(await allWhere(store, "invites", "createdBy", id), "invites");
-      const made = new Map<string, Node>();
-      for (const field of ["createdById", "updatedById"]) for (const { data } of await allWhere(store, NODES, field, id)) made.set(data.id as string, data as Node);
-      const todo = [...made.values()];
+      const grants = await sweep(await ofDrive(await allWhere(store, "grants", { subjectId: id })), "grants");
+      let invites = 0;
+      for (const actor of actors) invites += await sweep(await ofDrive(await allWhere(store, "invites", { createdBy: actor })), "invites");
+      const todo = await madeBy(store, actors);
       for (let i = 0; i < todo.length; i += CHUNK) {
         await transact(async (tx) => {
           const current: Node[] = [];
@@ -1000,8 +1034,8 @@ export function createDrive(deps: DriveDeps) {
           }
           for (const node of current) {
             const next: Node = { ...node };
-            if (node.createdById === id) Object.assign(next, { createdBy: { id: ERASED, kind: node.createdBy.kind }, createdById: ERASED });
-            if (node.updatedById === id) Object.assign(next, { updatedBy: { id: ERASED, kind: node.updatedBy.kind }, updatedById: ERASED });
+            if (actors.includes(node.createdById ?? node.createdBy.id)) Object.assign(next, { createdBy: { id: ERASED, kind: node.createdBy.kind }, createdById: ERASED });
+            if (actors.includes(node.updatedById ?? node.updatedBy.id)) Object.assign(next, { updatedBy: { id: ERASED, kind: node.updatedBy.kind }, updatedById: ERASED });
             await tx.put(NODES, node.id, next);
           }
         });
