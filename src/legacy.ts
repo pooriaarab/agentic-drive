@@ -17,22 +17,28 @@ export async function importLegacyLocal(dir: string, store: Store, blobs: Blobs)
   const lines = readFileSync(journal, "utf8").split("\n");
   const tail = lines.pop() as string;
   const docs = new Map<string, Change>();
+  const isChange = (c: unknown): c is Change =>
+    Array.isArray(c) && c.length === 3 && typeof c[0] === "string" && typeof c[1] === "string" && (c[2] === null || (typeof c[2] === "object" && !Array.isArray(c[2])));
   const replay = (line: string, at: number | string) => {
-    let changes: Change[];
+    let changes: unknown;
     try {
-      changes = JSON.parse(line) as Change[];
+      changes = JSON.parse(line);
     } catch {
       throw new Error(`the journal ${journal} has a bad line ${at}`);
     }
+    if (!Array.isArray(changes) || !changes.every(isChange)) throw new Error(`the journal ${journal} has a bad line ${at}`);
     for (const change of changes) docs.set(`${change[0]}\0${change[1]}`, change);
   };
   for (const [i, line] of lines.entries()) if (line !== "") replay(line, i + 1);
   if (tail !== "") {
+    // A tail that is not JSON was cut by a crash and never acknowledged. A whole tail that is wrong is bad data.
+    let cut = false;
     try {
-      replay(tail, "last");
+      JSON.parse(tail);
     } catch {
-      // A crash cut the last append. It was never acknowledged.
+      cut = true;
     }
+    if (!cut) replay(tail, "last");
   }
   const path = (key: string) => join(dir, "blobs", createHash("sha256").update(key).digest("hex"));
   for (const [collection, , doc] of docs.values()) {
@@ -42,6 +48,10 @@ export async function importLegacyLocal(dir: string, store: Store, blobs: Blobs)
     // A blob that is there already came from an earlier run of this import.
     await blobs.put(key, new Uint8Array(readFileSync(path(key))), { ifNoneMatch: "*", ...(type ? { contentType: type } : {}) });
   }
-  for (const [collection, id, doc] of docs.values()) if (doc) await store.put(collection, id, doc);
-  await store.put("drive_meta", "legacy_import", { importedAt: Date.now() });
+  // One transaction is one write of the store file, and no half copy is left behind.
+  await store.transaction(async (tx) => {
+    if (await tx.get("drive_meta", "legacy_import")) return;
+    for (const [collection, id, doc] of docs.values()) if (doc) await tx.put(collection, id, doc);
+    await tx.put("drive_meta", "legacy_import", { importedAt: Date.now() });
+  });
 }

@@ -232,7 +232,7 @@ export function createDrive(deps: DriveDeps) {
    */
   const can: Can = (ctx, action, node) => {
     if (!ctx.decided) return askCan(ctx, action, node);
-    const key = JSON.stringify([action, node.id, node.owner, ctx.owner, ctx.actor, ctx.principal ?? null]);
+    const key = JSON.stringify([action, node.id, node.owner, node.parentId, node.updatedAt, node.trashed, ctx.owner, ctx.actor, ctx.principal ?? null]);
     const known = ctx.decided.get(key);
     if (known !== undefined) return known;
     const { decided: _decided, ...plain } = ctx;
@@ -556,7 +556,7 @@ export function createDrive(deps: DriveDeps) {
     try {
       return await store.transaction(fn);
     } catch (error) {
-      if (error instanceof Error && /transaction kept conflicting/.test(error.message)) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
+      if (error instanceof Error && /transaction kept conflicting|store file changed during the write|locked by another process/.test(error.message)) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
       throw error;
     }
   }
@@ -564,11 +564,20 @@ export function createDrive(deps: DriveDeps) {
   /** A transaction for a caller. It reads access answers that it fetched outside, one retry per missing answer. */
   async function transactAs<R>(ctx: Ctx, fn: (tx: StoreOps, ctx: Ctx) => Promise<R>): Promise<R> {
     const decided = new Map<string, boolean>();
+    let started = false;
+    let asked = false;
     for (;;) {
       try {
-        return await transact((tx) => fn(tx, { ...ctx, decided }));
+        return await transact((tx) => {
+          // The store ran this transaction again because the data changed. The answers may be stale, so ask again.
+          if (started && !asked) decided.clear();
+          started = true;
+          asked = false;
+          return fn(tx, { ...ctx, decided });
+        });
       } catch (error) {
         if (!(error instanceof Ask)) throw error;
+        asked = true;
         if (decided.size >= MAX_ASKS) throw new DriveError("BUSY", "the drive needed too many access checks. Try again.");
         decided.set(error.key, await askCan(error.ctx, error.action, error.node));
       }

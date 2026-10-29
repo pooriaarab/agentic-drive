@@ -566,3 +566,17 @@ describe("identity erase and kinds", () => {
     for (const bad of [undefined, "", "robot", "Human", "user_token", "agent_of_human", "agent_of_agent"]) expect(() => subjectKindOf(bad)).toThrow(/cannot hold a role/);
   });
 });
+
+describe("transactions and access checks", () => {
+  it("never asks for access while a transaction is open", async () => {
+    let open = 0;
+    let nested = 0;
+    const watched = { ...store, transaction: (fn: Parameters<typeof store.transaction>[0]) => (open++, store.transaction(fn).finally(() => open--)) } as typeof store;
+    const spy = { ...sharing, can: (...args: Parameters<typeof sharing.can>) => (open > 0 && nested++, sharing.can(...args)) };
+    const guarded = createDrive({ store: watched, blobs: createMemoryBlobs(), sharing: spy, now: () => ++clock });
+    await guarded.putFile(A, "/x/y.txt", bytes("1"), { parents: true });
+    await guarded.rename(A, "/x/y.txt", "z.txt");
+    await guarded.trash(A, "/x/z.txt");
+    expect(nested).toBe(0);
+  });
+});

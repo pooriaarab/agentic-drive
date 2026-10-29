@@ -64,3 +64,11 @@ describe("import of the old local layout", () => {
     expect(new TextDecoder().decode((await drive.read(me, "/old.txt")).data)).toBe("old");
   });
 });
+
+it("refuses a line that parses but is not a list of changes", async () => {
+  const dir = oldLayout();
+  writeFileSync(join(dir, "db", "store.jsonl"), `${JSON.stringify([["drive_nodes", "n1", "text"]])}\n`);
+  const { store, blobs } = openLocal(dir);
+  await expect(importLegacyLocal(dir, store, blobs)).rejects.toThrow(/bad line 1/);
+  expect(await store.get("drive_meta", "legacy_import")).toBeNull();
+});

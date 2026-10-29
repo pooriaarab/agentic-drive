@@ -1,6 +1,6 @@
 // The sharing and person suites, run again on the shared file store. That store runs its calls one at a
 // time and demands that a transaction reads before it writes, so a call from inside a transaction to the
-// store outside it hangs, and a write before a read throws. Memory stores allow both.
+// store outside it hangs. The memory store lets such a call run, so only this suite shows it.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
