@@ -103,7 +103,7 @@ describe("app documents", () => {
   it("registers into a folder of another drive once, and finds it by the owner of that folder", async () => {
     await drive.mkdir(B, "/shared");
     const folder = await drive.stat(B, "/shared");
-    await drive.shareWith(B, "/shared", "alice", "editor");
+    await drive.shareWith(B, "/shared", { kind: "human", id: "alice" }, "editor");
     const first = await drive.registerDocument(A, { ref: "docs:d1", name: "Plan", folder: folder.id });
     const second = await drive.registerDocument(A, { ref: "docs:d1", name: "Plan", folder: folder.id });
     expect(second.id).toBe(first.id);
@@ -150,12 +150,12 @@ describe("export and erase of a person", () => {
   async function setup() {
     await drive.putFile(B, "/team/b.txt", bytes("b"), { parents: true });
     const team = await drive.stat(B, "/team");
-    await drive.shareWith(B, "/team", "alice", "editor");
+    await drive.shareWith(B, "/team", { kind: "human", id: "alice" }, "editor");
     await drive.putFile(A, "/mine/a.txt", bytes("alice file"), { parents: true });
     await drive.registerDocument(A, { ref: "docs:d1", name: "Plan" });
     const byAlice = await drive.putFile(A, `${team.id}/from-alice.txt`, bytes("x"));
     const byBot = await drive.putFile(aliceBot, `${team.id}/from-bot.txt`, bytes("y"));
-    await drive.shareWith(A, "/mine", "bob", "viewer");
+    await drive.shareWith(A, "/mine", { kind: "human", id: "bob" }, "viewer");
     const invite = await drive.invite(A, "/mine", { role: "viewer", email: "friend@example.com" });
     const link = await drive.createLink(A, "/mine", { role: "viewer" });
     await drive.rename(B, byAlice.id, "renamed-by-bob.txt");
@@ -218,7 +218,7 @@ describe("export and erase of a person", () => {
   it("keeps what an agent of the erased person made in another drive, with its machine label", async () => {
     await drive.putFile(A, "/mine/a.txt", bytes("a"), { parents: true });
     const mine = await drive.stat(A, "/mine");
-    await drive.shareWith(A, "/mine", "bob", "editor");
+    await drive.shareWith(A, "/mine", { kind: "human", id: "bob" }, "editor");
     const byBob = await drive.putFile(B, `${mine.id}/by-bob.txt`, bytes("1"));
     const byBobBot = await drive.putFile(bobBot, `${mine.id}/by-bobbot.txt`, bytes("2"));
     await drive.erasePerson(B);
@@ -256,7 +256,7 @@ describe("export and erase of a person", () => {
   });
   it("shows no item the person can no longer read, and no name or owner", async () => {
     const { team, byAlice } = await setup();
-    await drive.unshare(B, "/team", "alice");
+    await drive.unshare(B, "/team", { kind: "human", id: "alice" });
     await drive.rename(B, byAlice.id, "bob-secret-plans.txt");
     await fails(drive.stat(A, byAlice.id), "NOT_FOUND");
     const text = JSON.stringify((await manifestOf(A)).authored);
@@ -293,7 +293,7 @@ describe("export and erase of a person", () => {
     const wide = ctxOf(principal("alice", "human", ["*:admin"]));
     await drive.putFile(A, "/mine.txt", bytes("m"));
     await sharing.createResource(wide.principal!, { id: "doc-1", type: "docs" });
-    await sharing.grant(wide.principal!, "doc-1", "bob", "editor");
+    await sharing.grant(wide.principal!, "doc-1", { kind: "human", id: "bob" }, "editor");
     await sharing.createInvite(wide.principal!, "doc-1", { role: "viewer", email: "x@example.com" });
     await drive.erasePerson(A);
     expect((await store.get("resources", "doc-1"))?.type).toBe("docs");
@@ -316,7 +316,7 @@ describe("export and erase of a person", () => {
   it("does not return a document that the caller cannot read", async () => {
     const secret = await drive.registerDocument(A, { ref: "docs:secret", name: "Layoffs plan", folder: "/private" });
     await drive.mkdir(A, "/shared");
-    await drive.shareWith(A, "/shared", "bob", "editor");
+    await drive.shareWith(A, "/shared", { kind: "human", id: "bob" }, "editor");
     const shared = await drive.stat(A, "/shared");
     await fails(drive.stat(B, secret.id), "NOT_FOUND");
     const made = await drive.registerDocument(B, { ref: "docs:secret", name: "mine", folder: shared.id });
@@ -329,7 +329,7 @@ describe("export and erase of a person", () => {
     const agent = ctxOf(principal("p_agent", "agent"));
     await drive.putFile(B, "/team/b.txt", bytes("b"), { parents: true });
     const team = await drive.stat(B, "/team");
-    await drive.shareWith(B, "/team", "p_agent", "editor");
+    await drive.shareWith(B, "/team", { kind: "agent", id: "p_agent" }, "editor");
     const byAgent = await drive.putFile(agent, `${team.id}/by-agent.txt`, bytes("a"));
     await drive.putFile(agent, "/agent-own.txt", bytes("own"));
     await drive.mkdir(agent, "/agent-shared");
@@ -352,7 +352,7 @@ describe("export and erase of a person", () => {
     const agent = ctxOf(principal("p_agent", "agent"));
     await drive.mkdir(A, "/open");
     const open = await drive.stat(A, "/open");
-    await drive.shareWith(A, "/open", "p_agent", "editor");
+    await drive.shareWith(A, "/open", { kind: "agent", id: "p_agent" }, "editor");
     const made = await drive.putFile(agent, `${open.id}/by-agent.txt`, bytes("a"));
     await drive.erasePerson(B);
     expect((await drive.stat(A, made.id)).createdBy).toEqual({ id: "erased", kind: "agent" });

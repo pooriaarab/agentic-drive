@@ -66,7 +66,7 @@ every request. A missing, expired, or revoked credential, or a revoked or expire
 A session cookie is refused: only a bearer token counts. An agent acts in its owner's drive with the narrower scopes of its grant.
 Scopes are `drive:read`, `drive:write`, and `drive:admin`.
 
-Sharing routes: `GET /shares?path=`, `POST /shares`, `DELETE /shares?path=&subjectId=`, `POST /invites`,
+Sharing routes: `GET /shares?path=`, `POST /shares`, `DELETE /shares?path=&subjectId=&subjectKind=`, `POST /invites`,
 `POST /invites/accept`, `POST /links`, `DELETE /links?id=`. A link visitor reads with the header
 `x-link-token` on `GET /shared/:id`, `GET /shared/:id/items`, and `GET /shared/:id/content`.
 Name a shared item by its id. A path can start at a folder id: `<folder id>/notes/a.txt`.
@@ -83,7 +83,7 @@ The Worker declares region `eu` and refuses a D1 query that a non-EU region serv
 - Each item records its size, type, owner, and who made and last changed it, with the actor kind.
 - Storage sits behind the `Store` and `Blobs` ports of `agentic-identity`. Tests use its memory adapters. The CLI uses a local file adapter that passes the same contract suites. The Worker uses its D1 and R2 adapters.
 - Roles: viewer, commenter, editor, owner. A role on a folder reaches everything under it, and follows an item that moves. Identity decides every request through `can()`, which also writes the audit entry. A caller who cannot read an item gets `NOT_FOUND`. A caller who can read it but not change it gets `FORBIDDEN`. Editors write and trash. An item takes the roles of its new folder, so moving an item into a folder where the caller is owner needs owner on the item. Only owners share, purge, and read the share list.
-- Share by person or agent id, by invite (an email for a person, a handle for an agent), or by link with a role, an expiry, and an optional sign-in. The SDK calls are `shareWith`, `unshare`, `invite`, `acceptInvite`, `createLink`, `revokeLink`, `shares`, `openShared`, `listShared`, and `readShared`.
+- Share by a subject (`{ kind: "human" | "agent", id }`), by invite (an email for a person, a handle for an agent), or by link with a role, an expiry, and an optional sign-in. The SDK calls are `shareWith`, `unshare`, `invite`, `acceptInvite`, `createLink`, `revokeLink`, `shares`, `openShared`, `listShared`, and `readShared`.
 - Two live items never share a name in one folder. A claim document holds each name. It is written in the same transaction as the item, and it is deleted when the item goes to the trash.
 - `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
 - `downloadUrl()` returns a signed URL. The URL signs an attachment header with the file name and the stored type. The Worker verifies it and serves the bytes with those headers, so the link holder cannot change how the bytes are served. A link lasts 15 minutes by default and 1 hour at most. Trashing a file does not revoke a link already issued.

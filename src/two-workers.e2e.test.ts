@@ -122,18 +122,18 @@ describe("two Workers on one database and one bucket", () => {
 
   it("enforces a role that one Worker grants on the other, and follows every change at once", async () => {
     expect((await call("b", "GET", `/stat?path=${fileId}`, { token: TOKENS.bob, check: "bob with no role on b" })).status).toBe(404);
-    expect((await call("a", "POST", "/shares", { json: { path: "/team", subjectId: "bob", role: "viewer" }, check: "grant viewer on a" })).status).toBe(200);
+    expect((await call("a", "POST", "/shares", { json: { path: "/team", subjectId: "bob", subjectKind: "human", role: "viewer" }, check: "grant viewer on a" })).status).toBe(200);
     expect((await call("b", "GET", `/stat?path=${fileId}`, { token: TOKENS.bob, check: "inherited viewer reads nested file on b" })).status).toBe(200);
     expect((await call("a", "GET", `/files?path=${fileId}`, { token: TOKENS.bob, check: "inherited viewer reads bytes on a" })).status).toBe(200);
     expect((await put("b", `${teamId}/docs/x.txt`, "x", TOKENS.bob, "viewer writes on b")).status).toBe(403);
     expect((await call("b", "POST", "/trash", { token: TOKENS.bob, json: { path: fileId }, check: "viewer trashes on b" })).status).toBe(403);
-    expect((await call("a", "POST", "/shares", { json: { path: "/team", subjectId: "bob", role: "editor" }, check: "upgrade to editor on a" })).status).toBe(200);
+    expect((await call("a", "POST", "/shares", { json: { path: "/team", subjectId: "bob", subjectKind: "human", role: "editor" }, check: "upgrade to editor on a" })).status).toBe(200);
     const made = await put("b", `${teamId}/docs/by-bob.txt`, "bob", TOKENS.bob, "editor writes on b");
     expect(made.status).toBe(201);
     expect((await json(made)).owner).toBe("alice");
-    expect((await call("a", "POST", "/shares", { token: TOKENS.bob, json: { path: teamId, subjectId: "carol", role: "viewer" }, check: "editor shares on a" })).status).toBe(403);
+    expect((await call("a", "POST", "/shares", { token: TOKENS.bob, json: { path: teamId, subjectId: "carol", subjectKind: "human", role: "viewer" }, check: "editor shares on a" })).status).toBe(403);
     expect((await call("a", "GET", "/stat?path=/team/docs/by-bob.txt", { check: "owner sees editor's file on a" })).status).toBe(200);
-    expect((await call("b", "POST", "/shares", { json: { path: "/team", subjectId: "bob", role: "viewer" }, check: "downgrade to viewer on b" })).status).toBe(200);
+    expect((await call("b", "POST", "/shares", { json: { path: "/team", subjectId: "bob", subjectKind: "human", role: "viewer" }, check: "downgrade to viewer on b" })).status).toBe(200);
     expect((await put("a", `${teamId}/docs/again.txt`, "x", TOKENS.bob, "viewer after downgrade writes on a")).status).toBe(403);
   });
 
@@ -178,7 +178,7 @@ describe("two Workers on one database and one bucket", () => {
   });
 
   it("erases a person on one Worker and leaves the data of others whole on the other", async () => {
-    expect((await call("a", "POST", "/shares", { json: { path: "/team", subjectId: "bob", role: "editor" }, check: "editor again on a" })).status).toBe(200);
+    expect((await call("a", "POST", "/shares", { json: { path: "/team", subjectId: "bob", subjectKind: "human", role: "editor" }, check: "editor again on a" })).status).toBe(200);
     expect((await put("b", `${teamId}/docs/bobs.txt`, "bob", TOKENS.bob, "bob writes on b")).status).toBe(201);
     expect((await put("a", "/bobs-own/x.txt", "mine", TOKENS.bob, "bob writes own drive on a")).status).toBe(201);
     const erased = await call("b", "DELETE", "/account?confirm=yes", { token: TOKENS.bob, check: "bob erases on b" });

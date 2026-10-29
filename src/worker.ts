@@ -222,11 +222,11 @@ export function createApp(): Hono<App> {
   api.get("/shares", async (c) => c.json(await c.var.drive.shares(c.var.ctx, need(q(c, "path"), "path"))));
   api.post("/shares", async (c) => {
     const b = await body(c);
-    await c.var.drive.shareWith(c.var.ctx, str(b.path, "path"), str(b.subjectId, "subjectId"), roleOf(b.role));
+    await c.var.drive.shareWith(c.var.ctx, str(b.path, "path"), { kind: b.subjectKind as never, id: str(b.subjectId, "subjectId") }, roleOf(b.role));
     return c.json({ ok: true });
   });
   api.delete("/shares", async (c) => {
-    await c.var.drive.unshare(c.var.ctx, need(q(c, "path"), "path"), need(q(c, "subjectId"), "subjectId"));
+    await c.var.drive.unshare(c.var.ctx, need(q(c, "path"), "path"), { kind: q(c, "subjectKind") as never, id: need(q(c, "subjectId"), "subjectId") });
     return c.json({ ok: true });
   });
   api.post("/invites", async (c) => {
