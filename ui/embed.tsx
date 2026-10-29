@@ -4,7 +4,7 @@
 import { useMemo, useState, type MouseEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { FolderIcon, SidebarNav, ToastProvider, TooltipProvider } from "agentic-design/react";
-import { createClient } from "../src/client.js";
+import { createClient, type DriveClient } from "../src/client.js";
 import { Routes } from "./App.js";
 import "./app.css";
 
@@ -18,24 +18,32 @@ export interface DriveUiOptions {
 /** The token placeholder that the client needs to send authenticated calls. `getToken` replaces it on every request. */
 const PLACEHOLDER = "from-get-token";
 
+/** A client for the options, and `close`. After `close`, no request starts and a running one aborts, so work that outlives the UI cannot send a token. */
 function makeClient({ baseUrl, getToken }: DriveUiOptions) {
   if (typeof getToken !== "function") throw new TypeError("getToken must be a function");
+  const closed = new AbortController();
   const fetchWithToken: typeof fetch = async (input, init) => {
+    closed.signal.throwIfAborted();
     const token = await getToken();
+    closed.signal.throwIfAborted();
     if (token !== undefined && (typeof token !== "string" || !/^[A-Za-z0-9_-]{1,512}$/.test(token))) throw new TypeError("getToken must return 1 to 512 letters, digits, - or _");
     const headers = new Headers(init?.headers);
     if (token === undefined) headers.delete("authorization");
     else headers.set("authorization", `Bearer ${token}`);
-    return globalThis.fetch(input, { ...init, headers });
+    const signal = init?.signal ? AbortSignal.any([init.signal, closed.signal]) : closed.signal;
+    return globalThis.fetch(input, { ...init, headers, signal });
   };
-  return createClient({ baseUrl, token: PLACEHOLDER, fetch: fetchWithToken });
+  return { client: createClient({ baseUrl, token: PLACEHOLDER, fetch: fetchWithToken }), close: () => closed.abort() };
 }
 
-/** The folders and trash of the signed-in caller, with upload, share, and the machine-made label. It needs the tooltip and toast providers above it. `mount` adds them. */
-export function DriveBrowser(options: DriveUiOptions) {
-  // The client is made again only when the address or the callback changes.
-  const client = useMemo(() => makeClient(options), [options.baseUrl, options.getToken]); // eslint-disable-line react-hooks/exhaustive-deps
-  const origin = useMemo(() => new URL(options.baseUrl).origin, [options.baseUrl]);
+/** The folders and trash of the signed-in caller, with upload, share, and the machine-made label. It needs the tooltip and toast providers above it. `mount` adds them.
+ * It shows the root again when `baseUrl` changes. A bad `baseUrl` or `getToken` throws while it renders. */
+export function DriveBrowser({ baseUrl, getToken }: DriveUiOptions) {
+  const client = useMemo(() => makeClient({ baseUrl, getToken }).client, [baseUrl, getToken]);
+  return <DriveView key={baseUrl} client={client} origin={new URL(baseUrl).origin} />;
+}
+
+function DriveView({ client, origin }: { client: DriveClient; origin: string }) {
   // The route lives in this component, not in the page address, so the embed never moves the host page.
   const [hash, setHash] = useState("#/");
   const go = (loc: string) => setHash(`#/${loc === "/" ? "" : loc}`);
@@ -63,30 +71,38 @@ export function DriveBrowser(options: DriveUiOptions) {
 export interface MountedDrive {
   /** Show the drive with another address or token callback. The folder the person has open resets. */
   update(options: DriveUiOptions): void;
-  /** Remove the UI and stop its requests. Calling it again does nothing. */
+  /** Remove the UI. A request that runs is aborted, and no later request starts or calls `getToken`. Calling it again does nothing. */
   unmount(): void;
 }
 
 /** Render the drive into an element, for an app that does not use React itself. A bad `baseUrl` or `getToken` throws a `TypeError`. */
 export function mount(element: HTMLElement, options: DriveUiOptions): MountedDrive {
-  makeClient(options);
+  let current = makeClient(options);
   const root = createRoot(element);
   let open = true;
   let version = 0;
-  const render = (next: DriveUiOptions) =>
+  const render = (next: DriveUiOptions, client: DriveClient) =>
     root.render(
       <TooltipProvider>
         <ToastProvider>
-          <DriveBrowser key={version++} {...next} />
+          <DriveView key={version++} client={client} origin={new URL(next.baseUrl).origin} />
         </ToastProvider>
       </TooltipProvider>,
     );
-  render(options);
+  render(options, current.client);
   return {
-    update: (next) => (makeClient(next), open && render(next)),
+    update: (next) => {
+      const made = makeClient(next);
+      if (!open) return made.close();
+      // The old client closes first, so an upload of the old UI sends nothing more.
+      current.close();
+      current = made;
+      render(next, made.client);
+    },
     unmount: () => {
       if (!open) return;
       open = false;
+      current.close();
       root.unmount();
     },
   };

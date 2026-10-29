@@ -189,7 +189,7 @@ Set `DRIVE_PUBLIC_URL` to the origin that serves the UI. A download link on anot
 `agentic-drive/ui` renders the same UI inside your own page. It needs no framework in your app. You give it an element, the address of a drive server, and a function that returns the bearer token. `mount` returns a handle.
 
 ```ts
-import "agentic-design/styles.css";   // tokens and fonts
+import "agentic-design/styles.css";   // tokens, fonts, and base styles for body, headings, and links
 import "agentic-drive/ui.css";        // the drive styles
 import { mount } from "agentic-drive/ui";
 
@@ -202,7 +202,7 @@ drive.update({ baseUrl, getToken });  // use another server or callback
 drive.unmount();                      // remove the UI
 ```
 
-`getToken` returns 1 to 512 letters, digits, `-` or `_`, or `undefined` to send no `authorization` header. A bad `baseUrl` or a `getToken` that is not a function makes `mount` throw a `TypeError`. The server still checks every request against the token. The embed shows files and trash with upload, rename, move, share, and the "Created by agent" label. It has no sign-in form, because your app owns sign-in. It does not change the page address or the theme, so your page keeps both. The server must be on the same origin as your page, or allow your origin with CORS. `react` and `react-dom` (version 19 or later) are optional peer dependencies. Install them in your project when you use `agentic-drive/ui`. The web UI that the Worker serves uses the same views.
+`getToken` returns 1 to 512 letters, digits, `-` or `_`, or `undefined` to send no `authorization` header. A bad `baseUrl` or a `getToken` that is not a function makes `mount` throw a `TypeError`. The server still checks every request against the token. The embed shows files and trash with upload, rename, move, share, and the "Created by agent" label. It has no sign-in form, because your app owns sign-in. It does not change the page address, and it has no theme switch. `agentic-design/styles.css` sets base styles for the whole page, and it follows the dark mode of the system unless your page sets `data-theme`. Add `agentic-design` to your own dependencies, because your page imports its files. The Worker sends no CORS headers, so the server must be on the origin of your page. Set `baseUrl` to the same address as `DRIVE_PUBLIC_URL`, or the UI refuses its download links. `unmount` and `update` abort the requests that run and stop an upload that has more files to send. The UI keeps the list or grid choice in `localStorage` under `agentic-drive-view`, and it has its own heading for each view. `DriveBrowser` is the same UI as a React component. Wrap it in `TooltipProvider` and `ToastProvider` from `agentic-design/react`. `react` and `react-dom` (version 19 or later) are optional peer dependencies. Install them in your project when you use `agentic-drive/ui`. The web UI that the Worker serves uses the same views.
 
 ### Serve the UI from the package
 

@@ -141,4 +141,45 @@ describe("mount", () => {
     expect(host.innerHTML).toBe("");
     expect(server.fetch).not.toHaveBeenCalled();
   });
+
+  it("sends nothing and asks for no token after unmount, while an upload of many files runs", async () => {
+    await open(base);
+    const getToken = vi.fn(() => "tok-1");
+    await act(async () => mounted!.update({ ...base, getToken }));
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+    let release!: () => void;
+    server.fetch.mockImplementation(async (_input, init) => {
+      if (init?.method === "PUT") await new Promise<void>((resolve, reject) => { release = resolve; init.signal?.addEventListener("abort", () => reject(init.signal!.reason)); });
+      return new Response(JSON.stringify(item("u", "u.txt", "file", "root")), { headers: { "content-type": "application/json" } });
+    });
+    const files = ["a.txt", "b.txt", "c.txt"].map((n) => new File(["x"], n));
+    await act(async () => { Object.defineProperty(input, "files", { value: files }); input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const puts = () => server.fetch.mock.calls.filter(([, i]) => i?.method === "PUT").length;
+    expect(puts()).toBe(1);
+    const tokenCalls = getToken.mock.calls.length;
+    await act(async () => mounted!.unmount());
+    release();
+    await settle();
+    await settle();
+    expect(puts()).toBe(1);
+    expect(getToken.mock.calls.length).toBe(tokenCalls);
+  });
+
+  it("closes the client of the old options on update", async () => {
+    await open(base);
+    const oldFetchCalls = server.fetch.mock.calls.length;
+    expect(oldFetchCalls).toBeGreaterThan(0);
+    const first = vi.fn(() => "old");
+    await act(async () => mounted!.update({ ...base, getToken: first }));
+    await settle();
+    const second = vi.fn(() => "new");
+    await act(async () => mounted!.update({ ...base, getToken: second }));
+    await settle();
+    first.mockClear();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 20))));
+    expect(first).not.toHaveBeenCalled();
+    expect(server.seen.at(-1)!.authorization).toBe("Bearer new");
+  });
 });
