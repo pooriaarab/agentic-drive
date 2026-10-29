@@ -107,4 +107,11 @@ describe("backfillResources", () => {
     await expect(backfillResources(store)).rejects.toThrow(/has no owner or parent/);
     expect(await store.get("resources", "broken")).toBeNull();
   });
+
+  it("treats an empty owner or parent as damaged too", async () => {
+    const store = createMemoryStore();
+    await store.put("drive_nodes", "empty", { id: "empty", owner: "", parentId: "root", kind: "file" });
+    await expect(backfillResources(store)).rejects.toThrow(/has no owner or parent/);
+    expect(await store.get("resources", "empty")).toBeNull();
+  });
 });

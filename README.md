@@ -96,7 +96,7 @@ The Worker declares region `eu` and refuses a D1 query that a non-EU region serv
 ## Limits
 
 - Erase does not delete what identity keeps about the person: their principal, credentials, and sign-in record. Identity erases those. An invite that names only an email, sent by someone else, stays until it expires.
-- Items made before drive kept `createdById` and `updatedById` have no such fields, so an export or an erase cannot find them. Run `backfillAuthorIds(store)` once on a store of that age.
+- Items made before drive kept `createdById` and `updatedById` have no such fields, so an export or an erase cannot find them. Run `backfillAuthorIds(store)` on a store of that age, once the old Worker has stopped writing. Each call runs one page and returns a `nextCursor` while items remain. Pass the cursor to the next call until none is returned.
 - There are no retention settings yet, and no per-workspace export. An export covers one person.
 - `registerDocument` makes one item per document in a drive. Two calls at the same moment can make two.
 
@@ -121,7 +121,7 @@ The Worker declares region `eu` and refuses a D1 query that a non-EU region serv
 - An invite sends no message. The caller passes the invite id on.
 - Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path, move, or restore fails with `TOO_DEEP`. A move or a restore of a folder spends up to 200 queries on its subfolders (never on files), once, outside the transaction, to count its height. A move up or sideways, a rename, and a file need no count. A bigger folder fails with `TOO_MANY_ITEMS`: move its parts one by one. An edit inside the folder while it moves can leave items past the cap. Nobody can then reach them, and moving the folder back up repairs it.
 - Every access check writes one audit row, and a transaction that runs again writes its rows again. The audit holds ids and kinds only: no emails and no content.
-- Data made before sharing has no `resources` docs, so its owner gets `NOT_FOUND`. There is no backfill yet.
+- Data made before sharing has no `resources` docs, so its owner gets `NOT_FOUND`. Run `backfillResources(store)` on that store, paged the same way, before the Worker with sharing serves it. See CHANGELOG.md for the order of the upgrade steps.
 - A person who is not an owner cannot move an item into their own drive: the move fails with `CROSS_DRIVE`.
 ## Develop
 

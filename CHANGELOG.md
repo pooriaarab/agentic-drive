@@ -10,7 +10,7 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 - **The owner of a drive is the root of the principal's chain.** Before, the owner was the `owner` string of the token. Now a person's drive has the id of that person's principal.
 - **Items from before sharing need a backfill.** Sharing is on in the Worker. Each item needs a `resources` doc, and items from 0.1.0 do not have one. Until you run `backfillResources`, their owner gets `NOT_FOUND`. See the migration steps.
 - **Folders nest 15 deep, not 256, in a drive with sharing on.** The Worker turns sharing on. Sharing checks at most 16 resources on a path, the drive root included. A deeper item, move, or restore fails with `TOO_DEEP`. A local drive without sharing keeps 256. An item already deeper than 15 folders cannot be reached with sharing. Move it up in 0.1.0 before you upgrade.
-- **Big folders may not move.** A move or restore that must count the height of a folder with more than 200 subfolders fails with `TOO_MANY_ITEMS`.
+- **Big folders may not move.** A move or restore that must count the height of a folder with about 200 or more subfolders fails with `TOO_MANY_ITEMS`.
 - **`authenticate` has a new signature.** It was `authenticate(request, env)`. It is now `authenticate(request, store, now?)`, and it returns a promise. The `Ctx` it returns has a `principal` field.
 - **Agent tokens follow their grant scopes.** An agent used to act with the full rights of its owner in that drive. Now each action needs a scope in the agent's grant. An agent without the scope gets `FORBIDDEN`.
 - **`DELETE /account` and `delete-all` erase the person.** Before, they deleted the drive. Now they call `erasePerson`. That also deletes the drives of the person's agents that have their own identity, the shares they hold, and the invites they sent. What they made in other people's drives stays. Those items keep their kind, and the id of the person on them becomes `erased`. The result is `{ removed, grants, invites, anonymized }`. Before, it was `{ removed }`.
@@ -27,7 +27,8 @@ Read the known limits before you move a live deployment. Run the steps in this o
 2. Write the principals under the old owner ids. The owner of a drive is the principal id, and the old data keeps the old owner string. So write each person with the old owner string as its id. Old tokens had no scopes, so `drive:admin` keeps the old rights of a person. Map each old actor under its owner:
    - An actor of kind `agent_of_human` or `agent` acted in its owner's drive. Write it as `kind: "agent_of_human"` with `parentId` set to the owner's id. Give it the scopes you want it to keep, `drive:read`, `drive:write`, or `drive:admin`. An old token had all of them.
    - An `agent_of_agent` needs a chain of principals with the same parents, written the same way.
-   - A `user_token`, or an actor that is a human other than the owner, has no equal here. Share the drive with that actor's principal instead, with `POST /shares`.
+   - A `user_token` acted for its owner. Write it as `kind: "user_token"` with `parentId` set to the owner's id, and the scopes it should keep. A `user_token` cannot be a root.
+   - An actor that is a human other than the owner has no equal here. Share the drive with that actor's principal instead, with `POST /shares`.
 
    Do this for each person with the store, through the `Store` port:
 
@@ -41,7 +42,7 @@ Read the known limits before you move a live deployment. Run the steps in this o
    }
    ```
 
-3. Deploy the 0.2.0 Worker. From this point, the old tokens fail until step 5.
+3. Deploy the 0.2.0 Worker. From this point, nobody can sign in until step 5.
 4. Run the backfills once the old Worker has stopped writing. `backfillAuthorIds` fills in the author fields. `backfillResources` writes the missing `resources` docs, without which the 0.1.0 items are not reachable for their owners. Each call runs one page of 10 items and returns a `nextCursor` while items remain. Call the step again with that cursor until a call returns no cursor. On Cloudflare, deploy a one-off Worker that binds the same database. Protect it with a secret, and delete it after you run it:
 
    ```js
@@ -63,15 +64,18 @@ Read the known limits before you move a live deployment. Run the steps in this o
        const sent = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
        if (!env.BACKFILL_TOKEN || !same(sent, env.BACKFILL_TOKEN)) return new Response("forbidden", { status: 403 });
        const url = new URL(request.url);
-       const run = { authors: backfillAuthorIds, resources: backfillResources }[url.searchParams.get("step")];
-       if (!run) return new Response("unknown step", { status: 400 });
+       const steps = { authors: backfillAuthorIds, resources: backfillResources };
+       const step = url.searchParams.get("step");
+       if (!Object.hasOwn(steps, step)) return new Response("unknown step", { status: 400 });
        const store = createD1Store(env.DB, { region: parseRegion(env.DRIVE_REGION ?? "eu") });
-       return Response.json(await run(store, { cursor: url.searchParams.get("cursor") ?? undefined, maxPages: 1 }));
+       return Response.json(await steps[step](store, { cursor: url.searchParams.get("cursor") ?? undefined, maxPages: 1 }));
      },
    };
    ```
 
    Run `?step=authors`, then `?step=resources`. Pass each `nextCursor` as `cursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops `backfillResources`. Fix or delete that item, then run it again.
+
+   Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until the person makes it, an agent that calls first gets `NOT_FOUND`.
 5. Issue a bearer token for each principal with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to its person or agent. A token is shown only once.
 6. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
 7. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.

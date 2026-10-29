@@ -4,6 +4,8 @@ import { ROOT_ID, rootResource } from "./drive.js";
 /** Items per page. Small, so one page fits in the query cap of a Worker call. */
 const PAGE = 10;
 
+const isText = (v: unknown): v is string => typeof v === "string" && v !== "";
+
 export type BackfillOptions = {
   /** Where the last call stopped. Pass the `nextCursor` it returned. */
   cursor?: string;
@@ -71,7 +73,7 @@ export function backfillResources(store: Store, options: BackfillOptions = {}): 
   return walk(store, options, async (tx, items) => {
     const missing: { id: string; parentId: string }[] = [];
     for (const { id, data } of items) {
-      if (typeof data.owner !== "string" || typeof data.parentId !== "string") {
+      if (!isText(data.owner) || !isText(data.parentId)) {
         throw new Error(`item ${id} has no owner or parent. Fix it before you run the backfill again.`);
       }
       if (await tx.get("resources", id)) continue;
