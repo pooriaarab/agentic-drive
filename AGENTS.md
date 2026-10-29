@@ -18,7 +18,7 @@ document in another app. Each item belongs to one owner.
 
 ## Rules
 
-- A string that starts with `/` is a path. Any other string is an id.
+- A locator with a `/` is a path: `/x` from the root, or `<folder id>/x` from a folder. Any other locator is an id.
 - Trash first. Purge only items that are in the trash.
 - Report a `DriveError` as an error. Read its `code`.
 - Run with `--actor-kind agent_of_human` so items show a machine made them.

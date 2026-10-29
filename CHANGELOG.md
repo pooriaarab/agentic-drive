@@ -12,7 +12,8 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 - **Folders nest 15 deep, not 256, in a drive with sharing on.** The Worker turns sharing on. Sharing checks at most 16 resources on a path, the drive root included. A deeper item, move, or restore fails with `TOO_DEEP`. A local drive without sharing keeps 256. An item already deeper than 15 folders cannot be reached with sharing. Move it up in 0.1.0 before you upgrade.
 - **A locator with a `/` is a path.** A path is `/x` from the root, or `<folder id>/x` from a folder. Before, only a leading `/` made a path. Ids that the drive makes never contain `/`. A path without an id starts in the caller's own drive.
 - **Trash asks for `write`, not `delete`.** An editor can trash an item. A custom `can` hook that allowed trash only for `delete` must change.
-- **Big folders may not move.** A move or restore that must count the height of a folder with about 200 or more subfolders fails with `TOO_MANY_ITEMS`.
+- **Big folders may not move.** In a drive with sharing on, a move or restore that must count the height of a folder with about 200 or more subfolders fails with `TOO_MANY_ITEMS`.
+- **Restore into another folder needs `write` on that folder.** Before, a restore checked only the item.
 - **`authenticate` has a new signature.** It was `authenticate(request, env)`. It is now `authenticate(request, store, now?)`, and it returns a promise. The `Ctx` it returns has a `principal` field.
 - **Agent tokens follow their grant scopes.** An agent used to act with the full rights of its owner in that drive. Now each action needs a scope in the agent's grant. An agent without the scope gets `FORBIDDEN`.
 - **`DELETE /account` and `delete-all` erase the person.** Before, they deleted the drive. Now they call `erasePerson`. That also deletes the drives of the person's agents that have their own identity, the shares they hold, and the invites they sent. What they made in other people's drives stays. Those items keep their kind, and the id of the person on them becomes `erased`. The result is `{ removed, grants, invites, anonymized }`. Before, it was `{ removed }`.
@@ -29,7 +30,7 @@ Read the known limits before you move a live deployment. Run the steps in this o
 2. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights. The root principal of each owner must keep `drive:write` at least, because its first call creates the drive root. Narrow the agents, not the owner. The 0.1.0 data does not say what kind an owner is. Use `human` for a person. Use `agent` only for a machine that acts with no person. A wrong kind breaks the chains under that owner.
    - An owner of kind `human` is a root `human`. Its agents are `agent_of_human`, with `parentId` set to the owner. Its `user_token` actors are `user_token`, with `parentId` set to the owner. An `agent_of_agent` sits under an `agent_of_human`. 0.1.0 recorded no parent ids, so choose one, and keep the chain to 5 links (`MAX_CHAIN_DEPTH`).
    - An owner of kind `agent` is a root `agent`. Its actors are `agent_of_agent`, with `parentId` set to the owner. The same 5-link limit applies.
-   - A human actor who is not the owner keeps its old actor id, as a root `human`. Share each folder it used with it, with the role `owner`. It keeps no path access to the owner's drive. See the known limits.
+   - A human actor who is not the owner keeps its old actor id, as a root `human`. Step 6 shares the folders with it. It keeps no path access to the owner's drive. See the known limits.
 
    Write each one through the `Store` port:
 
@@ -42,12 +43,14 @@ Read the known limits before you move a live deployment. Run the steps in this o
      await store.put("principals", principal.id, principal);
    }
 
-   await writePrincipal(env, { id: "u1", kind: "human", scopes: ["drive:admin"] });
-   await writePrincipal(env, { id: "bot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:admin"] });
+   export async function writeRoots(env) {
+     await writePrincipal(env, { id: "u1", kind: "human", scopes: ["drive:admin"] });
+     await writePrincipal(env, { id: "bot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:admin"] });
+   }
    ```
 
 3. Deploy the 0.2.0 Worker. From this point, nobody can sign in until step 5.
-4. Run the backfills once the old Worker has stopped writing. `backfillAuthorIds` fills in the author fields. `backfillResources` writes the missing `resources` docs, without which the 0.1.0 items are not reachable for their owners. Each call runs one page of 10 items and returns a `nextCursor` while items remain. Call the step again with that cursor until a call returns no cursor. On Cloudflare, deploy a one-off Worker that binds the same database. Protect it with a secret, and delete it after you run it:
+4. Run the backfills once the old Worker has stopped writing. `backfillAuthorIds` fills in the author fields. `backfillResources` writes the missing `resources` docs, without which the 0.1.0 items are not reachable for their owners. Each call runs one page of 10 items and returns a `nextCursor` while items remain. Call the step again with that cursor until a call returns no cursor. On Cloudflare, deploy a one-off Worker that binds the same database. Give it `compatibility_flags: ["nodejs_compat"]`, as the main Worker has. Protect it with a secret, and delete it after you run it:
 
    ```js
    import { createD1Store } from "agentic-identity/cloudflare";
@@ -79,10 +82,11 @@ Read the known limits before you move a live deployment. Run the steps in this o
 
    Run `?step=authors`, then `?step=resources`. Pass each `nextCursor` as `cursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops a step. Fix or delete that item, then run it again.
 5. Issue a bearer token for each person with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to the person. A token is shown only once. Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until a person makes it, an agent without `drive:write` that calls first gets `NOT_FOUND`.
-6. Issue the tokens for the agents and the other actors, and give them out.
-7. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
-8. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
-9. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
+6. As the owner, share each folder that a human actor who is not the owner used with that actor, with `POST /shares` and the role `owner`. Do this after step 5, because a share needs the item's `resources` doc and the drive root.
+7. Issue the tokens for the agents and the other human actors, and give them out.
+8. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
+9. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
+10. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
 
 Known limits of this release:
 
