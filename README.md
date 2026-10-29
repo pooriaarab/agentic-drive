@@ -137,7 +137,7 @@ Open `http://127.0.0.1:8787` and sign in with a bearer token. The tab keeps the 
 
 Test it with `npm run test:e2e`. The test starts `wrangler dev` on a seeded database, drives the UI in Chromium, and runs an axe WCAG 2.2 AA check on each view in both themes. Run `npx playwright install chromium` once first. The run also writes the screenshots in [docs/ui](docs/ui).
 
-Run `npm run build:ui` before `npm test` or `wrangler deploy`, because the Worker config names the `ui-dist` folder. The UI answers with a content security policy that loads scripts and fonts only from its own origin, and it refuses to be framed.
+Run `npm run build:ui` before `npm run test:e2e` or `wrangler deploy`, because the Worker config names the `ui-dist` folder. The UI answers with a content security policy that loads scripts and fonts only from its own origin, and it refuses to be framed.
 
 Set `DRIVE_PUBLIC_URL` to the origin that serves the UI. A download link on another origin is refused.
 
@@ -168,7 +168,7 @@ export { default } from "agentic-drive/worker";
 
 Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `DRIVE_URL_SECRET` needs 32 bytes or more. `DRIVE_PUBLIC_URL` is the origin of this Worker. The Worker declares region `eu` unless `DRIVE_REGION` says otherwise, so keep the EU jurisdiction and location above. Sign-in uses agentic-identity credentials in the same D1 database. Create a token there first, or every bearer API request gets 401. In the D1 database:
 
-1. Create the table with `D1_SCHEMA` from `agentic-identity/cloudflare`, unless a request has already run.
+1. Create the table, unless a request has already run: `wrangler d1 execute agentic-drive --remote --command "CREATE TABLE IF NOT EXISTS store_docs (collection TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (collection, id)) WITHOUT ROWID"`.
 2. Insert a row into `store_docs` with `collection` `principals` and `id` `me`. Its body is `{ "id": "me", "kind": "human", "scopes": ["drive:admin"] }`.
 3. Insert a row into `store_docs` with `collection` `credentials`. Its `id` is the lowercase hex SHA-256 of the token, and its body is `{ "principalId": "me", "kind": "api_key" }`.
 

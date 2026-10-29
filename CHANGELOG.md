@@ -9,7 +9,7 @@ Read the breaking changes before you upgrade or deploy.
 - **The CLI acts as a real principal.** The `--owner`, `--actor`, and `--actor-kind` flags and the `AGENTIC_DRIVE_OWNER`, `_ACTOR`, and `_KIND` variables are gone. Pass an API key with `--token` or `AGENTIC_DRIVE_TOKEN`. agentic-identity resolves the key. With no key, or a revoked or unknown key, the CLI and `mcp` exit with code 3. The default owner `me` is gone.
 - **`openLocal(dir)` takes a folder and returns `{ drive, store }`.** Use `resolveToken(store, token)` to get the `ctx`.
 - **The Worker serves the web UI from `ui-dist`.** `wrangler.jsonc` names `ui-dist` as the assets folder. Run `npm run build:ui` before each `wrangler deploy`. Without the build, the deploy fails because `ui-dist` does not exist. A `ui-dist` left from an older build ships an old UI.
-- **Paths other than `/api/*` and `/health` may get the UI.** The assets answer every other path. An unknown path can get the UI page instead of a 404 from the Worker. A client that expects a 404 for such a path must check the response.
+- **Paths other than `/api/*` and `/health` get the UI.** The assets answer every other path. An unknown GET path returns the UI page with status 200, not a 404 from the Worker. A client that expects a 404 for such a path must change.
 
 ### Added
 
