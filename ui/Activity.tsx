@@ -12,6 +12,10 @@ function detailText(e: ActivityEntry): string {
   return "";
 }
 
+/** The sentence of an entry. A role that came from an accepted invite is not a share by the person who accepted it. */
+const describe = (e: ActivityEntry) =>
+  e.action === "share" && e.detail?.via === "invite" ? `accepted an invite and now has the role ${e.detail.role}` : `${VERBS[e.action]} ${detailText(e)}`.trim();
+
 /** The AI Act marker. It has text, and it reads the actor kind that the API stores on each entry. */
 export const AgentLabel = ({ entry }: { entry: ActivityEntry }) => (entry.actor.kind === "agent" ? <span className="agd-pill">AI agent</span> : null);
 
@@ -22,7 +26,7 @@ export function ActivityList({ entries }: { entries: ActivityEntry[] }) {
     <ol className="drive-activity" aria-label="Activity">
       {entries.map((e) => (
         <li key={e.id}>
-          <strong>{e.actor.id}</strong> <AgentLabel entry={e} /> {VERBS[e.action]} {detailText(e)}{" "}
+          <strong>{e.actor.id}</strong> <AgentLabel entry={e} /> {describe(e)}{" "}
           <time dateTime={new Date(e.at).toISOString()}>{new Date(e.at).toLocaleString()}</time>
         </li>
       ))}

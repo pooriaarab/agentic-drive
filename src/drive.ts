@@ -1407,10 +1407,17 @@ export function createDrive(deps: DriveDeps) {
     /** `identity` is the verified email of a person, or the handle of an agent. */
     async acceptInvite(ctx: Ctx, inviteId: string, identity: { email?: string; handle?: string }): Promise<void> {
       const invite = await store.get("invites", inviteId);
-      await viaSharing(ctx, (s, p) => s.acceptInvite(p, inviteId, identity));
       // The item that the invite names. An invite to a drive root names no item, so it leaves no entry.
       const node = typeof invite?.resourceId === "string" ? await store.get<Node>(NODES, invite.resourceId) : null;
-      if (node && typeof invite?.role === "string") await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind: ctx.actor.kind === "human" ? "human" : "agent", subjectId: ctx.actor.id, role: invite.role }));
+      const subjectKind = node ? subjectKindOf(ctx.actor.kind) : null;
+      const roleOf = async () => (node && subjectKind ? (await allWhere(store, "grants", { resourceId: node.id, subjectId: ctx.actor.id, subjectKind }))[0]?.data.role ?? null : null);
+      const before = await roleOf();
+      await viaSharing(ctx, (s, p) => s.acceptInvite(p, inviteId, identity));
+      // Identity only raises a role, so an invite below the role held changes nothing and leaves no entry.
+      const after = await roleOf();
+      if (node && subjectKind && after !== null && after !== before) {
+        await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind, subjectId: ctx.actor.id, role: after as string, via: "invite" }));
+      }
     },
 
     /** The token comes back once. Only its hash is stored. */

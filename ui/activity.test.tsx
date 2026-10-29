@@ -28,6 +28,11 @@ describe("ActivityList", () => {
     expect(rows[1]!.textContent).not.toContain("AI agent");
     expect(rows[1]!.textContent).toContain("ada");
   });
+  it("does not say that the person who accepted an invite shared the item", async () => {
+    const host = await render([entry("3", "human", "share", { subjectId: "ada", role: "viewer", via: "invite" })]);
+    expect(host.textContent).toContain("accepted an invite and now has the role viewer");
+    expect(host.textContent).not.toContain("shared it");
+  });
   it("says so when nothing happened", async () => {
     expect((await render([])).textContent).toContain("No activity yet.");
   });

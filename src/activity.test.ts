@@ -161,7 +161,11 @@ describe("activity log", () => {
     const file = await drive.putFile(ann, "/f.txt", bytes("x"));
     const invite = await drive.invite(ann, file.id, { role: "viewer", email: "bob@example.com" });
     await drive.acceptInvite(bob, invite.id, { email: "bob@example.com" });
-    expect((await drive.listActivity(ann, file.id))[0]).toMatchObject({ action: "share", actor: { id: "bob" }, detail: { subjectId: "bob", role: "viewer" } });
+    expect((await drive.listActivity(ann, file.id))[0]).toMatchObject({ action: "share", actor: { id: "bob" }, detail: { subjectId: "bob", role: "viewer", via: "invite" } });
+    // An invite below the role held changes nothing, so it leaves no entry.
+    const low = await drive.invite(ann, ref.id, { role: "viewer", email: "bob@example.com" });
+    await drive.acceptInvite(bob, low.id, { email: "bob@example.com" });
+    expect(actions(await drive.listActivity(ann, ref.id))).toEqual(["share", "create"]);
     await drive.unshare(ann, file.id, { kind: "human", id: "nobody" });
     expect(actions(await drive.listActivity(ann, file.id))).toEqual(["share", "create"]);
   });
