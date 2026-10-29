@@ -34,10 +34,10 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string, store
     name: string,
     description: string,
     shape: S,
-    run: (args: z.objectOutputType<S, z.ZodTypeAny>) => Promise<unknown>,
+    run: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>,
     annotations: { readOnlyHint?: boolean; destructiveHint?: boolean } = {},
   ) =>
-    server.registerTool(name, { description, inputSchema: shape, annotations }, (async (args: z.objectOutputType<S, z.ZodTypeAny>) => {
+    server.registerTool(name, { description, inputSchema: shape, annotations }, (async (args: z.infer<z.ZodObject<S>>) => {
       try {
         return ok(await run(args));
       } catch (error) {
