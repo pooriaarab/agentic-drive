@@ -62,6 +62,7 @@
     "prepack": "npm run build --silent >&2 && npm run build:ui --silent >&2",
     "ci:local": "npm run build && npm run build:ui && npm run typecheck && npm test && npm run test:e2e",
     "build:ui": "vite build",
+    "deploy:demo": "npm run build:ui && wrangler deploy -c wrangler.demo.jsonc",
     "test:e2e": "playwright test"
   },
   "dependencies": {

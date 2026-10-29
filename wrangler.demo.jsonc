@@ -1,0 +1,13 @@
+{
+  // Demo deploy on workers.dev. Deploy with `npm run deploy:demo` (see README, "Live demo").
+  // The demo holds throwaway data only. Secrets are set with `wrangler secret put -c wrangler.demo.jsonc`, never in this file.
+  "name": "agentic-drive-demo",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": { "DRIVE_PUBLIC_URL": "https://agentic-drive-demo.hello-fd1.workers.dev" },
+  "d1_databases": [{ "binding": "DB", "database_name": "agentic-drive-demo", "database_id": "09d0aee1-6ebe-4ed0-a7dd-43b9e1c2ce80" }],
+  "assets": { "directory": "./ui-dist", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*", "/health"] },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "agentic-drive-demo-files", "jurisdiction": "eu" }]
+}
