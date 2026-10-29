@@ -25,9 +25,14 @@ const BAD_TOKEN = "the key is not valid: it is unknown, revoked, or expired, or 
  */
 export async function resolveToken(store: Store, token: string | undefined): Promise<Ctx> {
   if (!token) throw new AuthError(NO_TOKEN);
-  // Check the shape first: a bad value must not reach the Headers constructor, whose error would echo the secret.
-  if (!/^[A-Za-z0-9_-]{1,512}$/.test(token)) throw new AuthError(BAD_TOKEN);
-  const ctx = await authenticate(new Request("http://local", { headers: { authorization: `Bearer ${token}` } }), store);
+  let request: Request;
+  try {
+    request = new Request("http://local", { headers: { authorization: `Bearer ${token}` } });
+  } catch {
+    // The Headers error would echo the secret, so say nothing of it.
+    throw new AuthError(BAD_TOKEN);
+  }
+  const ctx = await authenticate(request, store);
   if (!ctx) throw new AuthError(BAD_TOKEN);
   return ctx;
 }
