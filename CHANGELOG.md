@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
+
+Read the breaking changes before you upgrade.
 
 ### Breaking changes
 
@@ -14,6 +16,7 @@
 ### Changed
 
 - **Transactions no longer nest store calls.** Access answers come from outside the transaction, so each transaction reads before it writes and runs on the file store of `agentic-identity/file`. A test runs the sharing and person suites on it.
+- **zod 4.6.6.** The package now uses `zod` `^4.6.6`, which clears GHSA-mrhx-c7xc-m3w5.
 
 ## 0.7.0
 
