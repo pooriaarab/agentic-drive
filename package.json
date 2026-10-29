@@ -75,7 +75,7 @@
     "agentic-design": "^0.1.0",
     "agentic-identity": "^0.6.0",
     "hono": "^4.13.14",
-    "zod": "^3.25.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
@@ -109,6 +109,11 @@
     },
     "react-dom": {
       "optional": true
+    }
+  },
+  "overrides": {
+    "agentic-design": {
+      "zod": "^4.6.6"
     }
   }
 }
