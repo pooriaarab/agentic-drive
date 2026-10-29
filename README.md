@@ -10,6 +10,20 @@ Store, sort, and share files and folders.
 > Status: early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK and the HTTP API.
 > A small web UI works. See [UI](#ui).
 
+## Live demo
+
+A demo Worker runs at https://agentic-drive-demo.hello-fd1.workers.dev. `GET /health` answers 200, and the web UI is served at `/`.
+The API needs a bearer token, so a call without one gets 401. The demo holds throwaway data only, and it can be reset at any time.
+
+To redeploy it, set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in your shell, then run:
+
+```sh
+npm run deploy:demo
+```
+
+This uses `wrangler.demo.jsonc` (D1 in `weur`, R2 in the EU jurisdiction, `workers_dev` on). The URL signing secret lives in the Worker:
+`openssl rand -hex 32 | npx wrangler secret put DRIVE_URL_SECRET -c wrangler.demo.jsonc`. Deploys are manual. No CI secret is used.
+
 ## Install
 
 ```sh
