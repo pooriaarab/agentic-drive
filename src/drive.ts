@@ -1409,7 +1409,8 @@ export function createDrive(deps: DriveDeps) {
       const invite = await store.get("invites", inviteId);
       // The item that the invite names. An invite to a drive root names no item, so it leaves no entry.
       const node = typeof invite?.resourceId === "string" ? await store.get<Node>(NODES, invite.resourceId) : null;
-      const subjectKind = node ? subjectKindOf(ctx.actor.kind) : null;
+      // Only the root of a chain holds a role. Any other caller gets the answer of identity, and no entry.
+      const subjectKind = node && (ctx.actor.kind === "human" || ctx.actor.kind === "agent") ? subjectKindOf(ctx.actor.kind) : null;
       const roleOf = async () => (node && subjectKind ? (await allWhere(store, "grants", { resourceId: node.id, subjectId: ctx.actor.id, subjectKind }))[0]?.data.role ?? null : null);
       const before = await roleOf();
       await viaSharing(ctx, (s, p) => s.acceptInvite(p, inviteId, identity));
