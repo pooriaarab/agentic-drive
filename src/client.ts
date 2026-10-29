@@ -58,7 +58,10 @@ const record = (v: unknown): v is Record<string, unknown> => typeof v === "objec
 const text = (v: unknown) => typeof v === "string";
 const orNull = (test: (v: unknown) => boolean) => (v: unknown) => v === null || test(v);
 const num = (v: unknown) => typeof v === "number";
-const actor = (v: unknown) => record(v) && text(v.id) && text(v.kind);
+const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"];
+const ROLES = ["viewer", "commenter", "editor", "owner"];
+const oneOf = (list: string[]) => (v: unknown) => typeof v === "string" && list.includes(v);
+const actor = (v: unknown) => record(v) && text(v.id) && oneOf(ACTOR_KINDS)(v.kind);
 const isItem: Check<Item> = (v): v is Item =>
   record(v) && text(v.id) && text(v.owner) && text(v.parentId) && text(v.name) && (v.kind === "folder" || v.kind === "file" || v.kind === "ref") && num(v.size) && orNull(text)(v.mime) && orNull(text)(v.hash) &&
   orNull(text)(v.ref) && num(v.createdAt) && num(v.updatedAt) && actor(v.createdBy) && actor(v.updatedBy) && text(v.createdById) && text(v.updatedById) && typeof v.trashed === "boolean" && orNull(num)(v.trashedAt);
@@ -105,7 +108,7 @@ export function createClient(options: ClientOptions) {
       let response: Response;
       try {
         // A stream body needs `duplex`. Browsers that cannot stream a request fail here, so send bytes there.
-        response = await doFetch(`${origin}${BASE}${path}`, { method, headers, body, signal: init.signal, redirect: "error", ...(body instanceof ReadableStream ? { duplex: "half" } : {}) } as RequestInit);
+        response = await doFetch(`${origin}${BASE}${path}`, { method, headers, body, signal: init.signal, redirect: "manual", ...(body instanceof ReadableStream ? { duplex: "half" } : {}) } as RequestInit);
       } catch (error) {
         if (init.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
         if (attempt < attempts) {
@@ -119,6 +122,11 @@ export function createClient(options: ClientOptions) {
         await pause(attempt, init.signal);
         continue;
       }
+      // The API never redirects. A browser shows a redirect as an opaque response, and Node and Workers as a 3xx.
+      if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+        await response.body?.cancel();
+        throw new DriveApiError("BAD_RESPONSE", response.status, "the server redirected. Set baseUrl to the final URL.");
+      }
       if (response.ok) return response;
       throw await errorOf(response);
     }
@@ -126,8 +134,18 @@ export function createClient(options: ClientOptions) {
 
   /** A short wait before a read is sent again. An abort ends it. */
   async function pause(attempt: number, signal?: AbortSignal): Promise<void> {
-    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(100 * 2 ** (attempt - 1), 1000)));
     signal?.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", stop);
+        resolve();
+      }, Math.min(100 * 2 ** (attempt - 1), 1000));
+      const stop = () => {
+        clearTimeout(timer);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", stop, { once: true });
+    });
   }
 
   async function errorOf(response: Response): Promise<DriveApiError> {
@@ -173,6 +191,7 @@ export function createClient(options: ClientOptions) {
     if (verify) {
       // The Worker sends the hash of every stored file. An answer without it is not the API's.
       if (!/^[0-9a-f]{64}$/.test(sha256)) throw new DriveApiError("BAD_RESPONSE", response.status, "the answer has no valid x-content-sha256");
+      if (typeof crypto === "undefined" || !crypto.subtle) throw new DriveApiError("BAD_RESPONSE", response.status, "this runtime has no WebCrypto, so the bytes cannot be checked. Use https.");
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource));
       if (Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("") !== sha256) throw new DriveApiError("BAD_RESPONSE", response.status, "the bytes do not match their hash");
     }
@@ -185,9 +204,9 @@ export function createClient(options: ClientOptions) {
   const isUrl = shape<{ url: string; expiresInSeconds: number }>((v) => typeof v.url === "string" && typeof v.expiresInSeconds === "number");
   const isShares = shape<{ grants: { subjectKind: SubjectKind; subjectId: string; role: Role }[]; links: { id: string; role: Role; signedInOnly: boolean; expiresAt: number | null; revoked: boolean }[]; invites: { id: string; role: Role; email: string | null; handle: string | null; expiresAt: number | null; accepted: boolean }[] }>(
     (v) =>
-      listOf(shape((g) => (g.subjectKind === "human" || g.subjectKind === "agent") && text(g.subjectId) && text(g.role)))(v.grants) &&
-      listOf(shape((l) => text(l.id) && text(l.role) && typeof l.signedInOnly === "boolean" && orNull(num)(l.expiresAt) && typeof l.revoked === "boolean"))(v.links) &&
-      listOf(shape((i) => text(i.id) && text(i.role) && orNull(text)(i.email) && orNull(text)(i.handle) && orNull(num)(i.expiresAt) && typeof i.accepted === "boolean"))(v.invites));
+      listOf(shape((g) => (g.subjectKind === "human" || g.subjectKind === "agent") && text(g.subjectId) && oneOf(ROLES)(g.role)))(v.grants) &&
+      listOf(shape((l) => text(l.id) && oneOf(ROLES)(l.role) && typeof l.signedInOnly === "boolean" && orNull(num)(l.expiresAt) && typeof l.revoked === "boolean"))(v.links) &&
+      listOf(shape((i) => text(i.id) && oneOf(ROLES)(i.role) && orNull(text)(i.email) && orNull(text)(i.handle) && orNull(num)(i.expiresAt) && typeof i.accepted === "boolean"))(v.invites));
   const isHome = shape<{ apps: Record<string, number>; files: number; items: (PathItem & { app: string | null })[] }>((v) => record(v.apps) && Object.values(v.apps).every(num) && num(v.files) && listOf(shape((i) => isPathItem(i) && orNull(text)((i as Record<string, unknown>).app)))(v.items));
   const isId = shape<{ id: string }>((v) => typeof v.id === "string");
   const isLink = shape<{ id: string; token: string }>((v) => typeof v.id === "string" && typeof v.token === "string");
@@ -214,7 +233,12 @@ export function createClient(options: ClientOptions) {
     purge: (itemId: string, o: CallOptions = {}) => json("POST", "/purge", { json: { id: itemId }, ...o }, numbers("removed")) as Promise<{ removed: number }>,
     search: (q: Pick<SearchQuery, "name" | "mime" | "kind" | "minSize" | "maxSize" | "createdByKind" | "app" | "limit"> = {}, o: CallOptions = {}) => json("GET", `/search${query(q)}`, o, listOf(isPathItem)),
     /** Everything the caller has, as a zip. */
-    export: (o: CallOptions = {}) => bytes("/export", o).then((r) => r.data),
+    export: async (o: CallOptions = {}) => {
+      const { data } = await bytes("/export", o);
+      // A zip starts with "PK". Anything else is not the export, such as a page from a proxy.
+      if (data[0] !== 0x50 || data[1] !== 0x4b) throw new DriveApiError("BAD_RESPONSE", 200, "the answer is not a zip");
+      return data;
+    },
     /** Erases the caller for good. The client sends `confirm=yes`. */
     deleteAccount: (o: CallOptions = {}) => json("DELETE", "/account?confirm=yes", o, numbers("removed", "grants", "invites", "anonymized")) as Promise<{ removed: number; grants: number; invites: number; anonymized: number }>,
     home: (q: { app?: string; limit?: number } = {}, o: CallOptions = {}) => json("GET", `/home${query(q)}`, o, isHome),

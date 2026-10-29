@@ -93,10 +93,11 @@ try {
 ```
 
 - One method for each bearer route and each shared route: `list`, `stat`, `mkdir`, `upload`, `download`, `url`, `move`, `trash`, `listTrash`, `restore`, `purge`, `search`, `export`, `deleteAccount`, `home`, `registerDocument`, `forgetDocument`, `shares`, `share`, `unshare`, `invite`, `acceptInvite`, `createLink`, `revokeLink`, `openShared`, `listShared`, and `readShared`.
-- Each method has typed input and output. The client checks the shape of every answer, and `download` checks the bytes against their hash. An answer that fails a check throws `BAD_RESPONSE`. `url` gives a signed link that you fetch yourself. The last argument takes `{ signal }` to stop the call with an `AbortSignal`.
+- Each method has typed input and output. The client checks the shape of every answer, and `download` checks the bytes against their hash (it needs WebCrypto). `readShared` does not: the Worker sends no hash there. An answer that fails a check throws `BAD_RESPONSE`. `url` gives a signed link that you fetch yourself. The last argument takes `{ signal }` to stop the call with an `AbortSignal`.
 - A failed call throws `DriveApiError`. It has the `code` of the API and the HTTP `status`. A call that gets no answer has the code `NETWORK_ERROR` and status 0. An abort stays the abort error of `fetch`. A code that the client does not know gives `BAD_RESPONSE`.
-- The client never sends a write again. `retries` (default 0) sends a read (GET) again after a network error or a 502, 503, or 504, with a short wait. The client does not follow a redirect.
+- The client never sends a write again. `retries` (default 0) sends a read (GET) again after a network error or a 502, 503, or 504, with a short wait. A redirect is an error (`BAD_RESPONSE`): set `baseUrl` to the final URL.
 - `fetch` is an option, for tests and for runtimes with their own. `openShared`, `listShared`, and `readShared` work without a token, with a `linkToken`.
+- A browser page needs the Worker on its own origin for now: the Worker sends no CORS headers.
 - Share with a subject: `share("/pub", { kind: "human", id: "u2" }, "viewer")`.
 
 ## Features

@@ -6,6 +6,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Miniflare } from "miniflare";
+import ts from "typescript";
 import type { Doc } from "agentic-identity";
 import { D1_SCHEMA } from "agentic-identity/cloudflare";
 import { createClient, DriveApiError } from "./client.js";
@@ -171,6 +173,34 @@ describe("the client on the real Worker", () => {
     await as(TOK_U2).acceptInvite(invite.id);
     expect((await as(TOK_U2).stat(folder.id)).name).toBe("pub");
   });
+  it("runs inside a Worker runtime and calls the real Worker", async () => {
+    const client = ts.transpileModule(readFileSync(join(import.meta.dirname, "client.ts"), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+    const script = `import { createClient } from "./client.js";
+      export default { async fetch(request, env) {
+        const drive = createClient({ baseUrl: env.BASE, token: request.headers.get("x-token") ?? undefined });
+        try {
+          await drive.mkdir("/from-workerd");
+          const file = await drive.upload("/from-workerd/w.txt", "worker bytes");
+          const got = await drive.download(file.id);
+          await drive.stat("/nothing");
+          return Response.json({ wrong: true });
+        } catch (error) { return Response.json({ code: error.code, status: error.status, name: error.name }); }
+      } };`;
+    const mf = new Miniflare({
+      compatibilityDate: "2026-01-01",
+      modules: [{ type: "ESModule", path: "index.js", contents: script }, { type: "ESModule", path: "client.js", contents: client }],
+      bindings: { BASE: base },
+    });
+    try {
+      const answer = await mf.dispatchFetch("http://worker.test/", { headers: { "x-token": TOK_U1 } });
+      expect(await answer.json()).toEqual({ code: "NOT_FOUND", status: 404, name: "DriveApiError" });
+      expect(text((await as(TOK_U1).download("/from-workerd/w.txt")).data)).toBe("worker bytes");
+      const denied = await mf.dispatchFetch("http://worker.test/", { headers: { "x-token": "wrong-".padEnd(40, "z") } });
+      expect(await denied.json()).toEqual({ code: "UNAUTHORIZED", status: 401, name: "DriveApiError" });
+    } finally {
+      await mf.dispose();
+    }
+  });
   it("erases the caller only on the call", async () => {
     const me = as(TOK_U3);
     await me.upload("/mine.txt", "m");
@@ -237,10 +267,23 @@ describe("the client without a server", () => {
     const dropped = answering(() => new Response(new ReadableStream({ start: (c) => c.error(new Error("reset")) })));
     expect(await failure(dropped.download("/a"))).toMatchObject({ code: "NETWORK_ERROR", status: 0 });
   });
-  it("does not follow a redirect", async () => {
-    let seen: RequestInit | undefined;
-    const client = createClient({ baseUrl: "http://drive.example.com", token: "abc", fetch: (async (_url: string, init?: RequestInit) => { seen = init; return Response.json([]); }) as unknown as typeof fetch });
-    await client.list("/");
-    expect(seen?.redirect).toBe("error");
+  it("treats a redirect as an error", async () => {
+    const redirected = createClient({ baseUrl: "http://drive.example.com", token: "abc", fetch: (async (_url: string, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 301, headers: { location: "https://drive.example.com/api/v1/drive/items" } });
+    }) as unknown as typeof fetch });
+    expect(await failure(redirected.list("/"))).toMatchObject({ code: "BAD_RESPONSE", status: 301 });
+  });
+  it("refuses an export that is not a zip, and a role or actor kind that the types rule out", async () => {
+    expect(await failure(answering(() => new Response("<html>")).export())).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => Response.json({ grants: [{ subjectKind: "human", subjectId: "a", role: "boss" }], links: [], invites: [] })).shares("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+  });
+  it("stops a wait between two tries when the signal aborts", async () => {
+    const controller = new AbortController();
+    const client = createClient({ baseUrl: "https://drive.example.com", token: "abc", retries: 3, fetch: (async () => new Response("busy", { status: 503 })) as unknown as typeof fetch });
+    setTimeout(() => controller.abort(), 20);
+    const started = Date.now();
+    await expect(client.list("/", { signal: controller.signal })).rejects.toBeDefined();
+    expect(Date.now() - started).toBeLessThan(90);
   });
 });
