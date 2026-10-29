@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { assertBlobPutOptions, assertResponseHeaders, createMemoryStore, parseRegion, type AdapterOptions, type Blobs, type Doc, type Store, type StoreOps } from "agentic-identity";
 
@@ -120,7 +120,7 @@ export function createFileStore(dir: string, options: AdapterOptions & { shared?
 /** A version names the bytes: the SHA-256 of the data. */
 const versionOf = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
 
-/** Blobs kept as files under `dir`. File names are key hashes, so no key escapes the folder. */
+/** Blobs kept as files under `dir`. One process at a time: a conditional put is atomic only inside one process. File names are key hashes, so no key escapes the folder. */
 export function createFileBlobs(dir: string, options: AdapterOptions = {}): Blobs {
   mkdirSync(dir, { recursive: true });
   const path = (key: string) => join(dir, createHash("sha256").update(key).digest("hex"));
@@ -135,9 +135,12 @@ export function createFileBlobs(dir: string, options: AdapterOptions = {}): Blob
       assertBlobPutOptions(opts);
       const current = existsSync(path(key)) ? versionOf(readFileSync(path(key))) : undefined;
       if ((opts?.ifNoneMatch === "*" && current !== undefined) || (opts?.ifMatch !== undefined && current !== opts.ifMatch)) return null;
-      writeFileSync(path(key), data);
+      // Write beside the target and rename, so a crash never leaves half a blob.
+      const tmp = `${path(key)}.tmp`;
+      writeFileSync(tmp, data);
       if (opts?.contentType) writeFileSync(`${path(key)}.type`, opts.contentType);
       else rmSync(`${path(key)}.type`, { force: true });
+      renameSync(tmp, path(key));
       return { version: versionOf(data) };
     },
     async get(key) {

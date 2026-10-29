@@ -108,7 +108,7 @@ const REF = /^[a-z][a-z0-9_-]*:[^\s/]+$/;
 /** Validates a name. Names are NFC-normalized. Two names clash when their keys match. */
 export function parseName(raw: string): { name: string; key: string } {
   const name = raw.normalize("NFC");
-  if (name.trim() === "" || name === "." || name === ".." || /[/\u0000-\u001f\u007f]/.test(name) || new TextEncoder().encode(name).length > 255) {
+  if (name.trim() === "" || /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(name) || name === "." || name === ".." || /[/\u0000-\u001f\u007f]/.test(name) || new TextEncoder().encode(name).length > 255) {
     throw new DriveError("INVALID_NAME", `invalid name ${JSON.stringify(raw)}`);
   }
   return { name, key: name.toLowerCase() };
@@ -513,7 +513,7 @@ export function createDrive(deps: DriveDeps) {
       }
       const node = await resolve(store, ctx, loc);
       if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
-      const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(node.name)}`;
+      const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(node.name).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)}`;
       return blobs.signedUrl(node.blobKey, {
         method: "GET", expiresInSeconds,
         responseContentDisposition: disposition.length <= 1024 ? disposition : "attachment",
