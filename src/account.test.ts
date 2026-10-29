@@ -41,7 +41,7 @@ async function seed() {
 
 describe("subject", () => {
   it("refuses a bad subject and a context for someone else", async () => {
-    for (const bad of [{ id: "", kind: "human" }, { id: "alice" }, { id: "alice", kind: "wizard" }, null]) {
+    for (const bad of [{ id: "", kind: "human" }, { id: "alice" }, { id: "alice", kind: "wizard" }, { id: "alice", kind: "agent_of_human" }, { id: "alice", kind: "user_token" }, null]) {
       await expect(driveAccount.exportAccount(bad as never, deps(A))).rejects.toThrow(TypeError);
       await expect(driveAccount.eraseAccount(bad as never, deps(A))).rejects.toThrow(TypeError);
     }
@@ -51,6 +51,12 @@ describe("subject", () => {
     const VIA_BOT = { ...A, principal: BOT.principal };
     await expect(driveAccount.exportAccount(ALICE, deps(VIA_BOT))).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(driveAccount.eraseAccount(ALICE, deps(VIA_BOT))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // A principal with two links, or whose first link is an agent, is not the person alone.
+    for (const principalCtx of [principal("alice", "human", [ALICE, ALICE]), principal("alice", "human", [{ id: "alice", kind: "agent" }])]) {
+      const ctx = { ...A, principal: principalCtx };
+      await expect(driveAccount.exportAccount(ALICE, deps(ctx))).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(driveAccount.eraseAccount(ALICE, deps(ctx))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
     await expect(driveAccount.exportAccount(ALICE, {} as never)).rejects.toThrow("needs deps.drive");
     await expect(driveAccount.eraseAccount(ALICE, undefined as never)).rejects.toThrow("needs deps.drive");
   });

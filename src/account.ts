@@ -1,7 +1,6 @@
 // The package's side of the account contract: a host calls `exportAccount` and `eraseAccount`
 // and never reads the storage layout. The shape matches the plug-in of the other apps: `(subject, deps)`
 // in, plain JSON records or counts out.
-import { PRINCIPAL_KINDS } from "agentic-identity";
 import { DriveError, type Actor, type Ctx, type Drive } from "./drive.js";
 import { publicNode } from "./local.js";
 
@@ -36,13 +35,14 @@ const plain = (value: unknown): JsonRecord[] => JSON.parse(JSON.stringify(value)
 function check(subject: Actor, deps: DriveAccountDeps): void {
   const { drive, ctx } = deps ?? ({} as Partial<DriveAccountDeps>);
   if (typeof drive?.exportData !== "function" || typeof drive.exportPerson !== "function" || typeof drive.erasePerson !== "function" || typeof ctx !== "object" || ctx === null) throw new TypeError("driveAccount needs deps.drive and deps.ctx");
-  const known = (PRINCIPAL_KINDS as readonly unknown[]).includes(subject?.kind);
-  if (typeof subject?.id !== "string" || subject.id.trim() === "" || !known) throw new TypeError("subject needs an id and a known kind");
+  // Only a person or an agent with its own identity is a subject. A delegated kind (an agent of a person, a user token) is not.
+  const known = subject?.kind === "human" || subject?.kind === "agent";
+  if (typeof subject?.id !== "string" || subject.id.trim() === "" || !known) throw new TypeError("subject needs an id and a kind of human or agent");
   // The drive of the subject is the one they own, and the caller is the subject. A context for someone else would export or erase that drive.
   if (ctx.owner !== subject.id || ctx.actor?.id !== subject.id || ctx.actor.kind !== subject.kind) throw new DriveError("FORBIDDEN", "context does not match the subject");
   // The principal must be the subject alone. A chain that runs through another principal (an agent acting for a person) is not the subject.
   const p = ctx.principal;
-  if (p !== undefined && (p?.principalId !== subject.id || p.kind !== subject.kind || p.chain?.length !== 1 || p.chain[0]?.id !== subject.id)) throw new DriveError("FORBIDDEN", "context does not match the subject");
+  if (p !== undefined && (p?.principalId !== subject.id || p.kind !== subject.kind || p.chain?.length !== 1 || p.chain[0]?.id !== subject.id || p.chain[0]?.kind !== subject.kind)) throw new DriveError("FORBIDDEN", "context does not match the subject");
 }
 
 const b64 = (data: Uint8Array) => {
