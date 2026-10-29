@@ -5,7 +5,7 @@ Store, sort, and share files and folders.
 Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
 
 - SDK: import { createDrive } from "agentic-drive".
-- Other SDK exports: VERSION, ROOT_ID, ACTOR_KINDS, DEFAULT_MAX_BYTES, sniffMime, parseName, parseSubject, DriveError,
+- Other SDK exports: VERSION, ROOT_ID, ACTOR_KINDS, DEFAULT_MAX_BYTES, sniffMime, parseName, parseSubject, subjectKindOf, DriveError,
   readZip, writeZip, AuthError, openLocal, addPrincipal, issueKey, resolveToken, revokeKey, revokePrincipal, publicNode.
   See README, "Other exports".
 - Remote SDK: import { createClient } from "agentic-drive/client". createClient({ baseUrl, token, fetch?, retries? }) has one method for each bearer route and each shared route (list, stat, mkdir, upload, download, move, trash, restore, purge, search, share, createLink, and more). A failed call throws DriveApiError with code and status. It runs in browsers, Workers, and Node 22.
