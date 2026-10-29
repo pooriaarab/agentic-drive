@@ -190,10 +190,11 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
     setBusy(false);
     reload();
   };
-  const setViewMode = (v: "list" | "grid") => { localStorage.setItem("agentic-drive-view", v); setView(v); };
+  const setViewMode = (v: "list" | "grid") => {
+    setSelected(new Set()); localStorage.setItem("agentic-drive-view", v); setView(v); };
 
   return (
-    <section onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrag(false); }} onDrop={onDrop} className={drag ? "drive-drop drive-drop--over" : "drive-drop"} aria-label="Files">
+    <section onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrag(false); }} onDrop={onDrop} className={`drive-drop${drag ? " drive-drop--over" : ""}${view === "list" && selected.size ? " drive-drop--bulk" : ""}`} aria-label="Files">
       <Status state={state} retry={reload}>
         {state.status === "ok" && (() => {
           const { folder, root, crumbs, tree } = state.data;
@@ -248,6 +249,7 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
               <nav aria-label="Folders" className="drive-folders">{level(root.id)}</nav>
               <div>
               <div className="drive-tools"><ExpandableSearch value={query} onChange={setQuery} /></div>
+              <p role="status" className="drive-sr">{needle ? `${items.length} of ${state.data.items.length} items match` : ""}</p>
               {state.data.items.length === 0 ? (
                 <EmptyState title="This folder is empty" description="Drop files here, or use Upload files." action={<Button onClick={() => input.current?.click()} disabled={busy}>Upload files</Button>} />
               ) : items.length === 0 ? (
@@ -268,7 +270,7 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
               )}
               </div>
               </div>
-              <BulkBar count={picked.length} busy={busy} onTrash={() => void trashSelected(picked)} onClear={() => setSelected(new Set())} />
+              {view === "list" && <BulkBar count={picked.length} busy={busy} onTrash={() => void trashSelected(picked)} onClear={() => setSelected(new Set())} />}
               {dlg?.kind === "mkdir" && <Prompt open title="New folder" label="Folder name" initial="" submit="Create" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.mkdir(folder.id === root.id ? `/${name}` : `${folder.id}/${name}`), `Created ${name}`)} />}
               {dlg?.kind === "rename" && <Prompt open title="Rename" label="New name" initial={dlg.item.name} submit="Rename" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.move(dlg.item.id, dlg.item.parentId, { name }), `Renamed to ${name}`)} />}
               {dlg?.kind === "move" && <MoveDialog client={client} item={dlg.item} onClose={() => setDlg(null)} onMove={(to) => act(() => client.move(dlg.item.id, to), `Moved ${dlg.item.name}`)} />}
@@ -375,6 +377,8 @@ function Sharing({ client, item, origin, onClose }: { client: DriveClient; item:
   );
 }
 
+const trashedAt = (i: Item) => i.trashedAt ?? i.updatedAt;
+
 function TrashView({ client }: { client: DriveClient }) {
   const toast = useToast();
   const [state, reload] = useLoad(() => client.listTrash());
@@ -389,7 +393,7 @@ function TrashView({ client }: { client: DriveClient }) {
       <h1>Trash</h1>
       <Status state={state} retry={reload}>
         {state.status === "ok" && (state.data.length === 0 ? <EmptyState title="The trash is empty" description="Items you move to the trash show up here." /> : (
-          <ItemTable label="Items in the trash" items={sortItems(state.data, sort)} sort={sort} onSort={onSort} href={() => "#/trash"} who={who} actions={(i) => <><MachineLabel item={i} /><Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button></>} />
+          <ItemTable label="Items in the trash" items={sortItems(state.data, sort, trashedAt)} dateOf={trashedAt} sort={sort} onSort={onSort} href={() => "#/trash"} who={who} actions={(i) => <><MachineLabel item={i} /><Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button></>} />
         ))}
       </Status>
     </section>

@@ -35,7 +35,7 @@
 .drive-table { width: 100%; border-collapse: collapse; }
 .drive-table th { padding: var(--agd-space-2) var(--agd-space-3); text-align: left; font-size: var(--agd-font-size-sm); font-weight: var(--agd-font-weight-medium); color: var(--agd-color-text-muted); border-bottom: 1px solid var(--agd-color-border); }
 .drive-table td { padding: var(--agd-space-2) var(--agd-space-3); border-bottom: 1px solid var(--agd-color-border); vertical-align: middle; }
-.drive-table td:nth-child(4) { color: var(--agd-color-text-muted); white-space: nowrap; }
+.drive-table .drive-table__date { color: var(--agd-color-text-muted); white-space: nowrap; }
 .drive-table__check { width: 2.5rem; }
 .drive-table__name { display: flex; align-items: center; gap: var(--agd-space-2); overflow-wrap: anywhere; }
 .drive-table__name a { color: var(--agd-color-text); font-weight: var(--agd-font-weight-medium); text-decoration: none; }
@@ -46,6 +46,9 @@
 .drive-row:hover, .drive-row[data-selected] { background: var(--agd-color-surface-sunken); }
 .drive-sort { all: unset; cursor: pointer; border-radius: var(--agd-radius-sm); }
 .drive-bulk { position: fixed; inset: auto 0 var(--agd-space-4); margin-inline: auto; width: max-content; max-width: calc(100vw - 2rem); display: flex; align-items: center; gap: var(--agd-space-3); padding: var(--agd-space-2) var(--agd-space-4); border: 1px solid var(--agd-color-border); border-radius: var(--agd-radius-md); background: var(--agd-color-surface); box-shadow: 0 4px 16px rgb(0 0 0 / 0.16); z-index: 20; }
-@media (max-width: 40rem) { .drive-table th:nth-child(3), .drive-table td:nth-child(3) { display: none; } }
+@media (max-width: 40rem) { .drive-table .drive-table__who { display: none; } }
 .drive-title { display: flex; align-items: center; gap: var(--agd-space-3); flex-wrap: wrap; min-width: 0; }
 .drive-title h1 { margin: 0; }
+.drive-drop--bulk { padding-bottom: 6rem; }
+html:has(.drive-bulk) { scroll-padding-bottom: 6rem; }
+.agd-checkbox:indeterminate { background-color: var(--agd-color-accent); border-color: var(--agd-color-accent); background-image: linear-gradient(var(--agd-color-surface), var(--agd-color-surface)); background-size: 60% 2px; background-repeat: no-repeat; background-position: center; }

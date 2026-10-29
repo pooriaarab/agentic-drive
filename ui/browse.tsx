@@ -3,13 +3,21 @@ import { Button, FileIcon, FolderIcon, PresenceChip, type PresenceEntry } from "
 import type { Item } from "../src/client.js";
 
 export type SortKey = "name" | "modified";
+/** The time a row shows and sorts by. */
+export type DateOf = (i: Item) => number;
 export type Sort = { key: SortKey; dir: "asc" | "desc" };
 
 /** Folders first, then the chosen column. A name sort keeps natural order for numbers. */
-export function sortItems(items: Item[], { key, dir }: Sort): Item[] {
+export function sortItems(items: Item[], { key, dir }: Sort, dateOf: DateOf = (i) => i.updatedAt): Item[] {
   const sign = dir === "asc" ? 1 : -1;
-  const by = key === "name" ? (a: Item, b: Item) => a.name.localeCompare(b.name, undefined, { numeric: true }) : (a: Item, b: Item) => a.updatedAt - b.updatedAt;
+  const by = key === "name" ? (a: Item, b: Item) => a.name.localeCompare(b.name, undefined, { numeric: true }) : (a: Item, b: Item) => dateOf(a) - dateOf(b);
   return [...items].sort((a, b) => (a.kind === "folder" ? 0 : 1) - (b.kind === "folder" ? 0 : 1) || sign * by(a, b) || a.name.localeCompare(b.name));
+}
+
+/** A time that a bad value cannot break: a number outside the date range shows a dash. */
+function Stamp({ at }: { at: number }) {
+  const d = new Date(at);
+  return Number.isFinite(d.getTime()) ? <time dateTime={d.toISOString()}>{dateFormat.format(d)}</time> : <span>—</span>;
 }
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -18,10 +26,16 @@ const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", tim
 export function ExpandableSearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (open) input.current?.focus(); }, [open]);
-  const close = () => { onChange(""); setOpen(false); };
-  if (!open && !value) {
-    return <Button variant="ghost" size="sm" aria-expanded="false" onClick={() => setOpen(true)}>Search</Button>;
+  const trigger = useRef<HTMLButtonElement>(null);
+  const restore = useRef(false);
+  const shown = open || !!value;
+  useEffect(() => {
+    if (shown) input.current?.focus();
+    else if (restore.current) { restore.current = false; trigger.current?.focus(); }
+  }, [shown]);
+  const close = () => { restore.current = true; onChange(""); setOpen(false); };
+  if (!shown) {
+    return <Button ref={trigger} variant="ghost" size="sm" onClick={() => setOpen(true)}>Search</Button>;
   }
   return (
     <div className="drive-search" role="search">
@@ -45,10 +59,12 @@ type TableProps = {
   href: (i: Item) => string;
   who: (a: Item["updatedBy"], owner: string) => PresenceEntry;
   actions: (i: Item) => ReactNode;
+  /** Defaults to the time of the last edit. */
+  dateOf?: DateOf;
 };
 
 /** The list view: a table with a select column, sortable headers, and a row menu. */
-export function ItemTable({ label, items, sort, onSort, selected = new Set(), onSelect, href, who, actions }: TableProps) {
+export function ItemTable({ label, items, sort, onSort, selected = new Set(), onSelect, href, who, actions, dateOf = (i) => i.updatedAt }: TableProps) {
   const all = items.length > 0 && items.every((i) => selected.has(i.id));
   const some = !all && items.some((i) => selected.has(i.id));
   const head = useRef<HTMLInputElement>(null);
@@ -59,8 +75,8 @@ export function ItemTable({ label, items, sort, onSort, selected = new Set(), on
     if (on) next.add(id); else next.delete(id);
     onSelect(next);
   };
-  const th = (key: SortKey, text: string) => (
-    <th scope="col" aria-sort={sort.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+  const th = (key: SortKey, text: string, cls?: string) => (
+    <th scope="col" className={cls} aria-sort={sort.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
       <button type="button" className="drive-sort" onClick={() => onSort(key)}>{text}<span aria-hidden="true">{sort.key === key ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}</span></button>
     </th>
   );
@@ -74,8 +90,8 @@ export function ItemTable({ label, items, sort, onSort, selected = new Set(), on
             </th>
           )}
           {th("name", "Name")}
-          <th scope="col">Edited by</th>
-          {th("modified", "Modified")}
+          <th scope="col" className="drive-table__who">Edited by</th>
+          {th("modified", "Modified", "drive-table__date")}
           <th scope="col"><span className="drive-sr">Actions</span></th>
         </tr>
       </thead>
@@ -93,8 +109,8 @@ export function ItemTable({ label, items, sort, onSort, selected = new Set(), on
                 <a href={href(i)}>{i.name}</a>
               </div>
             </td>
-            <td><PresenceChip entry={who(i.updatedBy, i.owner)} /></td>
-            <td><time dateTime={new Date(i.updatedAt).toISOString()}>{dateFormat.format(new Date(i.updatedAt))}</time></td>
+            <td className="drive-table__who"><PresenceChip entry={who(i.updatedBy, i.owner)} /></td>
+            <td className="drive-table__date"><Stamp at={dateOf(i)} /></td>
             <td className="drive-table__actions">{actions(i)}</td>
           </tr>
         ))}

@@ -202,6 +202,7 @@ test("a person searches, sorts, and moves many items to the trash at once", asyn
   await audit(page, "12-search-empty");
   await page.keyboard.press("Escape");
   await expect(row(page, "alpha.txt")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Search", exact: true })).toBeFocused();
 
   const files = async () => (await names()).filter((n) => n.endsWith(".txt"));
   expect((await files()).indexOf("alpha.txt")).toBeLessThan((await files()).indexOf("zeta.txt"));
@@ -213,6 +214,11 @@ test("a person searches, sorts, and moves many items to the trash at once", asyn
   await page.getByLabel("Select alpha.txt").check();
   const bar = page.getByRole("region", { name: "Selected items" });
   await expect(bar).toContainText("2 selected");
+  await page.getByRole("button", { name: "Grid view" }).click();
+  await expect(bar).toBeHidden();
+  await page.getByRole("button", { name: "List view" }).click();
+  await page.getByLabel("Select zeta.txt").check();
+  await page.getByLabel("Select alpha.txt").check();
   await audit(page, "13-bulk");
   await bar.getByRole("button", { name: "Move to trash" }).click();
   await expect(row(page, "zeta.txt")).toHaveCount(0);
