@@ -209,4 +209,27 @@ describe("mount", () => {
     expect(puts()).toBe(1);
     expect(getToken.mock.calls.length).toBe(tokenCalls);
   });
+
+  it("DriveBrowser loads from the new server when baseUrl changes", async () => {
+    const getToken = () => "tok-1";
+    const root = createRoot(host);
+    const render = (baseUrl: string) => act(async () => root.render(<TooltipProvider><ToastProvider><DriveBrowser baseUrl={baseUrl} getToken={getToken} /></ToastProvider></TooltipProvider>));
+    await render("https://a.example.com");
+    await settle();
+    expect(host.textContent).toContain("notes.txt");
+    server.fetch.mockClear();
+    await render("https://b.example.com");
+    await settle();
+    expect(server.fetch.mock.calls.length).toBeGreaterThan(0);
+    expect(server.fetch.mock.calls.every(([u]) => String(u).startsWith("https://b.example.com/"))).toBe(true);
+    expect(host.textContent).toContain("notes.txt");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("update after unmount does nothing, even for options that are bad", async () => {
+    await open(base);
+    await act(async () => mounted!.unmount());
+    expect(() => mounted!.update({ baseUrl: "nope" } as never)).not.toThrow();
+  });
 });

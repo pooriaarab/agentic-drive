@@ -36,17 +36,20 @@ function makeClient({ baseUrl, getToken }: DriveUiOptions) {
   return { client: createClient({ baseUrl, token: PLACEHOLDER, fetch: fetchWithToken }), close: () => closed.abort() };
 }
 
+let clients = 0;
+
 /** The folders and trash of the signed-in caller, with upload, share, and the machine-made label. It needs the tooltip and toast providers above it. `mount` adds them.
  * It shows the root again when `baseUrl` changes. A bad `baseUrl` or `getToken` throws. Pass a stable `getToken`, because a new function makes a new client. */
 export function DriveBrowser({ baseUrl, getToken }: DriveUiOptions) {
-  const [client, setClient] = useState<DriveClient>();
+  const [made, setMade] = useState<{ id: number; client: DriveClient; origin: string }>();
   // The client closes when the component unmounts or an option changes, so work of the old one sends nothing more.
+  // The view is keyed on the client, so it loads again from the root with the new one.
   useEffect(() => {
-    const made = makeClient({ baseUrl, getToken });
-    setClient(made.client);
-    return () => made.close();
+    const next = makeClient({ baseUrl, getToken });
+    setMade({ id: ++clients, client: next.client, origin: new URL(baseUrl).origin });
+    return () => next.close();
   }, [baseUrl, getToken]);
-  return client ? <DriveView key={baseUrl} client={client} origin={new URL(baseUrl).origin} /> : null;
+  return made ? <DriveView key={made.id} client={made.client} origin={made.origin} /> : null;
 }
 
 function DriveView({ client, origin }: { client: DriveClient; origin: string }) {
@@ -98,8 +101,8 @@ export function mount(element: HTMLElement, options: DriveUiOptions): MountedDri
   render(options, current.client);
   return {
     update: (next) => {
+      if (!open) return;
       const made = makeClient(next);
-      if (!open) return made.close();
       // The old client closes first, so an upload of the old UI sends nothing more.
       current.close();
       current = made;
