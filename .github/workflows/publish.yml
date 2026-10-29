@@ -21,6 +21,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - run: npm run build
+      - run: npm run build:ui
       - run: npm run typecheck
       - run: npm test
       - name: Check the publish tokens
@@ -30,6 +31,9 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           ANTS_TOKEN: ${{ secrets.ANTS_TOKEN }}
+      - name: Check the package has the UI
+        run: |
+          npm pack --dry-run --json --ignore-scripts | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const files = JSON.parse(s)[0].files.map((f) => f.path); if (!files.includes("ui-dist/index.html")) { console.error("ui-dist/index.html is not in the package"); process.exit(1); } })'
       - name: Publish if version is new
         run: |
           NAME=$(node -p "require('./package.json').name")

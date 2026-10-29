@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK and the HTTP API.
+> Status: 0.4.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK and the HTTP API.
 > A small web UI works. See [UI](#ui).
 
 ## Live demo
@@ -102,7 +102,7 @@ Sharing routes: `GET /shares?path=`, `POST /shares`, `DELETE /shares?path=&subje
 `POST /invites/accept`, `POST /links`, `DELETE /links?id=`. A link visitor reads with the header
 `x-link-token` on `GET /shared/:id`, `GET /shared/:id/items`, and `GET /shared/:id/content`.
 Name a shared item by its id. A path can start at a folder id: `<folder id>/notes/a.txt`.
-Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every request gets 503.
+Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every API request gets 503. `/health` still answers.
 Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--location weur`.
 The Worker declares region `eu` and refuses a D1 query that a non-EU region served. `DRIVE_REGION=unknown` turns this off for local runs.
 
@@ -135,7 +135,7 @@ try {
 
 ## UI
 
-The Worker serves a small web UI. It uses the [agentic-design](https://www.npmjs.com/package/agentic-design) package and the typed client of this package (`agentic-drive/client`). It has a folder tree, breadcrumbs, a file list and grid, upload by button or by drag and drop, new folder, rename, move, trash and restore, and a share dialog with roles and a link. An item that an agent made or changed shows an Agent label. It works with the keyboard. An automated axe check for WCAG 2.2 AA passes on each view in the light and dark themes.
+The Worker serves a small web UI. It uses the [agentic-design](https://www.npmjs.com/package/agentic-design) package and the typed client of this package (`agentic-drive/client`). It has a folder tree, breadcrumbs, a file list and grid, upload by button or by drag and drop, new folder, rename, move, trash and restore, and a share dialog with roles and a link. An item that an agent made shows a "Created by agent" label while a person is its last editor. "Edited by" names the last editor, a person or an agent. It works with the keyboard. An automated axe check for WCAG 2.2 AA passes on each view in the light and dark themes.
 
 Run it locally:
 
@@ -151,9 +151,42 @@ Open `http://127.0.0.1:8787` and sign in with a bearer token. The tab keeps the 
 
 Test it with `npm run test:e2e`. The test starts `wrangler dev` on a seeded database, drives the UI in Chromium, and runs an axe WCAG 2.2 AA check on each view in both themes. Run `npx playwright install chromium` once first. The run also writes the screenshots in [docs/ui](docs/ui).
 
-Run `npm run build:ui` before `npm test` or `wrangler deploy`, because the Worker config names the `ui-dist` folder. The UI answers with a strict content security policy and refuses to be framed.
+Run `npm run build:ui` before `npm run test:e2e` or `wrangler deploy`, because the Worker config names the `ui-dist` folder. The UI answers with a content security policy that loads scripts and fonts only from its own origin, and it refuses to be framed.
 
 Set `DRIVE_PUBLIC_URL` to the origin that serves the UI. A download link on another origin is refused.
+
+### Serve the UI from the package
+
+The npm package ships the built UI in `ui-dist`. The package does not ship a `wrangler.jsonc`, so a project that deploys its own Worker adds the assets block to its config. Its Worker re-exports the package Worker. In a workspace, the package can sit in the root `node_modules`. Then point `assets.directory` at that folder, such as `../../node_modules/agentic-drive/ui-dist`:
+
+```js
+// src/worker.js
+export { default } from "agentic-drive/worker";
+```
+
+```jsonc
+// wrangler.jsonc: the Worker reads the bindings DB (D1) and FILES (R2). Name yours the same.
+// Create the bucket with `wrangler r2 bucket create agentic-drive-files --jurisdiction eu`.
+// Create the database with `wrangler d1 create agentic-drive --location weur`, then put its id below.
+{
+  "name": "agentic-drive",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [{ "binding": "DB", "database_name": "agentic-drive", "database_id": "<your id>" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "agentic-drive-files", "jurisdiction": "eu" }],
+  // In a workspace, point this at the root node_modules instead.
+  "assets": { "directory": "./node_modules/agentic-drive/ui-dist", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*", "/health"] }
+}
+```
+
+Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `DRIVE_URL_SECRET` needs 32 bytes or more. `DRIVE_PUBLIC_URL` is the origin of this Worker. The Worker declares region `eu` unless `DRIVE_REGION` says otherwise, so keep the EU jurisdiction and location above. Sign-in uses agentic-identity credentials in the same D1 database. Create a token there first, or every bearer API request gets 401. In the D1 database:
+
+1. Create the table, unless a request has already run: `wrangler d1 execute agentic-drive --remote --command "CREATE TABLE IF NOT EXISTS store_docs (collection TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (collection, id)) WITHOUT ROWID"`.
+2. Insert a row into `store_docs` with `collection` `principals` and `id` `me`. Its body is `{ "id": "me", "kind": "human", "scopes": ["drive:admin"] }`.
+3. Make the token with `openssl rand -hex 32`. A token may use only letters, digits, `_`, and `-`, up to 512 characters. Insert a row into `store_docs` with `collection` `credentials`. Its `id` is the lowercase hex SHA-256 of the token, which `printf %s "$TOKEN" | sha256sum` prints. Its body is `{ "principalId": "me", "kind": "api_key" }`.
+
+The [seed script](https://github.com/pooriaarab/agentic-drive/blob/main/e2e/serve.mjs) shows these rows. Its tokens are for tests only. Never use them in a deployment. Without both secrets, the API answers 503. With this config, `/` serves the UI, and `/health` and `/api/v1/drive/*` answer from the Worker.
 
 The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
