@@ -196,7 +196,9 @@ const SHARE_ERROR = /^(invalid|give an|expiresAt|expiresInMs|resource exists|the
 
 export function createDrive(deps: DriveDeps) {
   const { store, blobs } = deps;
-  const now = deps.now ?? Date.now;
+  // The default clock never repeats a value, so two writes in one millisecond still sort in write order.
+  let last = 0;
+  const now = deps.now ?? (() => (last = Math.max(Date.now(), last + 1)));
   const newId = deps.newId ?? (() => globalThis.crypto.randomUUID());
   const maxDepth = deps.maxDepth ?? DEFAULT_MAX_DEPTH;
   const onOrphan = deps.onOrphan ?? ((key: string, error: unknown) =>
