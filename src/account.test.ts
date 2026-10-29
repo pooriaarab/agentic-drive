@@ -94,6 +94,6 @@ describe("eraseAccount", () => {
 
   it("refuses an agent subject", async () => {
     await seed();
-    await expect(driveAccount.eraseAccount(ROBO, deps({ ...OWN, actor: { id: "robo", kind: "agent_of_human" } }))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(driveAccount.eraseAccount(ROBO, deps(OWN))).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

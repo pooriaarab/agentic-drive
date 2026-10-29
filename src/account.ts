@@ -19,14 +19,13 @@ export interface DriveAccount {
    * Collections: `items` (the subject's own drive, trashed ones flagged, a file with its bytes as base64 in `data`),
    * `authored` (ids of items the subject made or changed in other drives), `agents` (the drives of agents
    * that belong to the subject, with no bytes), `grants` (shares the subject holds), `invites` (invites the subject sent),
-   * and `audit` (what the subject did). An agent subject gets empty collections.
+   * and `audit` (what the subject did). Only an agent with its own identity can be a subject: it gets its own `items` and empty collections, and the export does not say that these are partial. An agent that acts for a person has a context for that person, and is refused.
    */
   exportAccount(subject: Actor, deps: DriveAccountDeps): Promise<Record<"items" | "authored" | "agents" | "grants" | "invites" | "audit", JsonRecord[]>>;
   /**
    * Erases the subject's drive with all its bytes, the shares they hold, and the invites they sent, on drive items only.
    * What the subject made in other drives stays, with the id set to "erased" and the kind kept. Counts by `items`, `grants`,
-   * `invites`, and `anonymized`. A repeat counts what is left, so it is zero after a full run. Only the person in person
-   * may erase: an agent subject is refused.
+   * `invites`, and `anonymized`. `invites` counts only the invites on items of other drives: the ones on the subject's own items go with the drive, and are not counted. A repeat counts what is left, so it is zero after a full run. Only the person, not an agent, may erase: an agent subject is refused.
    */
   eraseAccount(subject: Actor, deps: DriveAccountDeps): Promise<Record<"items" | "grants" | "invites" | "anonymized", number>>;
 }
