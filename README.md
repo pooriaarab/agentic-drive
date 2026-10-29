@@ -239,8 +239,8 @@ export default { fetch: app.fetch };
 ```
 
 - With `store`, the Worker reads no `DB` binding. It does not create the table either, so the host owns the schema.
-- With `blobs`, the Worker reads no `FILES` binding and needs no `DRIVE_PUBLIC_URL`. The blobs must sign download URLs that point to `/api/v1/drive/blob` on this Worker. That route still checks the signature with `DRIVE_URL_SECRET`.
-- With `auth`, the Worker does not read bearer tokens from the store. The callback decides who the caller is. Make sure `principal.chain` and `principal.scopes` are real, because the drive checks them.
+- With `blobs`, the Worker reads no `FILES` binding and needs no `DRIVE_PUBLIC_URL`. The blobs must sign download URLs that point to `/api/v1/drive/blob` on this Worker. That route checks the signature with `DRIVE_URL_SECRET` before it reads the store or the blobs, so set that secret.
+- With `auth`, the Worker does not read bearer tokens from the store. The callback decides who the caller is. Return a whole `Ctx`: a `principal`, and an `owner` and `actor` that match it. Any other value gets 401. Make sure `principal.chain` and `principal.scopes` are real, because the drive checks them. A callback that reads a session cookie must check the request origin itself. Every write route is open to a cross-site form until it does.
 - With no options, `createApp()` works as before: D1, R2, and bearer tokens from the store. `export { default } from "agentic-drive/worker"` is the same.
 
 ## Features
