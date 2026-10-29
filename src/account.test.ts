@@ -157,9 +157,35 @@ describe("exportAccount", () => {
     const wide: PrincipalContext = { ...principal("alice"), scopes: ["*:admin"] as PrincipalContext["scopes"] };
     await sharing.createResource(wide, { id: "doc-1", type: "docs" });
     await sharing.grant(wide, "doc-1", { kind: "human", id: "bob" }, "editor");
-    const resources = (await driveAccount.exportAccount(ALICE, deps(A))).grants.map((g) => g.resourceId);
-    expect(resources).toContain(team.id);
-    expect(resources).not.toContain("doc-1");
+    await sharing.createInvite(wide, "doc-1", { role: "viewer", email: "x@example.com" });
+    const out = await driveAccount.exportAccount(ALICE, deps(A));
+    expect(out.grants.map((g) => g.resourceId)).toContain(team.id);
+    expect(out.grants.map((g) => g.resourceId)).not.toContain("doc-1");
+    expect(out.invites).toHaveLength(1);
+    expect(out.invites.map((i) => i.resourceId)).not.toContain("doc-1");
+  });
+
+  it("returns plain JSON, with undefined keys dropped and dates as strings", async () => {
+    const stub = {
+      exportData: async () => [],
+      exportPerson: async () => ({ partial: false, authored: [{ id: "x", at: new Date(0), gone: undefined }], agents: [], shares: { held: [], invitesCreated: [] }, audit: [] }),
+      erasePerson: async () => ({ removed: 0, grants: 0, invites: 0, anonymized: 0 }),
+    } as unknown as Drive;
+    const out = await driveAccount.exportAccount(ALICE, { drive: stub, ctx: A });
+    expect(out.authored).toEqual([{ id: "x", at: new Date(0).toISOString() }]);
+    expect(out.authored[0]).not.toHaveProperty("gone");
+  });
+
+  it("refuses a delegate with no drive role, on a drive with items and on one with a root", async () => {
+    // A drive from before roots: items written with no sharing, so the drive has no root resource.
+    await createDrive({ store, blobs: createMemoryBlobs() }).putFile(A, "/secret.txt", bytes("alice secret"));
+    const weak: Ctx = { owner: "alice", actor: { id: "bot", kind: "agent_of_human" }, principal: { ...BOT.principal!, scopes: ["docs:read"] as PrincipalContext["scopes"] } };
+    await expect(drive.exportData(weak)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(drive.exportPerson(weak)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // The owner in person still reads the items, and the read makes the root.
+    expect((await drive.exportData(A)).map((e) => e.path)).toEqual(["/secret.txt"]);
+    // With a root, the role check runs too.
+    await expect(drive.exportData(weak)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("gives an agent subject no person data", async () => {

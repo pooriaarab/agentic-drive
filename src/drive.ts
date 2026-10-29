@@ -615,11 +615,15 @@ export function createDrive(deps: DriveDeps) {
   }
   /**
    * The owner's root, read for an export. It is made on the first write, so a missing root means an empty drive.
-   * The caller's principal is already checked to belong to the owner, so the owner reads it as empty. Other callers
-   * read the root like any other caller.
+   * A drive with no root and no items is empty, so it is read as empty, with no write. A drive with items but no
+   * root (one from before roots) gets its root the way a write makes it, and then the caller's role decides, as for
+   * any read. The role check always runs when the root exists.
    */
   async function readOwnerRoot(ctx: Ctx) {
-    if (sharing && ctx.principal !== undefined && (await store.get("resources", await rootResource(ctx.owner))) === null) return;
+    if (sharing && ctx.principal !== undefined && (await store.get("resources", await rootResource(ctx.owner))) === null) {
+      if ((await rawOwnerNodes(ctx.owner, true)).length === 0) return;
+      await prepare(ctx);
+    }
     if (!(await can(ctx, "read", rootNode(ctx.owner, ctx.actor)))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
   }
   /** The path of a node, built from a map of all the owner's nodes. Null when the node or an ancestor is trashed. */
