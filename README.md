@@ -103,7 +103,7 @@ try {
 
 ## UI
 
-The Worker serves a small web UI. It uses the [agentic-design](https://www.npmjs.com/package/agentic-design) package and the typed client of this package (`agentic-drive/client`). It has a folder tree, breadcrumbs, a file list and grid, upload by button or by drag and drop, new folder, rename, move, trash and restore, and a share dialog with roles and a link. An item that an agent made or changed shows an Agent label. It works with the keyboard and meets WCAG 2.2 AA in the light and dark themes.
+The Worker serves a small web UI. It uses the [agentic-design](https://www.npmjs.com/package/agentic-design) package and the typed client of this package (`agentic-drive/client`). It has a folder tree, breadcrumbs, a file list and grid, upload by button or by drag and drop, new folder, rename, move, trash and restore, and a share dialog with roles and a link. An item that an agent made or changed shows an Agent label. It works with the keyboard. An automated axe check for WCAG 2.2 AA passes on each view in the light and dark themes.
 
 Run it locally:
 

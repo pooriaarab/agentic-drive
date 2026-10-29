@@ -236,9 +236,10 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
 
 function Prompt({ open, title, label, initial, submit, onClose, onSubmit }: { open?: boolean; title: string; label: string; initial: string; submit: string; onClose: () => void; onSubmit: (v: string) => void }) {
   const [value, setValue] = useState(initial);
+  const sent = useRef(false);
   return (
     <Dialog open={!!open} onOpenChange={(o) => { if (!o) onClose(); }} title={title}>
-      <form onSubmit={(e) => { e.preventDefault(); if (value.trim()) onSubmit(value.trim()); }} className="drive-form">
+      <form onSubmit={(e) => { e.preventDefault(); if (value.trim() && !sent.current) { sent.current = true; onSubmit(value.trim()); } }} className="drive-form">
         <Input label={label} value={value} onChange={(e) => setValue(e.target.value)} required />
         <div className="drive-form__actions"><DialogClose asChild><Button variant="ghost" type="button">Cancel</Button></DialogClose><Button type="submit">{submit}</Button></div>
       </form>
@@ -278,7 +279,8 @@ function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; o
   const toast = useToast();
   const [state, reload] = useLoad(() => client.shares(item.id));
   const [link, setLink] = useState<LinkState>({ role: "viewer", expiry: "never", signedInOnly: false });
-  const live = state.status === "ok" ? state.data.links.find((l) => !l.revoked && (l.expiresAt === null || l.expiresAt > Date.now())) : undefined;
+  const liveLinks = state.status === "ok" ? state.data.links.filter((l) => !l.revoked && (l.expiresAt === null || l.expiresAt > Date.now())) : [];
+  const live = liveLinks[0];
   const current = link.id ? link : live ? { ...link, id: live.id, role: live.role === "owner" ? "editor" : live.role, signedInOnly: live.signedInOnly } : link;
   const run = async (work: () => Promise<unknown>) => {
     try { await work(); } catch (e) { toast({ title: "That did not work", description: errorText(e), tone: "danger" }); }
@@ -286,8 +288,10 @@ function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; o
   };
   const entries = state.status === "ok" ? state.data.grants.map((g) => ({ entry: { id: g.subjectId, name: g.subjectId, kind: g.subjectKind === "agent" ? "agent" as const : "person" as const }, role: g.role as ShareRole | "owner" })) : [];
   const kindOf = (id: string) => (state.status === "ok" && state.data.grants.find((g) => g.subjectId === id)?.subjectKind) || "human";
+  /** Turning a link off, or changing it, ends every live link of the item, also one made with the CLI. */
+  const revokeAll = async () => { for (const id of new Set([...liveLinks.map((l) => l.id), ...(current.id ? [current.id] : [])])) await client.revokeLink(id); };
   const change = (next: LinkState) => run(async () => {
-    if (current.id) await client.revokeLink(current.id);
+    await revokeAll();
     const made = await client.createLink(item.id, { role: next.role as Role, signedInOnly: next.signedInOnly, ...(EXPIRY_MS[next.expiry] ? { expiresInMs: EXPIRY_MS[next.expiry] } : {}) });
     setLink({ ...next, id: made.id, token: made.token });
     toast({ title: "New link made", description: current.id ? "The old link no longer works." : undefined, tone: "info" });
@@ -305,7 +309,7 @@ function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; o
       onRemove={(id) => void run(() => client.unshare(item.id, { kind: kindOf(id), id }))}
       link={shareLink}
       onChangeLink={(next) => {
-        if (!next.enabled) return void run(async () => { if (current.id) await client.revokeLink(current.id); setLink({ ...current, id: undefined, token: undefined }); });
+        if (!next.enabled) return void run(async () => { await revokeAll(); setLink({ ...current, id: undefined, token: undefined }); });
         void change({ role: next.role, expiry: next.expiry, signedInOnly: next.signedInOnly });
       }}
       snapshot={{ onCreate: () => toast({ title: "Snapshot links are not available in Drive yet", tone: "info" }) }}
@@ -357,14 +361,19 @@ function SharedView({ client, id, linkToken }: { client: DriveClient; id: string
     const item = await client.openShared(id, { linkToken });
     return { item, items: item.kind === "folder" ? (await client.listShared(id, { linkToken })).sort(byName) : [] };
   });
+  const toast = useToast();
   const save = async () => {
     if (state.status !== "ok") return;
-    const { data, contentType } = await client.readShared(id, { linkToken });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([data as BlobPart], { type: contentType }));
-    a.download = state.data.item.name;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    try {
+      const { data, contentType } = await client.readShared(id, { linkToken });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([data as BlobPart], { type: contentType }));
+      a.download = state.data.item.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    } catch (e) {
+      toast({ title: "Could not download", description: errorText(e), tone: "danger" });
+    }
   };
   return (
     <section aria-label="Shared item">

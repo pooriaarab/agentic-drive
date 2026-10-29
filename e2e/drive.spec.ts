@@ -135,10 +135,11 @@ test("the share dialog shares by link and by invite, and the keyboard reaches it
   await expect(url).toHaveValue(/#\/s\//);
   const shared = await url.inputValue();
   await audit(page, "09-share-link");
-  // The first Escape closes the open toast, and the second closes the dialog.
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
+  // Escape closes each open toast first, then the dialog. How many toasts are open depends on timing.
+  await expect(async () => {
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden({ timeout: 500 });
+  }).toPass();
 
   // A visitor opens the link with no token of their own.
   await page.evaluate(() => sessionStorage.clear());
