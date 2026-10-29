@@ -1117,7 +1117,7 @@ export function createDrive(deps: DriveDeps) {
      * Puts a reference at `path` and gives `claim.subject` the role `claim.role` on it, as one step. If the
      * grant fails (the caller is not an owner of the item, or the subject is invalid), the reference is
      * deleted again and the error is thrown, so no half-made item stays. Needs `sharing`. Folders that
-     * `parents` made stay, and an invalid role or subject is refused before anything is written.
+     * `parents` made stay, `onConflict: "replace"` acts as `"fail"` (a rollback could not bring back a replaced item), and an invalid role or subject is refused before anything is written.
      */
     async claimRef(ctx: Ctx, path: string, ref: string, claim: { subject: Subject; role: Role }, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       if (!sharing) throw new DriveError("INVALID_SHARE", "sharing is not set up");
