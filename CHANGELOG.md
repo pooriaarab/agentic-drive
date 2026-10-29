@@ -6,7 +6,7 @@ Read the breaking changes before you upgrade.
 
 ### Breaking changes
 
-- **The local drive has sharing on.** `openLocal` now passes `createSharing(store)`, as the Worker does. Items made before 0.7.0 have no `resources` docs. The CLI adds them once, on the first drive command that has a valid key. The `principal` and `key` commands do not do it. A project that calls `openLocal` itself must run `backfillResources(store)`, exported from the package root, once on its existing data folder. If an item has no owner or parent, the backfill stops, and drive commands fail until you fix that item.
+- **The local drive has sharing on.** `openLocal` now passes `createSharing(store)`, as the Worker does. Items made before 0.7.0 have no `resources` docs. The CLI and the `mcp` command add them once, on the first drive command that has a valid key. The `principal` and `key` commands do not do it. A project that calls `openLocal` itself must run `backfillResources(store)`, exported from the package root, once on its existing data folder. If an item has no owner or parent, the backfill stops, and drive commands fail until you fix that item.
 
 ### Added
 
