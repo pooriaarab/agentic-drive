@@ -117,7 +117,8 @@ export function createClient(options: ClientOptions) {
           await pause(attempt, init.signal);
           continue;
         }
-        throw new DriveApiError("NETWORK_ERROR", 0, error instanceof Error ? `no answer: ${error.message}` : "no answer");
+        const refused = body instanceof ReadableStream ? " (a stream body may be refused by this runtime: send bytes)" : "";
+        throw new DriveApiError("NETWORK_ERROR", 0, `${error instanceof Error ? `no answer: ${error.message}` : "no answer"}${refused}`);
       }
       if (attempt < attempts && RETRY_STATUS.has(response.status)) {
         await response.body?.cancel();
@@ -208,7 +209,7 @@ export function createClient(options: ClientOptions) {
   };
   /** An id that is a path segment. A dot segment would climb out of `/shared`, and a slash would start a path. */
   const id = (value: string) => {
-    if (typeof value !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(value) || value === "." || value === "..") throw new TypeError("an item id has letters, digits, - and _");
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(value) || value === "." || value === "..") throw new TypeError("an item id has letters, digits, -, _ and . (not first), and is not . or ..");
     return value;
   };
 
@@ -269,7 +270,7 @@ export function createClient(options: ClientOptions) {
     /** The next three read a shared item by id. Pass a link token, a bearer token, or both. */
     openShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, isItem),
     listShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}/items`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, listOf(isItem)),
-    readShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => bytes(`/shared/${id(itemId)}/content`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }),
+    readShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}): Promise<Omit<Downloaded, "sha256">> => bytes(`/shared/${id(itemId)}/content`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }),
   };
 }
 
