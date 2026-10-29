@@ -683,6 +683,8 @@ export function createDrive(deps: DriveDeps) {
     for (let i = 0; i < rows.length; i += size) {
       const chunk = rows.slice(i, i + size);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
+      // The node is marked, so it is hidden and cannot come back. A call that fails from here on runs again: see `purge`.
+      for (const node of chunk) await finishResource(principal, node.id);
       await transact(async (tx) => {
         const held: { node: Node; claim: string | null; owns: boolean }[] = [];
         for (const node of chunk) {
@@ -695,8 +697,6 @@ export function createDrive(deps: DriveDeps) {
           if (claim && owns) await tx.delete(NAMES, claim);
         }
       });
-      // The shares of a deleted item go with it: its grants, links, invites, and audit entries. Children come first.
-      for (const node of chunk) await finishResource(principal, node.id);
     }
     return marked.length;
   }
@@ -946,10 +946,13 @@ export function createDrive(deps: DriveDeps) {
     },
     /** Deletes a trashed item for good, with everything under it and all their bytes. */
     async purge(ctx: Ctx, id: string): Promise<{ removed: number }> {
-      const top = await fetch(store, ctx, id, true);
+      // An earlier purge may have erased the sharing record and then failed. Roles cannot be checked then, so only the person in person, who owns the drive, may finish it.
+      const marked = await rawNode(store, id, ctx.owner, ctx.actor, true);
+      const resumed = marked?.purging === true && sharing !== undefined && isInPerson(ctx) && marked.owner === ctx.owner && (await store.get("resources", marked.id)) === null;
+      const top = resumed ? marked : await fetch(store, ctx, id, true);
       if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
       if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
-      await need(ctx, "delete", top);
+      if (!resumed) await need(ctx, "delete", top);
       // A trashed folder takes no new children, so one read pass sees the whole subtree.
       const nodes: Node[] = [];
       for (const queue = [top]; queue.length; ) {

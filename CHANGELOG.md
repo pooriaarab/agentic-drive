@@ -10,7 +10,7 @@
 
 ### Changed
 
-- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The drive drops the item first, then the shares. A call that fails between the two leaves a share with no item. The same erase removes it. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep.
+- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item.
 - New exports `subjectKindOf` and `parseSubject`. `subjectKindOf` accepts the kind of the root of a chain, `human` or `agent`, and throws on any other kind, a delegated one too.
 - An export lists `subjectKind` on each grant a person holds.
 

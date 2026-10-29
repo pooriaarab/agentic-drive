@@ -509,6 +509,37 @@ describe("identity erase and kinds", () => {
     expect(await entriesOf(file.id)).toEqual([]);
     expect(await store.get("resources", file.id)).toBeNull();
   });
+  it("finishes a purge that failed after identity erased the shares", async () => {
+    let calls = 0;
+    let failAt = 0;
+    const flaky = { ...store, transaction: ((fn: never) => (++calls === failAt ? Promise.reject(new Error("transient")) : store.transaction(fn))) as typeof store.transaction } as typeof store;
+    const d = createDrive({ store: flaky, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
+    const file = await d.putFile(A, "/dir/f.txt", bytes("f"), { parents: true });
+    const dir = await d.stat(A, "/dir");
+    await d.shareWith(A, file.id, { kind: "human", id: "bob" }, "viewer");
+    await d.stat(B, file.id);
+    await d.trash(A, "/dir");
+    // The drive makes transaction 1 to mark the items, and transaction 2 to delete their rows. Identity runs on the plain store.
+    calls = 0;
+    failAt = 2;
+    await expect(d.purge(A, dir.id)).rejects.toThrow("transient");
+    expect((await store.query("grants", { where: { resourceId: file.id } })).items).toEqual([]);
+    expect(await d.purge(A, dir.id)).toEqual({ removed: 2 });
+    for (const id of [file.id, dir.id]) {
+      expect(await entriesOf(id)).toEqual([]);
+      expect(await store.get("resources", id)).toBeNull();
+      expect(await store.get("drive_nodes", id)).toBeNull();
+    }
+  });
+  it("does not let anyone but the person in person finish a purge that lost its sharing record", async () => {
+    const file = await drive.putFile(A, "/g.txt", bytes("g"));
+    await drive.trash(A, file.id);
+    await store.put("drive_nodes", file.id, { ...(await store.get("drive_nodes", file.id))!, purging: true });
+    await store.delete("resources", file.id);
+    await fails(drive.purge(B, file.id), "NOT_FOUND");
+    await fails(drive.purge(ctxOf(botOf(["drive:admin"])), file.id), "NOT_FOUND");
+    expect(await drive.purge(A, file.id)).toEqual({ removed: 1 });
+  });
   it("keeps a person and an agent with one id apart", async () => {
     const file = await drive.putFile(A, "/k.txt", bytes("k"));
     await drive.shareWith(A, file.id, { kind: "agent", id: "bob" }, "viewer");
