@@ -1113,6 +1113,7 @@ export function createDrive(deps: DriveDeps) {
      */
     async claimRef(ctx: Ctx, path: string, ref: string, claim: { subject: Subject; role: Role }, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       if (!sharing) throw new DriveError("INVALID_SHARE", "sharing is not set up");
+      if (!ctx.principal) throw new DriveError("FORBIDDEN", "sign in to share");
       const subject = parseSubject(claim.subject);
       if (!(ROLES as readonly unknown[]).includes(claim.role)) throw new DriveError("INVALID_SHARE", `a role is one of ${ROLES.join(", ")}`);
       const node = await api.putRef(ctx, path, ref, opts);
@@ -1126,6 +1127,7 @@ export function createDrive(deps: DriveDeps) {
           if (current === null) break;
           removed = await removeNodes([current], undefined, ctx.principal).catch(() => 0);
         }
+        if (removed === 0) console.error(`claimRef could not remove ${node.id} after a failed share. Purge it.`);
         throw error;
       }
       return node;

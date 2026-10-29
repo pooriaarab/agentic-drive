@@ -51,6 +51,16 @@ describe("CLI", () => {
     expect(run(["home"]).json().apps).toEqual({ sheets: 1 });
     expect(run(["register", "not-a-ref", "x"]).code).toBe(1);
   }, 30_000);
+  it("claims a ref with a role, and refuses a bad one without a trace", () => {
+    const { run } = fixture();
+    const made = run(["claim-ref", "docs:c1", "/Claimed", "bob", "--role", "viewer", "--subject-kind", "human"]).json();
+    expect(made).toMatchObject({ kind: "ref", ref: "docs:c1", name: "Claimed" });
+    expect(run(["shares", made.id]).json().grants).toMatchObject([{ subjectId: "bob", role: "viewer" }]);
+    expect(run(["claim-ref", "docs:c2", "/Other", "bob", "--role", "boss", "--subject-kind", "human"]).code).toBe(2);
+    expect(run(["claim-ref", "not-a-ref", "/Other", "bob", "--role", "viewer", "--subject-kind", "human"]).code).toBe(1);
+    expect(run(["find-ref", "docs:c2"]).json()).toEqual([]);
+    expect(run(["ls", "/"]).json().map((n: { name: string }) => n.name)).toEqual(["Claimed"]);
+  }, 30_000);
 
   it("shares by grant, invite, and link, and lists, revokes, and rejects bad input", () => {
     const { run, raw, principal } = fixture();
@@ -298,6 +308,13 @@ describe("MCP over stdio", () => {
       expect((await call("drive_forget_document", { ref: "docs:d9" })).body).toEqual({ trashed: 1 });
       expect((await call("drive_find_ref", { ref: "docs:d9" })).body).toEqual([]);
       expect((await call("drive_trash", { paths: true })).body).toMatchObject([{ id: reg.body.id, path: "/notes/Notes doc" }]);
+      const claimed = await call("drive_claim_ref", { path: "/notes/claimed", ref: "docs:c9", subjectKind: "human", subjectId: "bob", role: "viewer" });
+      // This agent may not share, so the grant fails and the reference is taken back.
+      expect(claimed.isError).toBe(true);
+      expect(claimed.body).toMatchObject({ error: { code: "FORBIDDEN" } });
+      expect((await call("drive_claim_ref", { path: "/notes/bad", ref: "nope", subjectKind: "human", subjectId: "bob", role: "viewer" })).isError).toBe(true);
+      expect((await call("drive_find_ref", { ref: "docs:c9" })).body).toEqual([]);
+      expect((await call("drive_ls", { path: "/notes" })).body.map((n: { name: string }) => n.name)).not.toContain("claimed");
       expect((await call("drive_register_document", { ref: "bad", name: "x" })).isError).toBe(true);
       const made = await call("drive_export", { name: "x.zip" });
       expect(readZip(new Uint8Array(readFileSync(join(data, "exports", "x.zip")))).has("manifest.json")).toBe(true);

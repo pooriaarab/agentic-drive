@@ -105,6 +105,11 @@ describe("claimRef", () => {
     await fails(drive.claimRef(A, "/plan", "docs:1", { subject: { kind: "robot" as never, id: "bob" }, role: "viewer" }), "INVALID_SHARE");
     expect(await drive.list(A, "/")).toEqual([]);
   });
+  it("refuses a caller with no principal before it writes", async () => {
+    const { principal: _p, ...bare } = A;
+    await fails(drive.claimRef(bare, "/plan", "docs:1", { subject: { kind: "human", id: "bob" }, role: "viewer" }), "FORBIDDEN");
+    expect(await drive.list(A, "/")).toEqual([]);
+  });
   it("needs sharing", async () => {
     const plain = createDrive({ store: backend.store(), blobs: createMemoryBlobs() });
     await fails(plain.claimRef(A, "/plan", "docs:1", { subject: { kind: "human", id: "bob" }, role: "viewer" }), "INVALID_SHARE");
