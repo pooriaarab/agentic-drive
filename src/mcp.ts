@@ -71,7 +71,8 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string, store
   tool("drive_mv", "Move an item into a folder. Pass `name` to rename it.", { src: loc, folder: loc, name: z.string().optional(), onConflict: conflict }, async ({ src, folder, name, onConflict }) =>
     publicNode(await drive.move(ctx, src, folder, { name, onConflict })));
   tool("drive_rm", "Move an item to the trash. It stays restorable.", { path: loc }, async ({ path }) => publicNode(await drive.trash(ctx, path)));
-  tool("drive_trash", "List items in the trash.", {}, async () => (await drive.listTrash(ctx)).map((n) => publicNode(n)), { readOnlyHint: true });
+  tool("drive_trash", "List items in the trash. Pass `paths` to add the path each item had before.", { paths: z.boolean().optional() }, async ({ paths }) =>
+    paths ? (await drive.listTrashWithPaths(ctx)).map((r) => publicNode(r.node, r.path)) : (await drive.listTrash(ctx)).map((n) => publicNode(n)), { readOnlyHint: true });
   tool("drive_restore", "Put a trashed item back.", { id: z.string(), parentId: z.string().optional(), onConflict: conflict }, async ({ id, parentId, onConflict }) =>
     publicNode(await drive.restore(ctx, id, { parentId, onConflict })));
   tool("drive_purge", "Delete a trashed item for good.", { id: z.string() }, async ({ id }) => drive.purge(ctx, id), { destructiveHint: true });
@@ -97,6 +98,15 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string, store
     "Put an app document in the drive, as a reference such as docs:<id>. A document that is already there comes back as it is.",
     { ref: z.string(), name: z.string(), folder: z.string().optional() },
     async ({ ref, name, folder }) => publicNode(await drive.registerDocument(ctx, { ref, name, folder })),
+  );
+  tool("drive_find_ref", "Find the live items that point at an app document such as docs:<id>, with their paths.", { ref: z.string() }, async ({ ref }) =>
+    (await drive.findByRef(ctx, ref)).map((r) => publicNode(r.node, r.path)), { readOnlyHint: true });
+  tool(
+    "drive_claim_ref",
+    "Put a reference such as docs:<id> at a path and give a person or an agent a role on it. If the share fails, the reference is removed again.",
+    { path: z.string(), ref: z.string(), subjectKind, subjectId: z.string(), role, parents: z.boolean().optional(), onConflict: conflict },
+    async ({ path, ref, subjectKind, subjectId, role, parents, onConflict }) =>
+      publicNode(await drive.claimRef(ctx, path, ref, { subject: { kind: subjectKind, id: subjectId }, role }, { parents, onConflict })),
   );
   tool("drive_forget_document", "Move every reference to an app document to the trash.", { ref: z.string() }, async ({ ref }) => drive.forgetDocument(ctx, ref));
   tool("drive_shares", "Show who can reach an item, and by which links and invites. Only an owner may look. Link tokens are never shown.", { path: loc }, async ({ path }) => drive.shares(ctx, path), { readOnlyHint: true });

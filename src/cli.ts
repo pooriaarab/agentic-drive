@@ -31,13 +31,15 @@ Commands:
   download <remote> [out]      Save a file. Use "-" for stdout.
   mv <src> <folder>            Move an item. Use --name to rename it.
   rm <path|id>                 Move an item to the trash.
-  trash                        List the trash.
+  trash [--paths]              List the trash. With --paths, each item shows the path it had.
   restore <id>                 Put a trashed item back.
   purge <id>                   Delete a trashed item for good.
   search                       Find items. Flags: --name --mime --kind --min-size --max-size --created-by-kind --limit
   export <out.zip>             Write everything you own to a zip with a JSON manifest.
   home [--app <name>]          List files and app documents, newest change first.
   register <ref> <name>        Put an app document in the drive. Flag: --parent <folder>
+  find-ref <ref>               List the live items that point at an app document, with paths.
+  claim-ref <ref> <path> <subject>  Put a reference and give a role on it, or do neither. Flags: --role <r> --subject-kind <human|agent>
   forget <ref>                 Move the references to an app document to the trash.
   shares <path|id>             Show who can reach an item, and by which links and invites. Owner only.
   share <path|id> <subject>    Give a role to a person or agent. Flags: --role <r> --subject-kind <human|agent>
@@ -67,13 +69,13 @@ Flags:
 Exit codes: 0 done, 1 error, 2 bad usage, 3 no principal or an invalid key.
 `;
 
-const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "forget", "shares", "share", "unshare", "invite", "accept-invite", "link-create", "link-revoke", "delete-all", "mcp", "principal", "key"];
+const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "find-ref", "claim-ref", "forget", "shares", "share", "unshare", "invite", "accept-invite", "link-create", "link-revoke", "delete-all", "mcp", "principal", "key"];
 
 export class UsageError extends Error {}
 
 const options = {
   dir: { type: "string" }, token: { type: "string" }, of: { type: "string" }, scope: { type: "string", multiple: true }, label: { type: "string" },
-  "on-conflict": { type: "string" }, parents: { type: "boolean", short: "p" }, mime: { type: "string" },
+  "on-conflict": { type: "string" }, paths: { type: "boolean" }, parents: { type: "boolean", short: "p" }, mime: { type: "string" },
   "max-bytes": { type: "string" }, kind: { type: "string" }, name: { type: "string" }, parent: { type: "string" },
   "min-size": { type: "string" }, "max-size": { type: "string" }, "created-by-kind": { type: "string" },
   role: { type: "string" }, "subject-kind": { type: "string" }, email: { type: "string" }, handle: { type: "string" }, "expires-in-ms": { type: "string" }, "signed-in-only": { type: "boolean" },
@@ -175,7 +177,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         print(publicNode(await drive.trash(ctx, args[0]!)));
         break;
       case "trash":
-        print((await drive.listTrash(ctx)).map((n) => publicNode(n)));
+        print(values.paths ? (await drive.listTrashWithPaths(ctx)).map((r) => publicNode(r.node, r.path)) : (await drive.listTrash(ctx)).map((n) => publicNode(n)));
         break;
       case "restore":
         need(1, "restore <id>");
@@ -207,6 +209,16 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       case "register":
         need(2, "register <ref> <name>");
         print(publicNode(await drive.registerDocument(ctx, { ref: args[0]!, name: args[1]!, folder: values.parent })));
+        break;
+      case "find-ref":
+        need(1, "find-ref <ref>");
+        print((await drive.findByRef(ctx, args[0]!)).map((r) => publicNode(r.node, r.path)));
+        break;
+      case "claim-ref":
+        need(3, "claim-ref <ref> <path> <subject> --role <r> --subject-kind <human|agent>");
+        print(publicNode(await drive.claimRef(ctx, args[1]!, args[0]!, {
+          subject: { kind: pick(values["subject-kind"], SUBJECT_KINDS, "subject-kind") as "human" | "agent", id: args[2]! }, role: pick(values.role, ROLES, "role") as Role,
+        }, { parents: values.parents, onConflict })));
         break;
       case "forget":
         need(1, "forget <ref>");

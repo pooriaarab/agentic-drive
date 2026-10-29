@@ -1,6 +1,8 @@
 // A typed client for the HTTP API of the Worker. It uses only `fetch`, so it runs in browsers, Workers, and Node 22.
 import type { ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";
 
+export type { ErrorCode, Node };
+
 export type Role = "viewer" | "commenter" | "editor" | "owner";
 export type OnConflict = "fail" | "rename" | "replace";
 export type SubjectKind = "human" | "agent";
@@ -256,6 +258,13 @@ export function createClient(options: ClientOptions) {
     /** Erases the caller for good. The client sends `confirm=yes`. */
     deleteAccount: (o: CallOptions = {}) => json("DELETE", "/account?confirm=yes", o, numbers("removed", "grants", "invites", "anonymized")) as Promise<{ removed: number; grants: number; invites: number; anonymized: number }>,
     home: (q: { app?: string; limit?: number } = {}, o: CallOptions = {}) => json("GET", `/home${query(q)}`, o, isHome),
+    /** The live references to `ref`, with their paths. */
+    findByRef: (ref: string, o: CallOptions = {}) => json("GET", `/refs${query({ ref })}`, o, listOf(isPathItem)),
+    /** Items in the trash, newest first, each with the path it had before. */
+    listTrashWithPaths: (o: CallOptions = {}) => json("GET", "/trash/paths", o, listOf(isPathItem)),
+    /** Puts a reference and gives the subject a role on it, or does neither. Needs sharing. */
+    claimRef: (input: { path: string; ref: string; subject: Subject; role: Role; parents?: boolean; onConflict?: OnConflict }, o: CallOptions = {}) =>
+      json("POST", "/refs", { json: { path: input.path, ref: input.ref, subjectKind: input.subject.kind, subjectId: input.subject.id, role: input.role, parents: input.parents, onConflict: input.onConflict }, ...o }, isItem),
     registerDocument: (input: { ref: string; name: string; folder?: string }, o: CallOptions = {}) => json("POST", "/documents", { json: input, ...o }, isItem),
     forgetDocument: (ref: string, o: CallOptions = {}) => json("DELETE", `/documents${query({ ref })}`, o, numbers("trashed")) as Promise<{ trashed: number }>,
 

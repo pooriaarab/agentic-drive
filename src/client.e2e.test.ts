@@ -126,6 +126,24 @@ describe("the client on the real Worker", () => {
     expect((await me.home({ app: "docs" })).apps).toEqual({ docs: 1 });
     expect(await me.forgetDocument("docs:abc")).toEqual({ trashed: 1 });
   });
+  it("finds a ref, lists the trash with paths, and claims a ref with a role", async () => {
+    const me = as(TOK_U1);
+    const doc = await me.registerDocument({ ref: "docs:hostops", name: "Plan", folder: "/hostops" });
+    expect((await me.findByRef("docs:hostops")).map((r) => [r.id, r.path])).toEqual([[doc.id, "/hostops/Plan"]]);
+    expect(await me.findByRef("docs:none")).toEqual([]);
+    expect(await failure(me.findByRef("not a ref"))).toMatchObject({ code: "INVALID_REF", status: 400 });
+    expect(await me.forgetDocument("docs:hostops")).toEqual({ trashed: 1 });
+    expect(await me.findByRef("docs:hostops")).toEqual([]);
+    expect((await me.listTrashWithPaths()).find((r) => r.id === doc.id)).toMatchObject({ path: "/hostops/Plan", trashed: true });
+
+    const claimed = await me.claimRef({ path: "/hostops/claimed", ref: "docs:claimed", subject: { kind: "human", id: "u3" }, role: "viewer" });
+    expect(claimed).toMatchObject({ kind: "ref", ref: "docs:claimed" });
+    expect((await as(TOK_U3).stat(claimed.id)).id).toBe(claimed.id);
+    // A bad role undoes the put, and the name stays free.
+    expect(await failure(me.claimRef({ path: "/hostops/undone", ref: "docs:undone", subject: { kind: "human", id: "u3" }, role: "boss" as never }))).toMatchObject({ code: "INVALID_SHARE", status: 400 });
+    expect(await me.findByRef("docs:undone")).toEqual([]);
+    expect((await me.list("/hostops")).map((n) => n.name)).not.toContain("undone");
+  });
   it("fails with the code and the status of the API", async () => {
     const wrong = await failure(as("not-a-credential-".padEnd(40, "x")).list("/"));
     expect(wrong).toMatchObject({ code: "UNAUTHORIZED", status: 401, name: "DriveApiError" });

@@ -1,13 +1,15 @@
 import { Hono, type Context } from "hono";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
 import { createSharing, parseRegion, type Blobs, type Role, type Store } from "agentic-identity";
-import { createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
+import { createDrive, DEFAULT_URL_SECONDS, DriveError, ERROR_STATUS, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
 import { authenticate, inviteIdentity } from "./auth.js";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
 
 export { authenticate };
+export { ERROR_STATUS };
+export type { ErrorCode, Node } from "./drive.js";
 export { backfillAuthorIds, backfillResources, type BackfillOptions, type BackfillResult } from "./migrate.js";
 
 export interface WorkerEnv {
@@ -39,13 +41,6 @@ export interface AppOptions<Env = WorkerEnv> {
 }
 
 type App = { Bindings: WorkerEnv; Variables: { drive: Drive; store: Store; ctx: Ctx } };
-
-const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
-  CROSS_DRIVE: 409, INVALID_SHARE: 400, TOO_MANY_ITEMS: 409,
-  TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409, BLOB_EXISTS: 500,
-  NOT_FOUND: 404, NAME_TAKEN: 409, INVALID_NAME: 400, INVALID_PATH: 400, INVALID_REF: 400, NOT_A_FOLDER: 400, NOT_A_FILE: 400,
-  MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
-};
 
 const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 503) =>
   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } });
@@ -201,6 +196,7 @@ export function createApp<Env extends object = WorkerEnv>(options: AppOptions<En
   });
   api.post("/trash", async (c) => c.json(publicNode(await c.var.drive.trash(c.var.ctx, str((await body(c)).path, "path")))));
   api.get("/trash", async (c) => c.json((await c.var.drive.listTrash(c.var.ctx)).map((n) => publicNode(n))));
+  api.get("/trash/paths", async (c) => c.json((await c.var.drive.listTrashWithPaths(c.var.ctx)).map((r) => publicNode(r.node, r.path))));
   api.post("/restore", async (c) => {
     const b = await body(c);
     return c.json(publicNode(await c.var.drive.restore(c.var.ctx, str(b.id, "id"), { parentId: opt(b.parentId, "parentId"), onConflict: opt(b.onConflict, "onConflict") as OnConflict | undefined })));
@@ -227,6 +223,16 @@ export function createApp<Env extends object = WorkerEnv>(options: AppOptions<En
   api.post("/documents", async (c) => {
     const b = await body(c);
     return c.json(publicNode(await c.var.drive.registerDocument(c.var.ctx, { ref: str(b.ref, "ref"), name: str(b.name, "name"), folder: opt(b.folder, "folder") })), 201);
+  });
+  api.get("/refs", async (c) => c.json((await c.var.drive.findByRef(c.var.ctx, need(q(c, "ref"), "ref"))).map((r) => publicNode(r.node, r.path))));
+  api.post("/refs", async (c) => {
+    const b = await body(c);
+    const node = await c.var.drive.claimRef(
+      c.var.ctx, str(b.path, "path"), str(b.ref, "ref"),
+      { subject: { kind: b.subjectKind as never, id: str(b.subjectId, "subjectId") }, role: roleOf(b.role) },
+      { parents: b.parents === true, onConflict: opt(b.onConflict, "onConflict") as OnConflict | undefined },
+    );
+    return c.json(publicNode(node), 201);
   });
   api.delete("/documents", async (c) => c.json(await c.var.drive.forgetDocument(c.var.ctx, need(q(c, "ref"), "ref"))));
 
@@ -329,7 +335,7 @@ export function createApp<Env extends object = WorkerEnv>(options: AppOptions<En
 
   app.notFound(() => fail("NOT_FOUND", "no such route", 404));
   app.onError((error) => {
-    if (error instanceof DriveError) return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), { status: STATUS[error.code], headers: { "content-type": "application/json" } });
+    if (error instanceof DriveError) return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), { status: ERROR_STATUS[error.code], headers: { "content-type": "application/json" } });
     console.error("internal error", error instanceof Error ? error.name : "unknown");
     return new Response(JSON.stringify({ error: { code: "INTERNAL", message: "the server could not finish the request" } }), { status: 500, headers: { "content-type": "application/json" } });
   });
