@@ -135,7 +135,7 @@ try {
 
 ### Other exports
 
-The root export, `agentic-drive`, also exports these names. Its types are in the package typings.
+The root export, `agentic-drive`, also exports these names. The package typings give the type of each one.
 
 - `VERSION` is the package version. `ROOT_ID` is the id of a drive's root folder, `"root"`. `ACTOR_KINDS` lists
   the five principal kinds that `agentic-identity` names.
@@ -143,18 +143,23 @@ The root export, `agentic-drive`, also exports these names. Its types are in the
   the first bytes name: PNG, JPEG, GIF, PDF, ZIP, gzip, or WebP. It returns `null` for any other bytes.
 - `parseName(raw)` returns `{ name, key }`. It normalizes the name to NFC, and `key` is the lowercase name.
   It throws a `DriveError` with the code `INVALID_NAME` for a blank name, `.`, `..`, a lone surrogate, a `/`,
-  or a control character. `parseSubject(input)` returns `{ kind, id }` for a valid subject, and throws
+  a control character, or a name over 255 bytes in UTF-8. `parseSubject(input)` returns `{ kind, id }` for a valid subject, and throws
   `INVALID_SHARE` for any other input.
 - A `DriveError` has a `code` from `ErrorCode`, such as `NOT_FOUND` or `NAME_TAKEN`.
-- `readZip(bytes)` returns a `Map` from each entry name to its bytes. `writeZip(entries, at)` writes a zip with
+- `readZip(bytes)` reads a zip that `writeZip` made, with stored (uncompressed) entries only. It returns a `Map`
+  from each entry name to its bytes. It throws for a compressed entry. `writeZip(entries, at)` writes a zip with
   one `{ name, data }` entry for each file, and `at` sets the time in milliseconds. It throws for an unsafe
   name, such as one with `..` or a leading `/`.
 - The local drive has the functions behind the CLI. `openLocal(dir)` returns `{ drive, store }` for a folder.
   `addPrincipal(store, id, { parent?, scopes? })` makes a principal. `issueKey(store, principalId, label?)`
   returns a key, and it shows once. `resolveToken(store, token)` returns the caller, or throws `AuthError`
-  with the code `UNAUTHENTICATED`. `revokeKey(store, token)` and `revokePrincipal(store, id)` stop keys.
-  `publicNode(node, path?)` returns an item without its internal keys, and adds `machineMade`. Local data is the trust boundary: anyone
-  who can write the folder can act as any principal in it.
+  with the code `UNAUTHENTICATED`. `revokeKey(store, token)` stops one key. `revokePrincipal(store, id)` stops a
+  principal, its keys, and every agent below it.
+  `publicNode(node, path?)` returns an item without its internal keys, and adds `machineMade`. When `path` is
+  given, it also adds `path`.
+
+  The local functions trust their caller. Local data is the trust boundary: anyone who can write the folder
+  can act as any principal in it.
 
 ## UI
 
