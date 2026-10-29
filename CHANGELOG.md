@@ -14,11 +14,6 @@ Read the breaking changes before you upgrade.
 - **Sharing in the MCP server.** New tools: `drive_shares`, `drive_share`, `drive_unshare`, `drive_invite`, `drive_accept_invite`, `drive_create_link`, and `drive_revoke_link`.
 - **`drive_delete_account` in the MCP server.** It erases the caller like `DELETE /account` and `delete-all`. It needs `confirm: "yes"`.
 
-### Changed
-
-- **The local drive has sharing on.** `openLocal` passes `createSharing(store)`. The CLI runs `ensureSharing` once, which backfills `resources` docs for older local items.
-- `inviteIdentity` in `src/auth.ts` reads the verified email and the agent handle for an invite. The Worker, the CLI, and the MCP server share it.
-
 ## 0.6.1
 
 ### Changed
