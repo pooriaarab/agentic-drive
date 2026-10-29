@@ -595,7 +595,7 @@ export function createDrive(deps: DriveDeps) {
    * does it for a caller who owns the resource. Identity says forbidden for another caller and refuses a resource with
    * children or too many owners. A drive erased for an agent without an identity of its own has no such caller. In
    * those cases a sweep does the same. It runs while the item is marked for erase, children first, and before the item
-   * row goes. A failed call leaves a marked item, and `purge` and `deleteAll` run again to finish it.
+   * row goes. A failed call leaves a marked item, and `purge`, `deleteAll`, and `erasePerson` run again to finish it.
    */
   async function finishResource(principal: PrincipalContext | undefined, resourceId: string): Promise<void> {
     if (!sharing) return;
@@ -640,8 +640,8 @@ export function createDrive(deps: DriveDeps) {
    * with its bytes and its name. With a `top` item, parents come before children, and a node is marked
    * only when its parent is: a subtree that a restore moved out is skipped whole. If the top item
    * changed, nothing is deleted. Step 2 deletes the blobs of the marked nodes, then their shares
-   * (see `finishResource`), then their rows (children first) and their claims. Work comes in small chunks, and each chunk commits, so a call
-   * that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
+   * (see `finishResource`), then their rows (children first) and their claims. Work comes in small chunks,
+   * and each chunk commits, so a call that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
    * new mark, so the same call can run again until it is done.
    */
   async function removeNodes(nodes: Node[], top?: Node, principal?: PrincipalContext): Promise<number> {

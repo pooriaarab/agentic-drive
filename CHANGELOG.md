@@ -16,15 +16,18 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 
 ### Changed
 
-- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item. Only the person in person, who owns the drive, can finish a purge that failed after the shares were erased. An agent gets `NOT_FOUND` for that item.
+- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item. Only the owner of the drive, in person, can finish a purge that failed after the shares were erased. An agent gets `NOT_FOUND` for that item.
 - New exports `subjectKindOf` and `parseSubject`. `subjectKindOf` accepts the kind of the root of a chain, `human` or `agent`, and throws on any other kind, a delegated one too.
 - An export lists `subjectKind` on each grant a person holds.
 
 ### Migration
 
+Run the steps in this order. The old Worker keeps writing grants in the old format until step 2, so the migration in step 3 must come after the deploy.
+
 1. Install the new versions: `npm install agentic-drive@0.3.0 agentic-identity@^0.4.0`.
-2. Run identity's `migrateGrants` once on the store, in the one-off Worker of the 0.2.0 steps. It rewrites grants that have no kind. Until it runs, those grants do not count, and `erasePerson` and the export skip them. It lists any grant it cannot place in `unresolved`.
-3. Change every call of `shareWith` and `unshare` to pass `{ kind, id }`, and every client of `POST /shares` and `DELETE /shares` to send `subjectKind`.
+2. Deploy the 0.3.0 Worker. Between the deploy and step 3, grants in the old format do not count. A person who holds only such a grant gets `NOT_FOUND`, and `erasePerson` and the export skip it.
+3. Run `migrateGrants` once, in a one-off Worker set up as in the 0.2.0 steps, with `import { migrateGrants } from "agentic-identity"`. It rewrites grants that have no kind, and it is safe to run again. It lists any grant it cannot place in `unresolved`. Delete the one-off Worker after it.
+4. Change every call of `shareWith` and `unshare` to pass `{ kind, id }`, and every client of `POST /shares` and `DELETE /shares` to send `subjectKind`. Do this before step 2 if callers share while you migrate.
 
 ## 0.2.0
 
