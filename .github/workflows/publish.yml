@@ -20,6 +20,13 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm test
+      - name: Check the publish tokens
+        run: |
+          test -n "$NPM_TOKEN" || { echo "NPM_TOKEN is not set"; exit 1; }
+          test -n "$ANTS_TOKEN" || { echo "ANTS_TOKEN is not set"; exit 1; }
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          ANTS_TOKEN: ${{ secrets.ANTS_TOKEN }}
       - name: Publish if version is new
         run: |
           NAME=$(node -p "require('./package.json').name")

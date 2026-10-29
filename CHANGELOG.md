@@ -24,15 +24,16 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 
 ### Migration
 
-Read the known limits before you move a live deployment. Run the steps in this order. The old Worker keeps writing until step 3, so the backfill in step 4 must come after the deploy.
+Read the known limits before you move a live deployment. Run the steps in this order. The old Worker keeps writing until step 4, so the backfill in step 5 must come after the deploy.
 
-1. Install the new versions: `npm install agentic-drive@0.2.0 agentic-identity@^0.3.0`.
-2. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights. The root principal of each owner must keep `drive:write` at least, because its first call creates the drive root. Narrow the agents, not the owner. The 0.1.0 data does not say what kind an owner is. Use `human` for a person. Use `agent` only for a machine that acts with no person. A wrong kind breaks the chains under that owner.
+1. Check the ids. Every owner and actor id in `DRIVE_API_TOKENS` must match `^[A-Za-z0-9_-]{1,128}$`, the rule that agentic-identity 0.3.0 applies to share subjects. 0.1.0 allowed any text, such as an email address. A deployment with an id that fails this rule cannot move to 0.2.0 in this release, because there is no re-key step. Stay on 0.1.0 for it.
+2. Install the new versions: `npm install agentic-drive@0.2.0 agentic-identity@^0.3.0`.
+3. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights. The root principal of each owner must keep `drive:write` at least, because its first call creates the drive root. Narrow the agents, not the owner. The 0.1.0 data does not say what kind an owner is. Use `human` for a person. Use `agent` only for a machine that acts with no person. A wrong kind breaks the chains under that owner.
    - An owner of kind `human` is a root `human`. Its agents are `agent_of_human`, with `parentId` set to the owner. Its `user_token` actors are `user_token`, with `parentId` set to the owner. An `agent_of_agent` sits under an `agent_of_human`. 0.1.0 recorded no parent ids, so choose one, and keep the chain to 5 links (`MAX_CHAIN_DEPTH`).
    - An owner of kind `agent` is a root `agent`. Its actors are `agent_of_agent`, with `parentId` set to the owner. The same 5-link limit applies.
-   - A human actor who is not the owner keeps its old actor id, as a root `human`. Step 6 shares the folders with it. It keeps no path access to the owner's drive. See the known limits.
+   - A human actor who is not the owner keeps its old actor id, as a root `human`. Step 7 shares the folders with it. It keeps no path access to the owner's drive. See the known limits.
 
-   Write each one through the `Store` port:
+   Write each one through the `Store` port. Run this code in a one-off Worker that binds the database, as step 5 does, and delete it after you run it:
 
    ```js
    import { createD1Store } from "agentic-identity/cloudflare";
@@ -49,8 +50,8 @@ Read the known limits before you move a live deployment. Run the steps in this o
    }
    ```
 
-3. Deploy the 0.2.0 Worker. From this point, nobody can sign in until step 5.
-4. Run the backfills once the old Worker has stopped writing. `backfillAuthorIds` fills in the author fields. `backfillResources` writes the missing `resources` docs, without which the 0.1.0 items are not reachable for their owners. Each call runs one page of 10 items and returns a `nextCursor` while items remain. Call the step again with that cursor until a call returns no cursor. On Cloudflare, deploy a one-off Worker that binds the same database. Give it `compatibility_flags: ["nodejs_compat"]`, as the main Worker has. Protect it with a secret, and delete it after you run it:
+4. Deploy the 0.2.0 Worker. From this point, nobody can sign in until step 6.
+5. Run the backfills once the old Worker has stopped writing. `backfillAuthorIds` fills in the author fields. `backfillResources` writes the missing `resources` docs, without which the 0.1.0 items are not reachable for their owners. Each call runs one page of 10 items and returns a `nextCursor` while items remain. Call the step again with that cursor until a call returns no cursor. On Cloudflare, deploy a one-off Worker that binds the same database. Give it `compatibility_flags: ["nodejs_compat"]`, as the main Worker has. Protect it with a secret, and delete it after you run it:
 
    ```js
    import { createD1Store } from "agentic-identity/cloudflare";
@@ -81,26 +82,27 @@ Read the known limits before you move a live deployment. Run the steps in this o
    ```
 
    Run `?step=authors`, then `?step=resources`. Pass each `nextCursor` as `cursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops a step. Fix or delete that item, then run it again.
-5. Issue a bearer token for each person with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to the person. A token is shown only once. Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until a person makes it, an agent without `drive:write` that calls first gets `NOT_FOUND`.
-6. As the owner, share each folder that a human actor who is not the owner used with that actor, with `POST /shares` and the role `owner`. Do this after step 5, because a share needs the item's `resources` doc and the drive root.
-7. Issue the tokens for the agents and the other human actors, and give them out.
-8. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
-9. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
-10. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
+6. Issue a bearer token for each person with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to the person. A token is shown only once. Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until a person makes it, an agent without `drive:write` that calls first gets `NOT_FOUND`.
+7. As the owner, share each folder that a human actor who is not the owner used with that actor, with `POST /shares` and the role `owner`. Do this after step 6, because a share needs the item's `resources` doc and the drive root.
+8. Issue the tokens for the agents and the other human actors, and give them out.
+9. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
+10. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
+11. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
 
 Known limits of this release:
 
 - **OIDC sign-in gets a new id.** agentic-identity gives an OIDC person the id `u_` plus a hash of the issuer and the subject. That id is not the old owner string. A person who signs in through OIDC does not see a drive made under the old owner string. Use bearer tokens for those drives until a re-key step ships.
 - **There is no re-key step.** This release does not move items from one owner id to another. Keep the old ids as principal ids, as step 2 does.
 - **A human who is not the owner has no path access to the owner's drive.** Its paths resolve in its own drive. It reaches the owner's items by id, once they are shared with it.
+- **An id that fails the share rule blocks the upgrade.** See step 1.
 - **Old items keep the kind they had in 0.1.0.** New items carry the kind of their new principal, which can differ, as step 2 shows. So a search by `--created-by-kind` sees the old and the new work under different kinds.
 
 ### Added
 
 - App documents. An app puts a document in the drive with `registerDocument`. `forgetDocument` moves every reference to it to the trash. `home` lists files and app documents together. `search` takes an `app` filter.
-- Sharing with roles (`viewer`, `commenter`, `editor`). Invites by email or handle, share links with an optional expiry, and a signed-in-only option.
+- Sharing with roles (`viewer`, `commenter`, `editor`, `owner`). Invites by email or handle, share links with an optional expiry, and a signed-in-only option.
 - `exportPerson`, `erasePerson`, `backfillAuthorIds`, and `backfillResources`. The two backfills are exported from `agentic-drive` and `agentic-drive/worker`.
-- HTTP: `GET /home`, `POST /documents`, `DELETE /documents`, the `/shares`, `/invites`, `/links`, and `/shared` routes, and `DELETE /account`.
+- HTTP: `GET /home`, `POST /documents`, `DELETE /documents`, and the `/shares`, `/invites`, `/links`, and `/shared` routes.
 - CLI: `home`, `register`, and `forget`.
 - MCP: `drive_home`, `drive_register_document`, and `drive_forget_document`.
 
