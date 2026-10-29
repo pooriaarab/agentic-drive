@@ -95,6 +95,53 @@ describe("activity log", () => {
     expect(log[1]!.detail).toEqual({ subjectKind: "human", subjectId: "u2", role: "viewer" });
   });
 
+  it("keeps the roots of two drives apart, and logs no share of a root", async () => {
+    const store = createMemoryStore();
+    const drive = createDrive({ store, blobs: createMemoryBlobs(), sharing: createSharing(store) });
+    const ctxOf = (id: string): Ctx => ({ owner: id, actor: { id, kind: "human" }, principal: { principalId: id, kind: "human", chain: [{ id, kind: "human" }], scopes: ["drive:admin"] } });
+    await drive.shareWith(ctxOf("ann"), "/", { kind: "human", id: "carol" }, "editor");
+    expect(await drive.listActivity(ctxOf("eve"), "/")).toEqual([]);
+    expect(await drive.listActivity(ctxOf("ann"), "root")).toEqual([]);
+  });
+
+  it("shows who got a role to an owner only", async () => {
+    const store = createMemoryStore();
+    const drive = createDrive({ store, blobs: createMemoryBlobs(), sharing: createSharing(store) });
+    const ctxOf = (id: string): Ctx => ({ owner: id === "bob" ? "u1" : id, actor: { id, kind: "human" }, principal: { principalId: id, kind: "human", chain: [{ id: id === "bob" ? "u1" : id, kind: "human" }], scopes: ["drive:admin"] } });
+    const bobAsReader: Ctx = { owner: "u2", actor: { id: "bob", kind: "human" }, principal: { principalId: "bob", kind: "human", chain: [{ id: "bob", kind: "human" }], scopes: ["drive:admin"] } };
+    const ann = ctxOf("u1");
+    const file = await drive.putFile(ann, "/g.txt", bytes("x"));
+    await drive.shareWith(ann, file.id, { kind: "human", id: "bob" }, "viewer");
+    await drive.shareWith(ann, file.id, { kind: "human", id: "dave" }, "editor");
+    const seen = await drive.listActivity({ ...bobAsReader, owner: "bob" }, file.id);
+    expect(actions(seen)).toEqual(["share", "share", "create"]);
+    expect(seen[0]).not.toHaveProperty("detail");
+    expect((await drive.listActivity(ann, file.id))[0]!.detail).toMatchObject({ subjectId: "dave", role: "editor" });
+  });
+
+  it("refuses a change by an actor with no valid kind, and labels a stored bad kind as a machine", async () => {
+    const { drive, store } = setup();
+    const file = await drive.putFile(human, "/a.txt", bytes("x"));
+    await expect(drive.rename({ owner: "u1", actor: { id: "u1", kind: "Human" as never } }, file.id, "b.txt")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(actions(await drive.listActivity(human, file.id))).toEqual(["create"]);
+    const [stored] = (await store.query("drive_activity", { where: { itemId: file.id }, limit: 1 })).items;
+    await store.put("drive_activity", stored!.id, { ...stored!.data, principalKind: "weird", actor: { id: "u1", kind: "human" } });
+    expect((await drive.listActivity(human, file.id))[0]!.actor.kind).toBe("agent");
+  });
+
+  it("keeps names out of the export for a drive that the person does not own", async () => {
+    const { drive } = setup();
+    const theirs = await drive.putFile(stranger, "/secret-name.txt", bytes("x"));
+    const visitor: Ctx = { owner: "u2", actor: { id: "u1", kind: "human" } };
+    await drive.rename(visitor, theirs.id, "other-secret.txt");
+    await drive.putFile(human, "/mine.txt", bytes("y"));
+    const manifest = JSON.parse(new TextDecoder().decode(readZip(await buildExport(drive, human)).get("manifest.json")!));
+    const foreign = manifest.activity.find((e: { itemId: string }) => e.itemId === theirs.id);
+    expect(foreign).toMatchObject({ action: "rename", actor: { id: "u1", kind: "human" } });
+    expect(foreign).not.toHaveProperty("detail");
+    expect(manifest.activity.find((e: { itemId: string }) => e.itemId !== theirs.id).detail).toMatchObject({ name: "mine.txt" });
+  });
+
   it("puts the activity of the actor in the export, with the kind", async () => {
     const { drive } = setup();
     const file = await drive.putFile(human, "/a.txt", bytes("x"));
@@ -143,6 +190,8 @@ describe("HTTP", () => {
     expect(((await (await call(`/items/${made.id}/activity?limit=1`)).json()) as unknown[]).length).toBe(1);
     expect((await call(`/items/${made.id}/activity`, {}, "bob")).status).toBe(404);
     expect((await call("/items/activity-of-nothing/activity")).status).toBe(404);
+    expect((await call(`/items/${made.id}/activity?limit=0`)).status).toBe(400);
+    expect((await call(`/items/${made.id}/activity?limit=1.5`)).status).toBe(400);
     expect((await app.fetch(new Request(`http://x/api/v1/drive/items/${made.id}/activity`), {} as never)).status).toBe(401);
   });
 });

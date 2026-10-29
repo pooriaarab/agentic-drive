@@ -6,9 +6,9 @@ const VERBS: Record<ActivityEntry["action"], string> = {
 /** What changed, in words. It reads the detail the drive stores: names and ids, never content. */
 function detailText(e: ActivityEntry): string {
   const d = e.detail ?? {};
-  if (e.action === "rename") return `from "${d.from}" to "${d.to}"`;
-  if (e.action === "share") return `with ${d.subjectId} as ${d.role}`;
-  if (e.action === "unshare") return `from ${d.subjectId}`;
+  if (e.action === "rename") return d.from === undefined ? "" : `from "${d.from}" to "${d.to}"`;
+  if (e.action === "share") return d.subjectId ? `with ${d.subjectId} as ${d.role}` : "";
+  if (e.action === "unshare") return d.subjectId ? `from ${d.subjectId}` : "";
   return "";
 }
 
