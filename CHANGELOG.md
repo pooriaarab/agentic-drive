@@ -6,6 +6,11 @@
 
 - **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The local layout changes: the store is `store.json` in the data folder and blobs sit in `blobs/blobs/<hash>.blob`. `openLocal` now also returns `blobs`, and it throws on a folder with an old `db/store.jsonl` until `importLegacyLocal(dir, store, blobs)` (new, exported) has copied the old data. The CLI does this on its first run, once, and leaves the old files in place.
 
+### Added
+
+- Host operations: `findByRef`, `listTrashWithPaths`, and `claimRef` (put a reference and give a role, or do neither), in the SDK, the HTTP API (`GET /refs`, `POST /refs`, `GET /trash/paths`), the client, the CLI (`find-ref`, `claim-ref`, `trash --paths`), and MCP (`drive_find_ref`, `drive_claim_ref`, `drive_trash` with `paths`).
+- `ERROR_STATUS`, the map from each error code to its HTTP status, is exported from the root and `agentic-drive/worker`. `Node` and `ErrorCode` types are exported from the client and worker entries too.
+
 ### Changed
 
 - **Transactions no longer nest store calls.** Access answers come from outside the transaction, so each transaction reads before it writes and runs on the file store of `agentic-identity/file`. A test runs the sharing and person suites on it.
