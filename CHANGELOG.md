@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Read the breaking changes before you upgrade. The migration steps follow them.
 
 ### Breaking changes
 
-- **agentic-identity 0.4.0.** A grant has a kind and an id, and a person and an agent with the same id are two subjects. The range is now `^0.4.0`. Run identity's `migrateGrants` once on a store with grants from 0.3.0. Until then, those grants do not count.
+- **agentic-identity 0.4.0.** A grant has a kind and an id, and a person and an agent with the same id are two subjects. The range is now `^0.4.0`. Run identity's `migrateGrants` once on a store with grants from 0.3.0. See the migration steps.
 - **`shareWith` and `unshare` take a subject.** The subject is `{ kind: "human" | "agent", id }`, not a bare id. A subject with no kind, or with another kind, fails with `INVALID_SHARE`. The HTTP routes take `subjectKind` next to `subjectId`: in the body of `POST /shares`, and in the query of `DELETE /shares`. `GET /shares` lists `subjectKind` on each grant.
 - **Erase and export read grants by kind.** A person's erase and export touch the grants of that person and of their agents with their own identity. A grant of an agent with the same id as a person stays.
 
@@ -14,9 +16,20 @@
 
 ### Changed
 
-- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item.
+- A purge, `deleteAll`, and `erasePerson` erase each item and the drive root through identity's `deleteResource`. The grants, links, invites, and audit entries of the item go with it, so none survives the item. Before, the audit entries stayed. The shares go while the item is marked for erase, before its row goes, so a failed call leaves a marked item and the same call runs again. A caller who does not own the item, and an agent drive that `erasePerson` removes, get the same result from a sweep. A purge costs more calls for each item. Only the owner of the drive, in person, can finish a purge that failed after the shares were erased. An agent gets `NOT_FOUND` for that item.
 - New exports `subjectKindOf` and `parseSubject`. `subjectKindOf` accepts the kind of the root of a chain, `human` or `agent`, and throws on any other kind, a delegated one too.
 - An export lists `subjectKind` on each grant a person holds.
+
+### Migration
+
+Run the steps in this order. The old Worker keeps writing grants in the old format until step 3, so the migration in step 4 must come after the deploy.
+
+1. Install the new versions: `npm install agentic-drive@0.3.0 agentic-identity@^0.4.0`.
+2. Change every call of `shareWith` and `unshare` in your code to pass `{ kind, id }`. The build fails on a bare id, and a bare id in JavaScript fails with `INVALID_SHARE`.
+3. Deploy the 0.3.0 Worker. **From now until step 4, every owner loses access to their own drive.** Owner grants from before 0.3.0 are in the old format too, and identity 0.4.0 does not honor them. Everybody gets `NOT_FOUND`, and `erasePerson` and the export skip those grants. Run step 4 right after the deploy, or plan a maintenance window.
+4. Run `migrateGrants` in a one-off Worker set up as in the 0.2.0 steps. Add it to the `steps` of that Worker, for example `grants: (store) => migrateGrants(store)`, with `import { migrateGrants } from "agentic-identity"`. It rewrites grants that have no kind. If the call fails or runs out of time, call it again until `migrated` is 0. It skips what is done. Delete the one-off Worker after it.
+5. Delete from the `grants` collection each doc id that `migrateGrants` lists in `unresolved`. Its subject is gone, and identity never honors it. The share list leaves such a grant out.
+6. Change every HTTP client of `POST /shares` and `DELETE /shares` to send `subjectKind`. The new client does this.
 
 ## 0.2.0
 

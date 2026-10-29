@@ -594,8 +594,8 @@ export function createDrive(deps: DriveDeps) {
    * Erases what hangs on a resource: its grants, links, invites, and audit entries, and the resource itself. Identity
    * does it for a caller who owns the resource. Identity says forbidden for another caller and refuses a resource with
    * children or too many owners. A drive erased for an agent without an identity of its own has no such caller. In
-   * those cases a sweep does the same. It runs after the item is gone, so a failed call leaves a share with no item
-   * behind, never an item with no share record. The share cannot reach anything, and the same erase removes it.
+   * those cases a sweep does the same. It runs while the item is marked for erase, children first, and before the item
+   * row goes. A failed call leaves a marked item, and `purge`, `deleteAll`, and `erasePerson` run again to finish it.
    */
   async function finishResource(principal: PrincipalContext | undefined, resourceId: string): Promise<void> {
     if (!sharing) return;
@@ -639,9 +639,9 @@ export function createDrive(deps: DriveDeps) {
    * nothing can bring it back while its bytes go. A node that changed before its mark stays untouched,
    * with its bytes and its name. With a `top` item, parents come before children, and a node is marked
    * only when its parent is: a subtree that a restore moved out is skipped whole. If the top item
-   * changed, nothing is deleted. Step 2 deletes the blobs of the marked nodes, then their rows
-   * (children first) and their claims. Work comes in small chunks, and each chunk commits, so a call
-   * that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
+   * changed, nothing is deleted. Step 2 deletes the blobs of the marked nodes, then their shares
+   * (see `finishResource`), then their rows (children first) and their claims. Work comes in small chunks,
+   * and each chunk commits, so a call that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
    * new mark, so the same call can run again until it is done.
    */
   async function removeNodes(nodes: Node[], top?: Node, principal?: PrincipalContext): Promise<number> {
@@ -1156,7 +1156,8 @@ export function createDrive(deps: DriveDeps) {
       const where = { resourceId: await resourceOf(node) };
       const rows = async (collection: string) => (await store.query(collection, { where, limit: 100 })).items.map((item) => item.data);
       return {
-        grants: (await rows("grants")).map((g) => ({ subjectKind: g.subjectKind, subjectId: g.subjectId, role: g.role })),
+        // A grant with no valid kind is from before 0.4.0 and not migrated. Identity does not honor it, so the list leaves it out.
+        grants: (await rows("grants")).filter((g) => (SUBJECT_KINDS as readonly unknown[]).includes(g.subjectKind)).map((g) => ({ subjectKind: g.subjectKind, subjectId: g.subjectId, role: g.role })),
         links: (await rows("links")).map((l) => ({ id: l.id, role: l.role, signedInOnly: l.signedInOnly === true, expiresAt: l.expiresAt ?? null, revoked: l.revokedAt != null })),
         invites: (await rows("invites")).map((i) => ({ id: i.id, role: i.role, email: i.email ?? null, handle: i.handle ?? null, expiresAt: i.expiresAt ?? null, accepted: i.acceptedAt !== undefined })),
       };

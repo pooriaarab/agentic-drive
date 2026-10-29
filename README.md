@@ -97,7 +97,7 @@ try {
 - A failed call throws `DriveApiError`. It has the `code` of the API and the HTTP `status`. A call that gets no answer has the code `NETWORK_ERROR` and status 0. An abort stays the abort error of `fetch`. A code that the client does not know gives `BAD_RESPONSE`.
 - The client never sends a write again. `retries` (default 0) sends a read (GET) again after a network error or a 502, 503, or 504, with a short wait. A redirect is an error (`BAD_RESPONSE`, with the status of the redirect, or 0 in a browser): set `baseUrl` to the final URL.
 - `fetch` is an option, for tests and for runtimes with their own. `openShared`, `listShared`, and `readShared` work without a token, with a `linkToken`.
-- A stream body for `upload` is refused by some browsers. The error says so, and nothing is sent. Items from before 0.2.0 need `backfillAuthorIds`, or a list that holds one fails with `BAD_RESPONSE`.
+- A stream body for `upload` is refused by some browsers. The error says so, and nothing is sent. Items from before 0.2.0 need `backfillAuthorIds`, and grants from before 0.3.0 need identity's `migrateGrants`. Without them, an answer that holds one fails with `BAD_RESPONSE`.
 - A browser page needs the Worker on its own origin for now: the Worker sends no CORS headers.
 - Share with a subject: `share("/pub", { kind: "human", id: "u2" }, "viewer")`.
 

@@ -213,7 +213,7 @@ export function createClient(options: ClientOptions) {
     return value;
   };
 
-  const isUrl = shape<{ url: string; expiresInSeconds: number }>((v) => typeof v.url === "string" && typeof v.expiresInSeconds === "number");
+  const isUrl = shape<{ url: string; expiresInSeconds: number }>((v) => typeof v.url === "string" && /^https?:\/\//.test(v.url) && URL.canParse(v.url) && typeof v.expiresInSeconds === "number");
   const isShares = shape<{ grants: { subjectKind: SubjectKind; subjectId: string; role: Role }[]; links: { id: string; role: Role; signedInOnly: boolean; expiresAt: number | null; revoked: boolean }[]; invites: { id: string; role: Role; email: string | null; handle: string | null; expiresAt: number | null; accepted: boolean }[] }>(
     (v) =>
       listOf(shape((g) => (g.subjectKind === "human" || g.subjectKind === "agent") && text(g.subjectId) && oneOf(ROLES)(g.role)))(v.grants) &&
@@ -270,7 +270,10 @@ export function createClient(options: ClientOptions) {
     /** The next three read a shared item by id. Pass a link token, a bearer token, or both. */
     openShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, isItem),
     listShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}/items`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, listOf(isItem)),
-    readShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}): Promise<Omit<Downloaded, "sha256">> => bytes(`/shared/${id(itemId)}/content`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }),
+    readShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}): Promise<Omit<Downloaded, "sha256">> => {
+      const { data, contentType } = await bytes(`/shared/${id(itemId)}/content`, { auth: false, headers: link(opts.linkToken), signal: opts.signal });
+      return { data, contentType };
+    },
   };
 }
 

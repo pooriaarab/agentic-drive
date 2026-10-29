@@ -272,6 +272,11 @@ describe("the client without a server", () => {
     const dropped = answering(() => new Response(new ReadableStream({ start: (c) => c.error(new Error("reset")) })));
     expect(await failure(dropped.download("/a"))).toMatchObject({ code: "NETWORK_ERROR", status: 0 });
   });
+  it("refuses a signed link that is not an http or https URL, and gives readShared no hash", async () => {
+    expect(await failure(answering(() => Response.json({ url: "javascript:alert(1)", expiresInSeconds: 60 })).url("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await answering(() => Response.json({ url: "https://drive.example.com/api/v1/drive/blob?x=1", expiresInSeconds: 60 })).url("/a")).toMatchObject({ expiresInSeconds: 60 });
+    expect(await answering(() => new Response("x")).readShared("abc")).not.toHaveProperty("sha256");
+  });
   it("treats a redirect as an error", async () => {
     const redirected = createClient({ baseUrl: "http://drive.example.com", token: "abc", fetch: (async (_url: string, init?: RequestInit) => {
       expect(init?.redirect).toBe("manual");
