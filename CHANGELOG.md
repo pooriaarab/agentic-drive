@@ -20,82 +20,77 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 - **The export manifest is version 2.** Version 2 adds `subject`, `partial`, `authored`, `agents`, `shares`, and `audit`. The item entries do not change. An agent gets `partial: true` and none of the person-level parts. A reader that accepts only version 1 must accept version 2.
 - **Items carry `createdById` and `updatedById`.** Erase and export use these top-level fields to find a person's work. Items written before 0.2.0 do not have them. Code that builds a `Node` value must set both fields.
 - **New error codes.** `CROSS_DRIVE`, `INVALID_SHARE`, and `TOO_MANY_ITEMS` are new. Code that handles every `ErrorCode` in a `Record` or a `switch` must handle them.
-- **agentic-identity 0.3.0.** `listAudit` is paged. It returns `{ entries, nextCursor }`, newest first, 50 entries a page by default and 200 at most. It used to return an array. Drive does not expose `listAudit`. Code that calls it directly must read `entries`, and must pass `nextCursor` as `cursor` to read on.
+- **agentic-identity 0.3.0.** `grant` refuses to lower the last owner of a resource, which fails with `INVALID_SHARE`. `listAudit` is paged. It returns `{ entries, nextCursor }`, newest first, 50 entries a page by default and 200 at most. It used to return an array. Drive does not expose `listAudit`. Code that calls it directly must read `entries`, and must pass `nextCursor` as `cursor` to read on.
 
 ### Migration
 
-Read the known limits before you move a live deployment. Run the steps in this order. The old Worker keeps writing until step 4, so the backfill in step 5 must come after the deploy.
+Read the known limits before you move a live deployment. Run the steps in this order. The old Worker keeps writing until step 4, so the backfills in step 5 must come after the deploy.
+
+The steps 3, 5, 6, and 8 run code that needs the D1 database. Run it in one one-off Worker, and delete it after the last step. The Worker checks a secret on every call, so nobody else can call it. It binds the same database as the main Worker, with the same `DRIVE_REGION`, and it has `compatibility_flags: ["nodejs_compat"]`, as the main Worker has:
+
+```js
+import { createD1Store } from "agentic-identity/cloudflare";
+import { issueCredential, parseRegion } from "agentic-identity";
+import { backfillAuthorIds, backfillResources } from "agentic-drive/worker";
+
+// Compares two strings in a time that does not depend on where they differ.
+function same(a, b) {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
+}
+
+// Each step takes one call. The body of a POST is JSON.
+const steps = {
+  // POST a principal document, such as { "id": "u1", "kind": "human", "scopes": ["drive:admin"] }.
+  principal: (store, body) => store.put("principals", body.id, body),
+  // Runs one page. Pass the `nextCursor` of the last call as `cursor`.
+  authors: (store, body, cursor) => backfillAuthorIds(store, { cursor, maxPages: 1 }),
+  resources: (store, body, cursor) => backfillResources(store, { cursor, maxPages: 1 }),
+  // POST { "principalId": "u1", "label": "laptop" }. The token comes back once, so send it only to your terminal.
+  token: async (store, body) => ({ token: await issueCredential(store, { principalId: body.principalId, kind: "api_key", label: body.label }) }),
+};
+
+export default {
+  async fetch(request, env) {
+    const sent = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+    if (!env.MIGRATE_TOKEN || !same(sent, env.MIGRATE_TOKEN)) return new Response("forbidden", { status: 403 });
+    const url = new URL(request.url);
+    const step = url.searchParams.get("step");
+    if (!Object.hasOwn(steps, step)) return new Response("unknown step", { status: 400 });
+    const body = request.method === "POST" ? await request.json() : {};
+    const store = createD1Store(env.DB, { region: parseRegion(env.DRIVE_REGION ?? "eu") });
+    return Response.json((await steps[step](store, body, url.searchParams.get("cursor") ?? undefined)) ?? { ok: true });
+  },
+};
+```
+
+Set the secret with `wrangler secret put MIGRATE_TOKEN`. Send it as `authorization: Bearer <token>` with each call.
 
 1. Check the ids. Every owner and actor id in `DRIVE_API_TOKENS` must match `^[A-Za-z0-9_-]{1,128}$`, the rule that agentic-identity 0.3.0 applies to share subjects. 0.1.0 allowed any text, such as an email address. A deployment with an id that fails this rule cannot move to 0.2.0 in this release, because there is no re-key step. Stay on 0.1.0 for it.
 2. Install the new versions: `npm install agentic-drive@0.2.0 agentic-identity@^0.3.0`.
-3. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights. The root principal of each owner must keep `drive:write` at least, because its first call creates the drive root. Narrow the agents, not the owner. The 0.1.0 data does not say what kind an owner is. Use `human` for a person. Use `agent` only for a machine that acts with no person. A wrong kind breaks the chains under that owner.
+3. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights. The root principal of each owner must keep `drive:write` at least, because its first call creates the drive root. Narrow the agents, not the owner. The 0.1.0 data does not say what kind an owner is. Use `human` for a person. Use `agent` only for a machine that acts with no person. A wrong kind breaks the chains under that owner. POST each principal to `?step=principal`:
    - An owner of kind `human` is a root `human`. Its agents are `agent_of_human`, with `parentId` set to the owner. Its `user_token` actors are `user_token`, with `parentId` set to the owner. An `agent_of_agent` sits under an `agent_of_human`. 0.1.0 recorded no parent ids, so choose one, and keep the chain to 5 links (`MAX_CHAIN_DEPTH`).
    - An owner of kind `agent` is a root `agent`. Its actors are `agent_of_agent`, with `parentId` set to the owner. The same 5-link limit applies.
    - A human actor who is not the owner keeps its old actor id, as a root `human`. Step 7 shares the folders with it. It keeps no path access to the owner's drive. See the known limits.
-
-   Write each one through the `Store` port. Run this code in a one-off Worker that binds the database, as step 5 does, and delete it after you run it:
-
-   ```js
-   import { createD1Store } from "agentic-identity/cloudflare";
-   import { parseRegion } from "agentic-identity";
-
-   export async function writePrincipal(env, principal) {
-     const store = createD1Store(env.DB, { region: parseRegion(env.DRIVE_REGION ?? "eu") });
-     await store.put("principals", principal.id, principal);
-   }
-
-   export async function writeRoots(env) {
-     await writePrincipal(env, { id: "u1", kind: "human", scopes: ["drive:admin"] });
-     await writePrincipal(env, { id: "bot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:admin"] });
-   }
-   ```
-
 4. Deploy the 0.2.0 Worker. From this point, nobody can sign in until step 6.
-5. Run the backfills once the old Worker has stopped writing. `backfillAuthorIds` fills in the author fields. `backfillResources` writes the missing `resources` docs, without which the 0.1.0 items are not reachable for their owners. Each call runs one page of 10 items and returns a `nextCursor` while items remain. Call the step again with that cursor until a call returns no cursor. On Cloudflare, deploy a one-off Worker that binds the same database. Give it `compatibility_flags: ["nodejs_compat"]`, as the main Worker has. Protect it with a secret, and delete it after you run it:
-
-   ```js
-   import { createD1Store } from "agentic-identity/cloudflare";
-   import { parseRegion } from "agentic-identity";
-   import { backfillAuthorIds, backfillResources } from "agentic-drive/worker";
-
-   // Compares two strings in a time that does not depend on where they differ.
-   function same(a, b) {
-     const x = new TextEncoder().encode(a);
-     const y = new TextEncoder().encode(b);
-     let diff = x.length ^ y.length;
-     for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-     return diff === 0;
-   }
-
-   export default {
-     async fetch(request, env) {
-       const sent = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
-       if (!env.BACKFILL_TOKEN || !same(sent, env.BACKFILL_TOKEN)) return new Response("forbidden", { status: 403 });
-       const url = new URL(request.url);
-       const steps = { authors: backfillAuthorIds, resources: backfillResources };
-       const step = url.searchParams.get("step");
-       if (!Object.hasOwn(steps, step)) return new Response("unknown step", { status: 400 });
-       const store = createD1Store(env.DB, { region: parseRegion(env.DRIVE_REGION ?? "eu") });
-       return Response.json(await steps[step](store, { cursor: url.searchParams.get("cursor") ?? undefined, maxPages: 1 }));
-     },
-   };
-   ```
-
-   Run `?step=authors`, then `?step=resources`. Pass each `nextCursor` as `cursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops a step. Fix or delete that item, then run it again.
-6. Issue a bearer token for each person with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to the person. A token is shown only once. Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until a person makes it, an agent without `drive:write` that calls first gets `NOT_FOUND`.
-7. As the owner, share each folder that a human actor who is not the owner used with that actor, with `POST /shares` and the role `owner`. Do this after step 6, because a share needs the item's `resources` doc and the drive root.
-8. Issue the tokens for the agents and the other human actors, and give them out.
-9. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
+5. Run the backfills once the old Worker has stopped writing. Call `?step=authors`, then `?step=resources`, and pass each `nextCursor` as `cursor`. Stop when a call returns no `nextCursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops a step. Fix or delete that item, then run it again.
+6. Issue a bearer token for each person: POST `{ "principalId": "u1", "label": "..." }` to `?step=token`. Give it to the person. The token is shown only once. Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until a person makes it, an agent without `drive:write` that calls first gets `NOT_FOUND`.
+7. Share with each human actor that is not the owner. As the owner, share the root `/` and each folder that the actor used. Use the role `owner`, which keeps its old rights. Before that, share each folder with the owner as `owner`, so that the last-owner rule still leaves an owner when the actor's grant changes later. Do this after step 6, because a share needs the item's `resources` doc and the drive root.
+8. Issue the tokens for the agents and the other human actors: POST to `?step=token` for each, and give them out.
+9. Remove the secrets: `npx wrangler secret delete DRIVE_API_TOKENS`, and delete the one-off Worker.
 10. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
 11. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
 
 Known limits of this release:
 
 - **OIDC sign-in gets a new id.** agentic-identity gives an OIDC person the id `u_` plus a hash of the issuer and the subject. That id is not the old owner string. A person who signs in through OIDC does not see a drive made under the old owner string. Use bearer tokens for those drives until a re-key step ships.
-- **There is no re-key step.** This release does not move items from one owner id to another. Keep the old ids as principal ids, as step 2 does.
-- **A human who is not the owner has no path access to the owner's drive.** Its paths resolve in its own drive. It reaches the owner's items by id, once they are shared with it.
+- **There is no re-key step.** This release does not move items from one owner id to another. Keep the old ids as principal ids, as step 3 does.
 - **An id that fails the share rule blocks the upgrade.** See step 1.
-- **Old items keep the kind they had in 0.1.0.** New items carry the kind of their new principal, which can differ, as step 2 shows. So a search by `--created-by-kind` sees the old and the new work under different kinds.
+- **Old items keep the kind they had in 0.1.0.** New items carry the kind of their new principal, which can differ, as step 3 shows. So a search by `--created-by-kind` sees the old and the new work under different kinds.
+- **A human who is not the owner has no path access to the owner's drive.** Its paths resolve in its own drive. It reaches the owner's items by id, once they are shared with it.
 
 ### Added
 
