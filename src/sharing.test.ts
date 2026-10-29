@@ -14,6 +14,12 @@
 //  13. A purge leaves the shares of the purged item.
 //  14. An item whose sharing record is gone is readable by anyone (fail closed).
 //  15. A listing of shares shows a link token, or shows to a non-owner.
+//  16. An item sits deeper than sharing can follow, and nobody, the owner included, can reach it.
+//  17. A path walk shows an existing folder to a caller whose scopes do not cover the drive.
+//  18. An editor with a share on one item cannot rename it, because its folder is out of reach.
+//  19. A purge or an erase leaves links, invites, or grants (past the first page) behind, and old shares then apply to new files.
+//  20. A restore into a parent id tells a caller which ids exist.
+//  21. An agent principal, with a forged human actor, erases a drive.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
@@ -274,5 +280,79 @@ describe("the share list, the audit, and fail-closed storage", () => {
     await plain.mkdir(A, "/x");
     await fails(plain.shareWith(A, "/x", "bob", "viewer"), "INVALID_SHARE");
     await fails(plain.openShared(null, "x", "t"), "INVALID_SHARE");
+  });
+});
+
+describe("depth, scope, and in-place changes", () => {
+  const chain = (n: number) => Array.from({ length: n }, (_, i) => `d${i}`).join("/");
+  it("stops a folder chain at the depth that sharing can follow, and creates nothing", async () => {
+    await fails(drive.mkdir(A, `/${chain(16)}`, { parents: true }), "TOO_DEEP");
+    expect(await drive.list(A, "/")).toEqual([]);
+    const deepest = await drive.mkdir(A, `/${chain(14)}`, { parents: true });
+    expect((await drive.stat(A, deepest.id)).name).toBe("d13");
+    expect((await drive.putFile(A, `${deepest.id}/f.txt`, bytes("f"))).name).toBe("f.txt");
+    await fails(drive.putFile(A, `${deepest.id}/sub/g.txt`, bytes("g"), { parents: true }), "TOO_DEEP");
+  });
+  it("refuses a move that would push a subtree past that depth", async () => {
+    await drive.mkdir(A, `/${chain(10)}`, { parents: true });
+    await drive.mkdir(A, "/s/t/u/v/w/x", { parents: true });
+    await fails(drive.move(A, "/s", `/${chain(10)}`), "TOO_DEEP");
+    expect((await drive.stat(A, "/s/t/u/v/w/x")).name).toBe("x");
+    await drive.move(A, "/s/t/u/v/w/x", `/${chain(10)}`);
+  });
+  it("shows nothing about an existing path to a caller whose scopes miss the drive", async () => {
+    await drive.mkdir(A, "/secret/inner", { parents: true });
+    const stray = ctxOf(botOf(["docs:read"]));
+    await fails(drive.mkdir(stray, "/secret/inner", { parents: true }), "NOT_FOUND");
+    await fails(drive.mkdir(stray, "/secret", { parents: true }), "NOT_FOUND");
+    await fails(drive.putFile(stray, "/secret/x.txt", bytes("x")), "NOT_FOUND");
+    await fails(drive.stat(stray, "/secret"), "NOT_FOUND");
+    await fails(drive.list(stray, "/"), "NOT_FOUND");
+  });
+  it("lets an editor rename an item that was shared on its own", async () => {
+    await drive.putFile(A, "/top.txt", bytes("t"));
+    await drive.putFile(A, "/priv/in.txt", bytes("i"), { parents: true });
+    await drive.mkdir(A, "/team");
+    for (const path of ["/top.txt", "/priv/in.txt", "/team"]) await drive.shareWith(A, path, "bob", "editor");
+    const ids = [await drive.stat(A, "/top.txt"), await drive.stat(A, "/priv/in.txt"), await drive.stat(A, "/team")];
+    for (const [i, node] of ids.entries()) expect((await drive.rename(B, node.id, `renamed${i}`)).name).toBe(`renamed${i}`);
+    expect((await drive.stat(A, "/priv/renamed1")).id).toBe(ids[1]!.id);
+    await fails(drive.move(B, ids[1]!.id, (await drive.stat(A, "/priv")).id), "NOT_FOUND");
+  });
+  it("deletes links, invites, and every grant of a purged item", { timeout: 60_000 }, async () => {
+    const file = await drive.putFile(A, "/f.txt", bytes("f"));
+    for (let i = 0; i < 105; i++) await drive.shareWith(A, file.id, `friend-${i}`, "viewer");
+    const link = await drive.createLink(A, file.id, { role: "viewer" });
+    await drive.invite(A, file.id, { role: "viewer", email: "gone@example.com" });
+    await drive.trash(A, file.id);
+    await drive.purge(A, file.id);
+    for (const collection of ["grants", "links", "invites", "resources"]) expect((await store.query(collection, { limit: 500 })).items.filter((e) => e.data.resourceId === file.id || e.id === file.id), collection).toEqual([]);
+    await fails(drive.openShared(null, file.id, link.token), "NOT_FOUND");
+  });
+  it("erases the shares of the drive root too, so an old share does not reach new files", async () => {
+    await drive.putFile(A, "/old.txt", bytes("o"));
+    await drive.shareWith(A, "/", "bob", "viewer");
+    await drive.createLink(A, "/", { role: "viewer" });
+    await drive.invite(A, "/", { role: "viewer", email: "gone@example.com" });
+    await drive.deleteAll(A);
+    const fresh = await drive.putFile(A, "/new.txt", bytes("n"));
+    await fails(drive.stat(B, fresh.id), "NOT_FOUND");
+    expect((await store.query("invites", { limit: 10 })).items).toEqual([]);
+    expect((await store.query("links", { limit: 10 })).items).toEqual([]);
+    expect((await drive.stat(A, fresh.id)).name).toBe("new.txt");
+  });
+  it("answers PARENT_GONE to a restore into a parent that is missing, unreadable, or not a folder", async () => {
+    const { file } = await team("editor");
+    await drive.putFile(A, "/priv/x.txt", bytes("x"), { parents: true });
+    const priv = await drive.stat(A, "/priv");
+    const loose = await drive.putFile(A, "/loose.txt", bytes("l"));
+    await drive.trash(B, file.id);
+    for (const parentId of ["no-such-id", priv.id, loose.id]) await fails(drive.restore(B, file.id, { parentId }), "PARENT_GONE");
+  });
+  it("erases only when the principal is the owner in person", async () => {
+    const forged: Ctx = { owner: "alice", actor: { id: "alice", kind: "human" }, principal: principal("alice", "agent", ["drive:admin"], [{ id: "alice", kind: "agent" }]) };
+    await fails(drive.deleteAll(forged), "FORBIDDEN");
+    const delegated: Ctx = { ...ctxOf(botOf(["drive:admin"])), actor: { id: "alice", kind: "human" } };
+    await fails(drive.deleteAll(delegated), "FORBIDDEN");
   });
 });

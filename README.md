@@ -110,11 +110,14 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 - The D1 store checks every document a transaction read. If another Worker changed one, the transaction runs again, and after 50 tries it fails with a `BUSY` error.
 - The D1 store keeps one generic table. A busy deployment needs an expression index on `owner` and `parentId`.
 - `region: "eu"` on the D1 and R2 adapters is a promise made at deploy time. The D1 adapter refuses a query that a non-EU region served. The code cannot check where the bucket lives.
-- Every API token is at least 32 characters. Its grant names an owner, an actor id, and an actor kind. A grant with a missing part gets 401.
+- Every API token is at least 32 characters. Its grant names a `principalId`. A grant with a missing or bad part gets 401.
 - Tokens in `DRIVE_API_TOKENS` are a stopgap for sign-in. OIDC and store-backed credentials come with the next agentic-identity release.
 - Sharing is on in the Worker and in the SDK (`createDrive({ sharing })`). The CLI and the MCP server work on a local drive with one owner, so they do not share yet.
 - Drive writes the `resources` doc of each item itself, in the same transaction, because identity has no call that does it in a transaction. A drive with `sharing` off keeps no such docs, so turn it on at the start.
 - An invite sends no message. The caller passes the invite id on.
+- Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path or move fails with `TOO_DEEP`.
+- Every access check writes one audit row, and a transaction that runs again writes its rows again. The audit holds ids and kinds only: no emails and no content.
+- Data made before sharing has no `resources` docs, so its owner gets `NOT_FOUND`. There is no backfill yet.
 - A person who is not an owner cannot move an item into their own drive: the move fails with `CROSS_DRIVE`.
 ## Develop
 

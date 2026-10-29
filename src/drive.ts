@@ -1,4 +1,4 @@
-import type { Blobs, createSharing, Doc, PrincipalContext, Resource, Role, Store, StoreOps } from "agentic-identity";
+import { MAX_FOLDER_DEPTH, type Blobs, type createSharing, type Doc, type PrincipalContext, type Resource, type Role, type Store, type StoreOps } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -139,8 +139,11 @@ function batch() {
   const writes: Write[] = [];
   /** Folders made in this batch. They have no children yet, so nobody needs to read them. */
   const fresh = new Set<string>();
+  /** How deep the items made in this batch sit. The drive root is 0. */
+  const depths = new Map<string, number>();
   return {
     fresh,
+    depths,
     put: (collection: string, id: string, doc: Doc) => void writes.push({ collection, id, doc }),
     remove: (collection: string, id: string) => void writes.push({ collection, id, doc: null }),
     async apply(ops: StoreOps) {
@@ -154,6 +157,8 @@ const claimId = (owner: string, parentId: string, key: string) => sha256Hex(new 
 /** The sharing resource of a drive's root folder. One per owner. */
 const rootResource = async (owner: string) => `drive-root-${(await sha256Hex(new TextEncoder().encode(owner))).slice(0, 32)}`;
 const ACTION_TO_IDENTITY = { read: "read", write: "write", delete: "admin" } as const;
+/** Sharing follows a path of at most MAX_FOLDER_DEPTH resources, the drive root included. Deeper items could not be reached. */
+const MAX_ITEM_DEPTH = MAX_FOLDER_DEPTH - 1;
 const SHARE_ERROR = /^(invalid|give an|expiresAt|expiresInMs|resource exists|the last owner)/;
 
 export function createDrive(deps: DriveDeps) {
@@ -223,12 +228,40 @@ export function createDrive(deps: DriveDeps) {
     return false;
   }
 
+  /** How many folders sit between a node and the drive root, the node included. */
+  async function depthOf(ops: StoreOps, w: ReturnType<typeof batch>, node: Node): Promise<number> {
+    let depth = 0;
+    for (let n: Node | null = node; n && n.id !== ROOT_ID; ) {
+      const known = w.depths.get(n.id);
+      if (known !== undefined) return depth + known;
+      if (++depth > MAX_ITEM_DEPTH) return depth;
+      n = await rawNode(ops, n.parentId, n.owner);
+    }
+    return depth;
+  }
+  /** True when a folder has items more than `levels` below it. */
+  async function deeperThan(ops: StoreOps, folder: Node, levels: number): Promise<boolean> {
+    let level = [folder];
+    for (let i = 0; i <= levels; i++) {
+      const next: Node[] = [];
+      for (const f of level) if (f.kind === "folder") next.push(...(await children(ops, f.owner, f.id)));
+      if (next.length === 0) return false;
+      level = next;
+    }
+    return true;
+  }
+
   /**
    * The folder a path starts from, and its segments. A path that starts with "/" begins at the caller's
    * own root. A path such as `<folder id>/a/b` begins at that folder, which the caller reads by a share.
    */
   async function startOf(ops: StoreOps, ctx: Ctx, loc: string) {
-    if (loc.startsWith("/")) return { start: rootNode(ctx.owner), segs: splitPath(loc) };
+    if (loc.startsWith("/")) {
+      // Walking a path shows what exists. A caller with no read on the drive learns nothing.
+      const start = rootNode(ctx.owner);
+      if (!(await can(ctx, "read", start))) throw new DriveError("NOT_FOUND", `no item ${loc}`);
+      return { start, segs: splitPath(loc) };
+    }
     const slash = loc.indexOf("/");
     const base = await resolve(ops, ctx, loc.slice(0, slash));
     if (base.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${base.name} is not a folder`);
@@ -251,7 +284,6 @@ export function createDrive(deps: DriveDeps) {
       if (!next) throw new DriveError("NOT_FOUND", `no item ${loc}`);
       node = next;
     }
-    if (!(await can(ctx, "read", node))) throw new DriveError("NOT_FOUND", `no item ${loc}`);
     return node;
   }
 
@@ -299,9 +331,15 @@ export function createDrive(deps: DriveDeps) {
       name = await freeName(ops, parent.owner, parent.id, name);
       key = parseName(name).key;
     }
+    const id = newId();
+    if (sharing) {
+      const depth = (await depthOf(ops, w, parent)) + 1;
+      if (depth > MAX_ITEM_DEPTH) throw new DriveError("TOO_DEEP", `an item can sit at most ${MAX_ITEM_DEPTH} folders deep`);
+      w.depths.set(id, depth);
+    }
     const t = now();
     const node: Node = {
-      id: newId(), owner: parent.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
+      id, owner: parent.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
       ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null, purging: false,
       ...fields,
     };
@@ -319,9 +357,9 @@ export function createDrive(deps: DriveDeps) {
     return { parent: await folderAt(ops, w, ctx, start, segs, parents), name: last.name };
   }
 
-  async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string, opts: { name?: string; onConflict?: OnConflict }) {
+  async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string | Node, opts: { name?: string; onConflict?: OnConflict }) {
     if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
-    const dest = await resolve(ops, ctx, destLoc);
+    const dest = typeof destLoc === "string" ? await resolve(ops, ctx, destLoc) : destLoc;
     if (dest.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${dest.name} is not a folder`);
     if (dest.owner !== node.owner) throw new DriveError("CROSS_DRIVE", "an item cannot move into another person's drive");
     // Walk from the destination up to the root. Any gap or overrun refuses the move.
@@ -333,7 +371,14 @@ export function createDrive(deps: DriveDeps) {
       n = parent;
     }
     await need(ctx, "write", node);
-    await need(ctx, "write", dest);
+    // A change inside the same folder is a rename. It needs no right on the folder.
+    if (dest.id !== node.parentId) {
+      await need(ctx, "write", dest);
+      if (sharing) {
+        const room = MAX_ITEM_DEPTH - ((await depthOf(ops, w, dest)) + 1);
+        if (room < 0 || (node.kind === "folder" && (await deeperThan(ops, node, room)))) throw new DriveError("TOO_DEEP", `an item can sit at most ${MAX_ITEM_DEPTH} folders deep`);
+      }
+    }
     let { name, key } = parseName(opts.name ?? node.name);
     const slot = await claimed(ops, dest.owner, dest.id, key);
     if (slot.taken && slot.node?.id !== node.id) {
@@ -407,6 +452,20 @@ export function createDrive(deps: DriveDeps) {
     }
   }
 
+  /** Every grant, link, and invite of one resource, page by page. */
+  async function sharesOf(ops: StoreOps, resourceId: string) {
+    const out: { collection: string; id: string }[] = [];
+    for (const collection of ["grants", "links", "invites"]) {
+      for (let cursor: string | undefined; ; ) {
+        const page = await ops.query(collection, { where: { resourceId }, limit: 100, cursor });
+        out.push(...page.items.map((item) => ({ collection, id: item.id })));
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+    }
+    return out;
+  }
+
   /**
    * Deletes nodes for good, and returns how many it deleted. Step 1 marks each node that still looks as
    * it did when it was read. A marked node is invisible and cannot be restored, moved, or changed, so
@@ -457,19 +516,19 @@ export function createDrive(deps: DriveDeps) {
       const chunk = rows.slice(i, i + CHUNK);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
       await transact(async (tx) => {
-        const held: { node: Node; claim: string | null; owns: boolean; grants: string[] }[] = [];
+        const held: { node: Node; claim: string | null; owns: boolean; shares: { collection: string; id: string }[] }[] = [];
         for (const node of chunk) {
           // A trashed item gave up its name when it was trashed, and another item may hold it now.
           const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
-          // The shares of a deleted item go with it. A share is a grant doc per person.
-          const grants = sharing ? (await tx.query("grants", { where: { resourceId: node.id }, limit: 100 })).items.map((g) => g.id) : [];
-          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id, grants });
+          // The shares of a deleted item go with it: its grants, links, and invites.
+          const shares = sharing ? await sharesOf(tx, node.id) : [];
+          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id, shares });
         }
-        for (const { node, claim, owns, grants } of held) {
+        for (const { node, claim, owns, shares } of held) {
           await tx.delete(NODES, node.id);
           if (claim && owns) await tx.delete(NAMES, claim);
           if (sharing) await tx.delete("resources", node.id);
-          for (const grant of grants) await tx.delete("grants", grant);
+          for (const share of shares) await tx.delete(share.collection, share.id);
         }
       });
     }
@@ -590,7 +649,9 @@ export function createDrive(deps: DriveDeps) {
       return transact(async (tx) => {
         const w = batch();
         const node = await resolve(tx, ctx, loc);
-        const renamed = await relocate(tx, w, ctx, node, node.parentId, { name });
+        const parent = await rawNode(tx, node.parentId, node.owner);
+        if (!parent) throw new DriveError("NOT_FOUND", `the folder of ${node.name} is missing`);
+        const renamed = await relocate(tx, w, ctx, node, parent, { name });
         await w.apply(tx);
         return renamed;
       });
@@ -631,7 +692,9 @@ export function createDrive(deps: DriveDeps) {
         await need(ctx, "write", node);
         // A parent id the caller names is read from the caller's drive, so "root" is the caller's own root.
         const parent = opts.parentId === undefined ? await rawNode(tx, node.parentId, node.owner) : await rawNode(tx, opts.parentId, ctx.owner);
-        if (!parent || parent.kind !== "folder" || !(await isLive(tx, ctx, parent))) {
+        // A caller must read a parent that it names. Missing, unreadable, and unusable parents all look the same.
+        const visible = parent !== null && (opts.parentId === undefined || (await can(ctx, "read", parent)));
+        if (!parent || !visible || parent.kind !== "folder" || !(await isLive(tx, ctx, parent))) {
           throw new DriveError("PARENT_GONE", `the folder of ${node.name} is gone or in the trash`);
         }
         if (parent.owner !== node.owner) throw new DriveError("CROSS_DRIVE", "an item cannot move into another person's drive");
@@ -686,13 +749,23 @@ export function createDrive(deps: DriveDeps) {
 
     /** Deletes every item and blob of the owner for good. Only the owner may do this, never an agent for them. A failed call can run again. */
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
-      if (ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
+      const inPerson = ctx.principal === undefined || (ctx.principal.kind === "human" && ctx.principal.chain.length === 1);
+      if (!inPerson || ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
       await need(ctx, "delete", rootNode(ctx.owner));
       let removed = 0;
       // A file created during a pass shows up in the next one.
       for (let pass = 0; pass < 5; pass++) {
         const all = await ownerNodes(ctx, true);
-        if (all.length === 0) return { removed };
+        if (all.length === 0) {
+          // The root has shares too. Erase them, so an old share never reaches a new file.
+          const rootId = await rootResource(ctx.owner);
+          await transact(async (tx) => {
+            const shares = sharing ? await sharesOf(tx, rootId) : [];
+            for (const share of shares) await tx.delete(share.collection, share.id);
+            if (sharing) await tx.delete("resources", rootId);
+          });
+          return { removed };
+        }
         removed += await removeNodes(all);
       }
       throw new DriveError("BUSY", "the drive kept changing while it was deleted. Run it again.");
@@ -792,19 +865,17 @@ export function createDrive(deps: DriveDeps) {
     }
   }
 
-  /** The drive root is a resource too, so a person's own role on it can be checked. It is made once. */
-  const rooted = new Set<string>();
+  /** The drive root is a resource too, so a person's own role on it can be checked. It is made on first use. */
   async function prepare(ctx: Ctx) {
     if (!sharing || ctx.principal === undefined) return;
     // The owner is the root of the chain. A caller whose owner is someone else's id would read that drive.
     if (ctx.principal.chain[0]?.id !== ctx.owner) throw new DriveError("FORBIDDEN", "the caller does not own this drive");
-    if (rooted.has(ctx.owner)) return;
+    const id = await rootResource(ctx.owner);
+    if ((await store.get("resources", id))?.type === "drive") return;
     try {
-      await sharing.createResource(ctx.principal, { id: await rootResource(ctx.owner), type: "drive" });
-      rooted.add(ctx.owner);
-    } catch (error) {
-      // "resource exists" is fine. Any other refusal (the caller may only read) leaves the check to `can`.
-      if (error instanceof Error && error.message === "resource exists") rooted.add(ctx.owner);
+      await sharing.createResource(ctx.principal, { id, type: "drive" });
+    } catch {
+      // The caller may only read, or the root was made a moment ago. Either way `can` decides next.
     }
   }
   const guarded = (call: (ctx: Ctx, ...args: never[]) => unknown) => async (ctx: Ctx, ...args: never[]) => {
