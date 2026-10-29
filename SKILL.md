@@ -20,6 +20,6 @@ await drive.mkdir(me, "/notes");
 
 ## Rules
 
-- A path starts with `/`. Any other locator is an id.
+- A locator with a `/` is a path: `/x` from the root, or `<folder id>/x` from a folder. Any other locator is an id.
 - Trash before purge.
 - Report a `DriveError` as a failure.

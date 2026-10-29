@@ -10,7 +10,7 @@ import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
 const conflict = z.enum(["fail", "rename", "replace"]).optional();
-const loc = z.string().describe('A path that starts with "/", or an item id.');
+const loc = z.string().describe('A path, such as "/x" or "<folder id>/x", or an item id.');
 
 const ok = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 function failure(error: unknown) {
