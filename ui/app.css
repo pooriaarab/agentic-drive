@@ -1,0 +1,27 @@
+.drive-main { max-width: 72rem; }
+.drive-muted { color: var(--ad-color-text-muted); }
+.drive-status { display: flex; align-items: center; gap: var(--ad-space-2); color: var(--ad-color-text-muted); }
+.drive-signin { display: grid; gap: var(--ad-space-4); max-width: 24rem; }
+.drive-form { display: grid; gap: var(--ad-space-4); }
+.drive-form__actions { display: flex; justify-content: flex-end; gap: var(--ad-space-2); }
+.drive-drop { min-height: 60vh; border: 2px dashed transparent; border-radius: var(--ad-radius-md); padding: var(--ad-space-2); }
+.drive-drop--over { border-color: var(--ad-color-accent); background: var(--ad-color-accent-subtle); }
+.drive-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--ad-space-4); flex-wrap: wrap; margin-bottom: var(--ad-space-4); }
+.drive-bar h1 { margin: 0; font-size: var(--ad-font-size-xl); overflow-wrap: anywhere; }
+.drive-crumbs ol { display: flex; flex-wrap: wrap; gap: var(--ad-space-2); list-style: none; margin: 0 0 var(--ad-space-2); padding: 0; color: var(--ad-color-text-muted); }
+.drive-crumbs li + li::before { content: "/"; margin-right: var(--ad-space-2); }
+.drive-crumbs [aria-current="page"] { color: var(--ad-color-text); font-weight: var(--ad-font-weight-semibold); }
+.drive-split { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: var(--ad-space-6); }
+@media (max-width: 48rem) { .drive-split { grid-template-columns: 1fr; } }
+.drive-tree { list-style: none; margin: 0; padding: 0; }
+.drive-tree .drive-tree { padding-left: var(--ad-space-4); }
+.drive-tree a { display: flex; align-items: center; gap: var(--ad-space-2); padding: var(--ad-space-1) var(--ad-space-2); border-radius: var(--ad-radius-sm); color: var(--ad-color-text); text-decoration: none; }
+.drive-tree a:hover { background: var(--ad-color-surface-hover); }
+.drive-tree a[aria-current="page"] { background: var(--ad-color-accent-subtle); color: var(--ad-color-accent-text); font-weight: var(--ad-font-weight-semibold); }
+.drive-tree svg { width: 1rem; height: 1rem; flex: none; }
+.drive-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: var(--ad-space-4); list-style: none; margin: 0; padding: 0; }
+.drive-card { position: relative; display: grid; gap: var(--ad-space-2); padding: var(--ad-space-4); border: 1px solid var(--ad-color-border); border-radius: var(--ad-radius-md); background: var(--ad-color-surface); }
+.drive-card__icon svg { width: 2rem; height: 2rem; }
+.drive-card__name { overflow-wrap: anywhere; font-weight: var(--ad-font-weight-medium); color: var(--ad-color-text); }
+.drive-card__meta { font-size: var(--ad-font-size-sm); color: var(--ad-color-text-muted); }
+.drive-card__actions { display: flex; align-items: center; justify-content: space-between; gap: var(--ad-space-2); }

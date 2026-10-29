@@ -12,6 +12,7 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 
 ### Added
 
+- **A web UI.** The Worker serves it from `ui-dist` (`npm run build:ui`). It uses agentic-design and the typed client. A Playwright test with an axe WCAG 2.2 AA check covers each view in light and dark.
 - **`agentic-drive/client`.** A typed client for the HTTP API: `createClient({ baseUrl, token, fetch?, retries? })`. It has one method for each bearer route and each shared route, a typed `DriveApiError` with the API `code` and the HTTP `status`, and `AbortSignal` support. It sends a write once. It uses only `fetch`.
 
 ### Changed

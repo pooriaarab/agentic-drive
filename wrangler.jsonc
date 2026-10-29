@@ -8,5 +8,7 @@
   "compatibility_date": "2026-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [{ "binding": "DB", "database_name": "agentic-drive", "database_id": "00000000-0000-0000-0000-000000000000" }],
+  // The web UI is built into ui-dist (`npm run build:ui`). The Worker answers the API first, and the assets answer the rest.
+  "assets": { "directory": "./ui-dist", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*", "/health"] },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "agentic-drive-files", "jurisdiction": "eu" }]
 }
