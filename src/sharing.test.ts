@@ -259,11 +259,11 @@ describe("the share list, the audit, and fail-closed storage", () => {
     const { file, folder } = await team("viewer");
     await fails(drive.putFile(B, `${folder.id}/x.txt`, bytes("x")), "FORBIDDEN");
     await fails(drive.stat(C, file.id), "NOT_FOUND");
-    const entries = await sharing.listAudit(alice, folder.id);
+    const { entries } = await sharing.listAudit(alice, folder.id);
     expect(entries).toEqual(expect.arrayContaining([expect.objectContaining({ principalId: "bob", outcome: "denied", action: "write", principalKind: "human" })]));
     const agentCtx = ctxOf(botOf(["drive:read"]));
     await fails(drive.trash(agentCtx, file.id), "FORBIDDEN");
-    expect((await sharing.listAudit(alice, file.id)).some((e) => e.principalId === "bot" && e.machineMade && e.outcome === "denied")).toBe(true);
+    expect((await sharing.listAudit(alice, file.id)).entries.some((e) => e.principalId === "bot" && e.machineMade && e.outcome === "denied")).toBe(true);
   });
   it("deletes the shares of an item when the item is purged", async () => {
     const { file } = await team("viewer");

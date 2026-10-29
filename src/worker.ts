@@ -6,6 +6,8 @@ import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
 
+export { backfillAuthorIds, backfillResources, type BackfillOptions, type BackfillResult } from "./migrate.js";
+
 export interface WorkerEnv {
   DB: D1Like;
   FILES: R2Like;

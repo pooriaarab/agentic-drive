@@ -164,7 +164,7 @@ function batch() {
 const claimId = (owner: string, parentId: string, key: string) => sha256Hex(new TextEncoder().encode(`${owner}\0${parentId}\0${key}`));
 
 /** The sharing resource of a drive's root folder. One per owner. */
-const rootResource = async (owner: string) => `drive-root-${(await sha256Hex(new TextEncoder().encode(owner))).slice(0, 32)}`;
+export const rootResource = async (owner: string) => `drive-root-${(await sha256Hex(new TextEncoder().encode(owner))).slice(0, 32)}`;
 const ACTION_TO_IDENTITY = { read: "read", write: "write", delete: "admin" } as const;
 /** Sharing follows a path of at most MAX_FOLDER_DEPTH resources, the drive root included. Deeper items could not be reached. */
 const MAX_ITEM_DEPTH = MAX_FOLDER_DEPTH - 1;
