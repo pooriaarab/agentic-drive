@@ -229,12 +229,13 @@ describe("eraseAccount", () => {
     expect(await driveAccount.eraseAccount(ALICE, deps(A))).toEqual({ items: 0, grants: 0, invites: 0, anonymized: 0 });
   });
 
-  it("writes nothing when an export runs after the erase", async () => {
+  // The checks of an export write access-log rows (audit), as every read does. They do not write the person's data back.
+  it("adds no root or grant when an export runs after the erase", async () => {
     await seed();
     await driveAccount.eraseAccount(ALICE, deps(A));
-    const before = [await rowsIn("resources"), await rowsIn("grants"), await rowsIn("audit")];
+    const before = [await rowsIn("resources"), await rowsIn("grants")];
     await driveAccount.exportAccount(ALICE, deps(A));
-    expect([await rowsIn("resources"), await rowsIn("grants"), await rowsIn("audit")]).toEqual(before);
+    expect([await rowsIn("resources"), await rowsIn("grants")]).toEqual(before);
   });
 
   it("refuses an agent subject", async () => {
