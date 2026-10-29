@@ -13,6 +13,11 @@
 //  11. An erase leaves the person's id on items from before the author ids, or on half-updated items.
 //  12. An erase deletes grants and invites of other apps, and leaves a resource with no owner.
 //  13. An agent of the person leaves its id behind on items, in invites, or in the audit export.
+//  15. registerDocument returns a document that the caller cannot read, so a stranger can test that an id exists.
+//  16. An agent with its own identity (an owner, no parent) is missed: its work, its drive, its grants, and its invites stay.
+//  17. A person with more agents than the cap is erased in part, and the call says it worked.
+//  18. A local agent that runs with the owner's id is named as a person.
+//  19. A file keeps the id of the person who uploaded it in its storage key, after that person is erased.
 //  14. A document is registered twice because its first item is hidden, or because the folder is in another drive,
 //      or because more than 100 copies of its reference sit in the trash.
 import { createMemoryBlobs, createMemoryStore, createSharing, type Blobs, type PrincipalContext } from "agentic-identity";
@@ -166,7 +171,7 @@ describe("export and erase of a person", () => {
     // Nothing about the owner of the item or its current name: only what the person wrote.
     expect(Object.keys(manifest.authored[0]).sort()).toEqual(["by", "created", "createdAt", "id", "kind", "updated", "updatedAt"]);
     expect(JSON.stringify(manifest.authored)).not.toContain("bob");
-    expect(manifest.shares.held).toEqual(expect.arrayContaining([{ resourceId: team.id, role: "editor" }]));
+    expect(manifest.shares.held).toEqual(expect.arrayContaining([{ subjectId: "alice", resourceId: team.id, role: "editor" }]));
     expect(manifest.shares.invitesCreated).toEqual([expect.objectContaining({ id: invite.id, role: "viewer", accepted: false })]);
     expect(manifest.audit.length).toBeGreaterThan(0);
     expect(manifest.audit.every((e: { principalKind: string }) => e.principalKind === "human")).toBe(true);
@@ -307,6 +312,68 @@ describe("export and erase of a person", () => {
     const botsFile = await drive.stat(B, byBot.id);
     expect(botsFile.createdBy).toEqual({ id: "erased", kind: "agent_of_human" });
     expect((await store.query("invites", { limit: 10 })).items).toEqual([]);
+  });
+  it("does not return a document that the caller cannot read", async () => {
+    const secret = await drive.registerDocument(A, { ref: "docs:secret", name: "Layoffs plan", folder: "/private" });
+    await drive.mkdir(A, "/shared");
+    await drive.shareWith(A, "/shared", "bob", "editor");
+    const shared = await drive.stat(A, "/shared");
+    await fails(drive.stat(B, secret.id), "NOT_FOUND");
+    const made = await drive.registerDocument(B, { ref: "docs:secret", name: "mine", folder: shared.id });
+    expect(made.id).not.toBe(secret.id);
+    expect(made.name).toBe("mine");
+    expect(made.parentId).toBe(shared.id);
+  });
+  it("treats an agent with its own identity as part of the person: its work, its drive, its grants, and its invites", async () => {
+    await store.put("principals", "p_agent", { id: "p_agent", kind: "agent", scopes: ["drive:admin"], ownerId: "bob" });
+    const agent = ctxOf(principal("p_agent", "agent"));
+    await drive.putFile(B, "/team/b.txt", bytes("b"), { parents: true });
+    const team = await drive.stat(B, "/team");
+    await drive.shareWith(B, "/team", "p_agent", "editor");
+    const byAgent = await drive.putFile(agent, `${team.id}/by-agent.txt`, bytes("a"));
+    await drive.putFile(agent, "/agent-own.txt", bytes("own"));
+    await drive.mkdir(agent, "/agent-shared");
+    await drive.invite(agent, "/agent-shared", { role: "viewer", handle: "someone" });
+    const forBob = await manifestOf(B);
+    expect(forBob.agents).toHaveLength(1);
+    expect(forBob.agents[0].id).toBe("p_agent");
+    expect(forBob.agents[0].items.map((i: { name: string }) => i.name).sort()).toEqual(["agent-own.txt", "agent-shared"]);
+    expect(forBob.shares.held.map((g: { subjectId: string }) => g.subjectId)).toContain("p_agent");
+    expect(forBob.audit.some((e: { principalId: string }) => e.principalId === "p_agent")).toBe(true);
+    const result = await drive.erasePerson(B);
+    expect(result.removed).toBeGreaterThanOrEqual(5);
+    expect((await store.query("drive_nodes", { where: { owner: "p_agent" } })).items).toEqual([]);
+    expect((await store.query("grants", { where: { subjectId: "p_agent" } })).items).toEqual([]);
+    expect((await store.query("invites", { limit: 10 })).items).toEqual([]);
+    expect(byAgent.createdBy).toEqual({ id: "p_agent", kind: "agent" });
+  });
+  it("keeps the label of a standalone agent's work in a drive that stays", async () => {
+    await store.put("principals", "p_agent", { id: "p_agent", kind: "agent", scopes: ["drive:admin"], ownerId: "bob" });
+    const agent = ctxOf(principal("p_agent", "agent"));
+    await drive.mkdir(A, "/open");
+    const open = await drive.stat(A, "/open");
+    await drive.shareWith(A, "/open", "p_agent", "editor");
+    const made = await drive.putFile(agent, `${open.id}/by-agent.txt`, bytes("a"));
+    await drive.erasePerson(B);
+    expect((await drive.stat(A, made.id)).createdBy).toEqual({ id: "erased", kind: "agent" });
+    expect((await store.query("grants", { where: { subjectId: "p_agent" } })).items).toEqual([]);
+  });
+  it("refuses to erase a person with more agents than it can find", { timeout: 120_000 }, async () => {
+    await drive.putFile(B, "/keep.txt", bytes("k"));
+    for (let i = 0; i < 1001; i++) await store.put("principals", `p_${i}`, { id: `p_${i}`, kind: "agent", scopes: [], ownerId: "bob" });
+    await fails(drive.erasePerson(B), "TOO_MANY_ITEMS");
+    expect((await drive.stat(B, "/keep.txt")).name).toBe("keep.txt");
+  });
+  it("names no kind for a local agent that runs with the owner's id", async () => {
+    const local = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });
+    const asAgent: Ctx = { owner: "me", actor: { id: "me", kind: "agent_of_human" } };
+    expect((await local.exportPerson(asAgent)).partial).toBe(true);
+    expect((await local.exportPerson(asAgent)).subject).toEqual({ id: "me", kind: null });
+  });
+  it("keeps no uploader id in the storage key of a file", async () => {
+    const { team } = await setup();
+    const made = await drive.putFile(A, `${team.id}/key-test.txt`, bytes("k"));
+    expect((await store.get("drive_nodes", made.id))!.blobKey).not.toContain("alice");
   });
   it("works on a local drive with no sharing", async () => {
     const local = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });
