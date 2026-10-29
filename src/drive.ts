@@ -1,4 +1,4 @@
-import type { Blobs, Doc, Store, StoreOps } from "agentic-identity";
+import type { Blobs, createSharing, Doc, PrincipalContext, Resource, Role, Store, StoreOps } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -9,10 +9,15 @@ export const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent"
 export type ActorKind = (typeof ACTOR_KINDS)[number];
 
 export type Actor = { id: string; kind: ActorKind };
-/** `owner` is the drive's owner. `actor` is who acts for them. */
-export type Ctx = { owner: string; actor: Actor };
+/**
+ * `owner` is the drive's owner, and the root of the caller's chain. `actor` is who acts for them.
+ * `principal` is the resolved caller. Drive needs it to check roles when `sharing` is set.
+ */
+export type Ctx = { owner: string; actor: Actor; principal?: PrincipalContext };
+/** `delete` is for the owner only: purge and erase. Trash needs `write`. */
 export type Action = "read" | "write" | "delete";
-/** The seam for sharing. A later release swaps this for a role check. */
+export type Sharing = ReturnType<typeof createSharing>;
+/** The seam for access. With `sharing`, the default is a role check through agentic-identity. */
 export type Can = (ctx: Ctx, action: Action, node: Node) => boolean | Promise<boolean>;
 
 export type Node = {
@@ -40,7 +45,7 @@ export type Node = {
 
 export type ErrorCode =
   | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
-  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY";
+  | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY" | "CROSS_DRIVE" | "INVALID_SHARE";
 
 export class DriveError extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -70,6 +75,8 @@ export interface DriveDeps {
   now?: () => number;
   newId?: () => string;
   can?: Can;
+  /** Turns on roles. Folders and files register as resources, and `can()` decides every request. Make it on the same `store`. */
+  sharing?: Sharing;
   /** Most parent steps any ancestor walk takes. A walk that hits it fails closed. */
   maxDepth?: number;
   /** Called with a blob key that no node points at and that could not be deleted. */
@@ -144,6 +151,11 @@ function batch() {
 
 const claimId = (owner: string, parentId: string, key: string) => sha256Hex(new TextEncoder().encode(`${owner}\0${parentId}\0${key}`));
 
+/** The sharing resource of a drive's root folder. One per owner. */
+const rootResource = async (owner: string) => `drive-root-${(await sha256Hex(new TextEncoder().encode(owner))).slice(0, 32)}`;
+const ACTION_TO_IDENTITY = { read: "read", write: "write", delete: "admin" } as const;
+const SHARE_ERROR = /^(invalid|give an|expiresAt|expiresInMs|resource exists|the last owner)/;
+
 export function createDrive(deps: DriveDeps) {
   const { store, blobs } = deps;
   const now = deps.now ?? Date.now;
@@ -151,17 +163,31 @@ export function createDrive(deps: DriveDeps) {
   const maxDepth = deps.maxDepth ?? DEFAULT_MAX_DEPTH;
   const onOrphan = deps.onOrphan ?? ((key: string, error: unknown) =>
     console.error(`orphan blob ${key}: ${error instanceof Error ? error.name : "delete failed"}`));
-  const can: Can = deps.can ?? ((ctx, _action, node) => node.owner === ctx.owner);
+  const sharing = deps.sharing;
+  const resourceOf = async (node: Node) => (node.id === ROOT_ID ? rootResource(node.owner) : node.id);
+  const can: Can =
+    deps.can ??
+    (sharing
+      ? async (ctx, action, node) => ctx.principal !== undefined && (await sharing.can(ctx.principal, ACTION_TO_IDENTITY[action], await resourceOf(node))).allowed
+      : (ctx, _action, node) => node.owner === ctx.owner);
 
-  const rootNode = (ctx: Ctx): Node => ({
-    id: ROOT_ID, owner: ctx.owner, parentId: "", kind: "folder", name: "", nameKey: "", size: 0, mime: null, hash: null,
-    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: ctx.actor, updatedBy: ctx.actor, trashed: false, trashedAt: null, purging: false,
+  const rootNode = (owner: string): Node => ({
+    id: ROOT_ID, owner, parentId: "", kind: "folder", name: "", nameKey: "", size: 0, mime: null, hash: null,
+    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: { id: owner, kind: "human" }, updatedBy: { id: owner, kind: "human" }, trashed: false, trashedAt: null, purging: false,
   });
   const who = (ctx: Ctx): Actor => ({ id: ctx.actor.id, kind: ctx.actor.kind });
+  /** What a node is, to sharing: the item itself, and its folder (or the drive root) above it. */
+  const resourceDoc = async (node: Node, parent: Node): Promise<Resource> => ({ id: node.id, type: "drive", parentId: await resourceOf(parent) });
 
+  /** A node with no permission check. Use it to walk ancestors, which a person with a shared folder may not read. */
+  async function rawNode(ops: StoreOps, id: string, owner: string, withMarked = false): Promise<Node | null> {
+    const node = id === ROOT_ID ? rootNode(owner) : await ops.get<Node>(NODES, id);
+    return node && (withMarked || node.purging !== true) ? node : null;
+  }
+  /** A node the caller may read, or null. A node the caller may not read looks like a node that is not there. */
   async function fetch(ops: StoreOps, ctx: Ctx, id: string, purgeAgain = false): Promise<Node | null> {
-    const node = id === ROOT_ID ? rootNode(ctx) : await ops.get<Node>(NODES, id);
-    return node && (purgeAgain || node.purging !== true) && (await can(ctx, "read", node)) ? node : null;
+    const node = await rawNode(ops, id, ctx.owner, purgeAgain);
+    return node && (await can(ctx, "read", node)) ? node : null;
   }
   async function need(ctx: Ctx, action: Action, node: Node) {
     if (!(await can(ctx, action, node))) throw new DriveError("FORBIDDEN", `not allowed to ${action} ${node.id}`);
@@ -185,30 +211,43 @@ export function createDrive(deps: DriveDeps) {
     const node = found && !found.trashed && found.purging !== true && found.parentId === parentId && found.nameKey === key ? found : null;
     return { taken: claim !== null, node };
   }
-  const liveChild = async (ops: StoreOps, ctx: Ctx, parentId: string, key: string) => (await claimed(ops, ctx.owner, parentId, key)).node;
+  const liveChild = async (ops: StoreOps, folder: Node, key: string) => (await claimed(ops, folder.owner, folder.id, key)).node;
 
   /** True when the node and each ancestor are out of the trash. */
   async function isLive(ops: StoreOps, ctx: Ctx, node: Node) {
     for (let n: Node | null = node, depth = 0; n && depth < maxDepth; depth++) {
       if (n.trashed) return false;
       if (n.id === ROOT_ID) return true;
-      n = await fetch(ops, ctx, n.parentId);
+      n = await rawNode(ops, n.parentId, n.owner);
     }
     return false;
   }
 
-  /** A locator is a path when it starts with "/". Otherwise it is an id. */
+  /**
+   * The folder a path starts from, and its segments. A path that starts with "/" begins at the caller's
+   * own root. A path such as `<folder id>/a/b` begins at that folder, which the caller reads by a share.
+   */
+  async function startOf(ops: StoreOps, ctx: Ctx, loc: string) {
+    if (loc.startsWith("/")) return { start: rootNode(ctx.owner), segs: splitPath(loc) };
+    const slash = loc.indexOf("/");
+    const base = await resolve(ops, ctx, loc.slice(0, slash));
+    if (base.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${base.name} is not a folder`);
+    return { start: base, segs: splitPath(`/${loc.slice(slash + 1)}`) };
+  }
+
+  /** A locator with no "/" is an id. Any other is a path, from the root or from a folder id. */
   async function resolve(ops: StoreOps, ctx: Ctx, loc: string): Promise<Node> {
-    if (!loc.startsWith("/")) {
+    if (!loc.includes("/")) {
       const node = await fetch(ops, ctx, loc);
       if (!node) throw new DriveError("NOT_FOUND", `no item ${loc}`);
       if (!(await isLive(ops, ctx, node))) throw new DriveError("TRASHED", `${loc} is in the trash`);
       return node;
     }
-    let node = rootNode(ctx);
-    for (const seg of splitPath(loc)) {
+    const { start, segs } = await startOf(ops, ctx, loc);
+    let node = start;
+    for (const seg of segs) {
       if (node.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${node.name} is not a folder`);
-      const next = await liveChild(ops, ctx, node.id, seg.key);
+      const next = await liveChild(ops, node, seg.key);
       if (!next) throw new DriveError("NOT_FOUND", `no item ${loc}`);
       node = next;
     }
@@ -217,21 +256,21 @@ export function createDrive(deps: DriveDeps) {
   }
 
   /** "a.txt" taken: try "a (2).txt", "a (3).txt", and so on. */
-  async function freeName(ops: StoreOps, ctx: Ctx, parentId: string, name: string) {
+  async function freeName(ops: StoreOps, owner: string, parentId: string, name: string) {
     const dot = name.lastIndexOf(".");
     const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
     for (let n = 2; ; n++) {
       const candidate = `${base} (${n})${ext}`;
-      if (!(await claimed(ops, ctx.owner, parentId, parseName(candidate).key)).taken) return candidate;
+      if (!(await claimed(ops, owner, parentId, parseName(candidate).key)).taken) return candidate;
     }
   }
 
   /** Walks the parents of a path. With `create`, missing folders are added to the batch. */
-  async function folderAt(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, segs: ReturnType<typeof splitPath>, create: boolean) {
-    let node = rootNode(ctx);
+  async function folderAt(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, start: Node, segs: ReturnType<typeof splitPath>, create: boolean) {
+    let node = start;
     for (const seg of segs) {
       if (node.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${node.name} is not a folder`);
-      let next = w.fresh.has(node.id) ? null : await liveChild(ops, ctx, node.id, seg.key);
+      let next = w.fresh.has(node.id) ? null : await liveChild(ops, node, seg.key);
       if (!next) {
         if (!create) throw new DriveError("NOT_FOUND", `no folder ${seg.name}`);
         next = (await insert(ops, w, ctx, node, seg.name, { kind: "folder" }, "fail")).node;
@@ -244,11 +283,12 @@ export function createDrive(deps: DriveDeps) {
   }
 
   type NewFields = Partial<Pick<Node, "kind" | "size" | "mime" | "hash" | "ref" | "blobKey">>;
+  /** A new item belongs to the drive of its folder's owner, whoever adds it. */
   async function insert(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict) {
     let { name, key } = parseName(rawName);
     const empty = w.fresh.has(parent.id);
     if (!empty) await need(ctx, "write", parent);
-    const slot = empty ? null : await claimed(ops, ctx.owner, parent.id, key);
+    const slot = empty ? null : await claimed(ops, parent.owner, parent.id, key);
     if (slot?.taken) {
       if (onConflict === "replace" && slot.node?.kind === "file" && fields.kind === "file") {
         const node: Node = { ...slot.node, ...fields, updatedAt: now(), updatedBy: who(ctx) } as Node;
@@ -256,64 +296,68 @@ export function createDrive(deps: DriveDeps) {
         return { node, replacedBlob: slot.node.blobKey };
       }
       if (onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
-      name = await freeName(ops, ctx, parent.id, name);
+      name = await freeName(ops, parent.owner, parent.id, name);
       key = parseName(name).key;
     }
     const t = now();
     const node: Node = {
-      id: newId(), owner: ctx.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
+      id: newId(), owner: parent.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
       ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null, purging: false,
       ...fields,
     };
     w.put(NODES, node.id, node);
-    w.put(NAMES, await claimId(ctx.owner, parent.id, key), { nodeId: node.id, owner: ctx.owner, parentId: parent.id });
+    w.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: node.id, owner: parent.owner, parentId: parent.id });
+    if (sharing) w.put("resources", node.id, await resourceDoc(node, parent));
     return { node, replacedBlob: null as string | null };
   }
 
   /** Splits a path into its parent folder and the new item's name. */
   async function parentAndName(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, path: string, parents: boolean) {
-    const segs = splitPath(path);
+    const { start, segs } = await startOf(ops, ctx, path);
     const last = segs.pop();
-    if (!last) throw new DriveError("IS_ROOT", "the root already exists");
-    return { parent: await folderAt(ops, w, ctx, segs, parents), name: last.name };
+    if (!last) throw start.id === ROOT_ID ? new DriveError("IS_ROOT", "the root already exists") : new DriveError("INVALID_PATH", "name an item inside the folder");
+    return { parent: await folderAt(ops, w, ctx, start, segs, parents), name: last.name };
   }
 
   async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string, opts: { name?: string; onConflict?: OnConflict }) {
     if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
     const dest = await resolve(ops, ctx, destLoc);
     if (dest.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${dest.name} is not a folder`);
+    if (dest.owner !== node.owner) throw new DriveError("CROSS_DRIVE", "an item cannot move into another person's drive");
     // Walk from the destination up to the root. Any gap or overrun refuses the move.
     for (let n = dest, depth = 0; n.id !== ROOT_ID; depth++) {
       if (n.id === node.id) throw new DriveError("MOVE_INTO_SELF", `cannot move ${node.name} into itself`);
       if (depth >= maxDepth) throw new DriveError("TOO_DEEP", `the destination is deeper than ${maxDepth} folders`);
-      const parent = await fetch(ops, ctx, n.parentId);
+      const parent = await rawNode(ops, n.parentId, n.owner);
       if (!parent) throw new DriveError("NOT_FOUND", `a parent folder of ${dest.name} is missing`);
       n = parent;
     }
     await need(ctx, "write", node);
     await need(ctx, "write", dest);
     let { name, key } = parseName(opts.name ?? node.name);
-    const slot = await claimed(ops, ctx.owner, dest.id, key);
+    const slot = await claimed(ops, dest.owner, dest.id, key);
     if (slot.taken && slot.node?.id !== node.id) {
       if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
-      name = await freeName(ops, ctx, dest.id, name);
+      name = await freeName(ops, dest.owner, dest.id, name);
       key = parseName(name).key;
     }
     const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), updatedBy: who(ctx) };
     w.put(NODES, moved.id, moved);
-    const [from, to] = [await claimId(ctx.owner, node.parentId, node.nameKey), await claimId(ctx.owner, dest.id, key)];
+    const [from, to] = [await claimId(node.owner, node.parentId, node.nameKey), await claimId(dest.owner, dest.id, key)];
     if (from !== to) {
       // Release only a claim that this item holds.
       if ((await ops.get<Claim>(NAMES, from))?.nodeId === node.id) w.remove(NAMES, from);
-      w.put(NAMES, to, { nodeId: moved.id, owner: ctx.owner, parentId: dest.id });
+      w.put(NAMES, to, { nodeId: moved.id, owner: dest.owner, parentId: dest.id });
     }
+    // The role an item inherits follows its folder.
+    if (sharing && dest.id !== node.parentId) w.put("resources", moved.id, await resourceDoc(moved, dest));
     return moved;
   }
 
   /** True only when a query proves no node holds the key. An unreadable store keeps the blob. */
-  async function isUnreferenced(ctx: Ctx, blobKey: string) {
+  async function isUnreferenced(blobKey: string) {
     try {
-      return (await store.query<Node>(NODES, { where: { owner: ctx.owner, blobKey }, limit: 1 })).items.length === 0;
+      return (await store.query<Node>(NODES, { where: { blobKey }, limit: 1 })).items.length === 0;
     } catch (error) {
       onOrphan(blobKey, error);
       return false;
@@ -327,7 +371,7 @@ export function createDrive(deps: DriveDeps) {
     }
   }
   async function ownerNodes(ctx: Ctx, withMarked = false): Promise<Node[]> {
-    const root = rootNode(ctx);
+    const root = rootNode(ctx.owner);
     if (!(await can(ctx, "read", root))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
     const out: Node[] = [];
     for (let cursor: string | undefined; ; ) {
@@ -413,19 +457,37 @@ export function createDrive(deps: DriveDeps) {
       const chunk = rows.slice(i, i + CHUNK);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
       await transact(async (tx) => {
-        const held: { node: Node; claim: string | null; owns: boolean }[] = [];
+        const held: { node: Node; claim: string | null; owns: boolean; grants: string[] }[] = [];
         for (const node of chunk) {
           // A trashed item gave up its name when it was trashed, and another item may hold it now.
           const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
-          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id });
+          // The shares of a deleted item go with it. A share is a grant doc per person.
+          const grants = sharing ? (await tx.query("grants", { where: { resourceId: node.id }, limit: 100 })).items.map((g) => g.id) : [];
+          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id, grants });
         }
-        for (const { node, claim, owns } of held) {
+        for (const { node, claim, owns, grants } of held) {
           await tx.delete(NODES, node.id);
           if (claim && owns) await tx.delete(NAMES, claim);
+          if (sharing) await tx.delete("resources", node.id);
+          for (const grant of grants) await tx.delete("grants", grant);
         }
       });
     }
     return marked.length;
+  }
+
+  /**
+   * Reads an item for a link visitor (`principal` null) or a signed-in person who holds a link.
+   * Anyone who is denied gets NOT_FOUND, so a stranger cannot tell which ids exist.
+   */
+  async function openShared(principal: PrincipalContext | null, id: string, linkToken?: string): Promise<Node> {
+    if (!sharing) throw new DriveError("INVALID_SHARE", "sharing is not set up");
+    const node = await rawNode(store, id, "");
+    if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
+    const decision = await sharing.can(principal, "read", id, linkToken === undefined ? {} : { linkToken });
+    if (!decision.allowed) throw new DriveError("NOT_FOUND", `no item ${id}`);
+    if (!(await isLive(store, { owner: node.owner, actor: node.createdBy }, node))) throw new DriveError("TRASHED", `${id} is in the trash`);
+    return node;
   }
 
   const api = {
@@ -446,7 +508,7 @@ export function createDrive(deps: DriveDeps) {
       return transact(async (tx) => {
         const w = batch();
         const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
-        const existing = w.fresh.has(parent.id) ? null : await liveChild(tx, ctx, parent.id, parseName(name).key);
+        const existing = w.fresh.has(parent.id) ? null : await liveChild(tx, parent, parseName(name).key);
         if (opts.parents && existing?.kind === "folder") return existing;
         const { node } = await insert(tx, w, ctx, parent, name, { kind: "folder" }, "fail");
         await w.apply(tx);
@@ -474,7 +536,7 @@ export function createDrive(deps: DriveDeps) {
         });
       } catch (error) {
         // The commit may have landed before the error. Keep the blob unless no node holds it.
-        if (await isUnreferenced(ctx, blobKey)) await dropBlob(blobKey);
+        if (await isUnreferenced(blobKey)) await dropBlob(blobKey);
         throw error;
       }
       if (committed.replacedBlob) await dropBlob(committed.replacedBlob);
@@ -539,7 +601,7 @@ export function createDrive(deps: DriveDeps) {
       return transact(async (tx) => {
         const node = await resolve(tx, ctx, loc);
         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot trash the root");
-        await need(ctx, "delete", node);
+        await need(ctx, "write", node);
         const claim = await claimId(node.owner, node.parentId, node.nameKey);
         const held = await tx.get<Claim>(NAMES, claim);
         const t = now();
@@ -553,9 +615,10 @@ export function createDrive(deps: DriveDeps) {
 
     /** Items trashed on their own, newest first. */
     async listTrash(ctx: Ctx): Promise<Node[]> {
+      await need(ctx, "read", rootNode(ctx.owner));
       const page = await store.query<Node>(NODES, { where: { owner: ctx.owner, trashed: true }, limit: 1000 });
       const out: Node[] = [];
-      for (const { data } of page.items) if (data.purging !== true && (await can(ctx, "read", data))) out.push(data);
+      for (const { data } of page.items) if (data.purging !== true) out.push(data);
       return out.sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
     },
 
@@ -566,19 +629,23 @@ export function createDrive(deps: DriveDeps) {
         if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
         if (!node.trashed) throw new DriveError("NOT_TRASHED", `${node.name} is not in the trash`);
         await need(ctx, "write", node);
-        const parent = await fetch(tx, ctx, opts.parentId ?? node.parentId);
+        // A parent id the caller names is read from the caller's drive, so "root" is the caller's own root.
+        const parent = opts.parentId === undefined ? await rawNode(tx, node.parentId, node.owner) : await rawNode(tx, opts.parentId, ctx.owner);
         if (!parent || parent.kind !== "folder" || !(await isLive(tx, ctx, parent))) {
           throw new DriveError("PARENT_GONE", `the folder of ${node.name} is gone or in the trash`);
         }
+        if (parent.owner !== node.owner) throw new DriveError("CROSS_DRIVE", "an item cannot move into another person's drive");
+        if (parent.id !== node.parentId) await need(ctx, "write", parent);
         let { name, key } = parseName(node.name);
-        if ((await claimed(tx, ctx.owner, parent.id, key)).taken) {
+        if ((await claimed(tx, parent.owner, parent.id, key)).taken) {
           if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
-          name = await freeName(tx, ctx, parent.id, name);
+          name = await freeName(tx, parent.owner, parent.id, name);
           key = parseName(name).key;
         }
         const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), updatedBy: who(ctx) };
         await tx.put(NODES, restored.id, restored);
-        await tx.put(NAMES, await claimId(ctx.owner, parent.id, key), { nodeId: restored.id, owner: ctx.owner, parentId: parent.id });
+        await tx.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: restored.id, owner: parent.owner, parentId: parent.id });
+        if (sharing && parent.id !== node.parentId) await tx.put("resources", restored.id, await resourceDoc(restored, parent));
         return restored;
       });
     },
@@ -620,7 +687,7 @@ export function createDrive(deps: DriveDeps) {
     /** Deletes every item and blob of the owner for good. Only the owner may do this, never an agent for them. A failed call can run again. */
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
       if (ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
-      await need(ctx, "delete", rootNode(ctx));
+      await need(ctx, "delete", rootNode(ctx.owner));
       let removed = 0;
       // A file created during a pass shows up in the next one.
       for (let pass = 0; pass < 5; pass++) {
@@ -646,6 +713,104 @@ export function createDrive(deps: DriveDeps) {
       return { removed: await removeNodes(nodes, top) };
     },
 
+    /** Gives a person or an agent a role on an item and everything under it. Only an owner may. */
+    async shareWith(ctx: Ctx, loc: string, subjectId: string, role: Role): Promise<void> {
+      const resource = await resourceOf(await resolve(store, ctx, loc));
+      await viaSharing(ctx, (s, p) => s.grant(p, resource, subjectId, role));
+    },
+
+    async unshare(ctx: Ctx, loc: string, subjectId: string): Promise<void> {
+      const resource = await resourceOf(await resolve(store, ctx, loc));
+      await viaSharing(ctx, (s, p) => s.revokeGrant(p, resource, subjectId));
+    },
+
+    /** Invite by `email` (a person) or `handle` (an agent). The invite lasts `expiresInMs`, if given. It sends no message. */
+    async invite(ctx: Ctx, loc: string, input: { role: Role; email?: string; handle?: string; expiresInMs?: number }): Promise<{ id: string }> {
+      const resource = await resourceOf(await resolve(store, ctx, loc));
+      return viaSharing(ctx, (s, p) => s.createInvite(p, resource, input));
+    },
+
+    /** `identity` is the verified email of a person, or the handle of an agent. */
+    async acceptInvite(ctx: Ctx, inviteId: string, identity: { email?: string; handle?: string }): Promise<void> {
+      await viaSharing(ctx, (s, p) => s.acceptInvite(p, inviteId, identity));
+    },
+
+    /** The token comes back once. Only its hash is stored. */
+    async createLink(ctx: Ctx, loc: string, input: { role: Role; expiresAt?: number; signedInOnly?: boolean }): Promise<{ id: string; token: string }> {
+      const resource = await resourceOf(await resolve(store, ctx, loc));
+      return viaSharing(ctx, (s, p) => s.createLink(p, resource, input));
+    },
+
+    async revokeLink(ctx: Ctx, linkId: string): Promise<void> {
+      await viaSharing(ctx, (s, p) => s.revokeLink(p, linkId));
+    },
+
+    /** Who can reach an item, and by which links and invites. Only an owner may look. Link tokens are never shown. */
+    async shares(ctx: Ctx, loc: string) {
+      const node = await resolve(store, ctx, loc);
+      await need(ctx, "delete", node);
+      const where = { resourceId: await resourceOf(node) };
+      const rows = async (collection: string) => (await store.query(collection, { where, limit: 100 })).items.map((item) => item.data);
+      return {
+        grants: (await rows("grants")).map((g) => ({ subjectId: g.subjectId, role: g.role })),
+        links: (await rows("links")).map((l) => ({ id: l.id, role: l.role, signedInOnly: l.signedInOnly === true, expiresAt: l.expiresAt ?? null, revoked: l.revokedAt != null })),
+        invites: (await rows("invites")).map((i) => ({ id: i.id, role: i.role, email: i.email ?? null, handle: i.handle ?? null, expiresAt: i.expiresAt ?? null, accepted: i.acceptedAt !== undefined })),
+      };
+    },
+
+    openShared,
+
+    /** Live children of a folder that a link visitor or a signed-in person may read, sorted by name. */
+    async listShared(principal: PrincipalContext | null, id: string, linkToken?: string): Promise<Node[]> {
+      const folder = await openShared(principal, id, linkToken);
+      if (folder.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${folder.name} is not a folder`);
+      return (await children(store, folder.owner, folder.id))
+        .filter((n) => !n.trashed && n.purging !== true)
+        .sort((x, y) => (x.nameKey < y.nameKey ? -1 : x.nameKey > y.nameKey ? 1 : x.name < y.name ? -1 : 1));
+    },
+
+    async readShared(principal: PrincipalContext | null, id: string, linkToken?: string): Promise<{ node: Node; data: Uint8Array; contentType?: string }> {
+      const node = await openShared(principal, id, linkToken);
+      if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
+      const blob = await blobs.get(node.blobKey);
+      if (!blob) throw new DriveError("BLOB_MISSING", `the bytes of ${node.name} are missing`);
+      return { node, ...blob };
+    },
   };
-  return api;
+
+  /** Runs a call on identity's sharing for the caller. Its short errors become drive errors. */
+  async function viaSharing<R>(ctx: Ctx, fn: (s: Sharing, p: PrincipalContext) => Promise<R>): Promise<R> {
+    if (!sharing) throw new DriveError("INVALID_SHARE", "sharing is not set up");
+    if (!ctx.principal) throw new DriveError("FORBIDDEN", "sign in to share");
+    try {
+      return await fn(sharing, ctx.principal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message === "forbidden") throw new DriveError("FORBIDDEN", "not allowed to share this item");
+      if (SHARE_ERROR.test(message)) throw new DriveError("INVALID_SHARE", message);
+      throw error;
+    }
+  }
+
+  /** The drive root is a resource too, so a person's own role on it can be checked. It is made once. */
+  const rooted = new Set<string>();
+  async function prepare(ctx: Ctx) {
+    if (!sharing || ctx.principal === undefined) return;
+    // The owner is the root of the chain. A caller whose owner is someone else's id would read that drive.
+    if (ctx.principal.chain[0]?.id !== ctx.owner) throw new DriveError("FORBIDDEN", "the caller does not own this drive");
+    if (rooted.has(ctx.owner)) return;
+    try {
+      await sharing.createResource(ctx.principal, { id: await rootResource(ctx.owner), type: "drive" });
+      rooted.add(ctx.owner);
+    } catch (error) {
+      // "resource exists" is fine. Any other refusal (the caller may only read) leaves the check to `can`.
+      if (error instanceof Error && error.message === "resource exists") rooted.add(ctx.owner);
+    }
+  }
+  const guarded = (call: (ctx: Ctx, ...args: never[]) => unknown) => async (ctx: Ctx, ...args: never[]) => {
+    await prepare(ctx);
+    return call(ctx, ...args);
+  };
+  const open = new Set(["openShared", "listShared", "readShared"]);
+  return Object.fromEntries(Object.entries(api).map(([name, call]) => [name, open.has(name) ? call : guarded(call as never)])) as typeof api;
 }
