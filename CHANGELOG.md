@@ -6,7 +6,7 @@ No change to the SDK, CLI, MCP or HTTP shape. Two breaking changes for hosts tha
 
 ### Breaking
 
-- **A host that pins `agentic-design` to `^0.4.0` must move its pin to `^0.5.0`.** The 0.9.0 README told hosts to add `agentic-design@^0.4.0` to their own dependencies. This release depends on `agentic-design` `^0.5.0`, so a host that keeps `^0.4.0` gets two copies. The two copies do not share React context. A host that wraps `DriveBrowser` in its own `ToastProvider` from `agentic-design/react` on 0.4 gets the error `useToast needs a ToastProvider above it.`. A host whose `TooltipProvider` is on 0.4 gets ``Tooltip` must be used within `TooltipProvider``. `mount()` brings its own providers and is not affected.
+- **A host that pins `agentic-design` to `^0.4.0` must move its pin to `^0.5.0`.** The 0.9.0 README told hosts to add `agentic-design@^0.4.0` to their own dependencies. This release depends on `agentic-design` `^0.5.0`, so a host that keeps `^0.4.0` gets two copies. The two copies do not share React context. A host that wraps `DriveBrowser` in its own `ToastProvider` from `agentic-design/react` on 0.4 gets the error `useToast needs a ToastProvider above it.`. A host whose `TooltipProvider` is on 0.4 gets `` `Tooltip` must be used within `TooltipProvider` ``. `mount()` brings its own providers and is not affected.
 - A host that also pins `agentic-identity` to `^0.6.0` gets two copies of it, and the identity error classes and types from one copy do not match the other. Move the host's pin to `^0.9.0`.
 
 ### Changed
