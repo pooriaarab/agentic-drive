@@ -579,4 +579,34 @@ describe("transactions and access checks", () => {
     await guarded.trash(A, "/x/z.txt");
     expect(nested).toBe(0);
   });
+  it("asks again when a folder above the item moves between the check and the rerun", async () => {
+    const { file } = await team("editor");
+    await drive.mkdir(A, "/private");
+    const docs = await drive.stat(A, "/team/docs");
+    let moved = false;
+    const racing = { ...sharing, can: async (...args: Parameters<typeof sharing.can>) => {
+      const decision = await sharing.can(...args);
+      if (!moved && args[1] === "write") {
+        moved = true;
+        await drive.move(A, docs.id, "/private");
+      }
+      return decision;
+    } };
+    const bobs = createDrive({ store, blobs: createMemoryBlobs(), sharing: racing, now: () => ++clock });
+    await expect(bobs.rename(B, file.id, "b.txt")).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) });
+    expect((await drive.stat(A, file.id)).name).toBe("a.txt");
+  });
+  it("ends in BUSY when the node changes at every check", async () => {
+    await drive.putFile(A, "/f.txt", bytes("1"));
+    const file = await drive.stat(A, "/f.txt");
+    const churn = createDrive({
+      store, blobs: createMemoryBlobs(), now: () => ++clock,
+      can: async (_ctx, _action, node) => {
+        const current = await store.get<{ updatedAt: number }>("drive_nodes", node.id);
+        if (current) await store.put("drive_nodes", node.id, { ...current, updatedAt: current.updatedAt + 1 });
+        return true;
+      },
+    });
+    await fails(churn.rename(A, file.id, "g.txt"), "BUSY");
+  });
 });

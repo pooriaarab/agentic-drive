@@ -20,7 +20,7 @@ export type Ctx = {
 };
 /** Inside a transaction only: the access answers the drive fetched before it. The key is private, so a caller cannot set it. */
 const DECIDED = Symbol("decided");
-type TxCtx = Ctx & { [DECIDED]?: Map<string, boolean> };
+type TxCtx = Ctx & { [DECIDED]?: { answers: Map<string, boolean>; tx: StoreOps } };
 /** `delete` is for the owner only: purge and erase. Trash needs `write`. */
 export type Action = "read" | "write" | "delete";
 export type Sharing = ReturnType<typeof createSharing>;
@@ -231,13 +231,23 @@ export function createDrive(deps: DriveDeps) {
    * would wait for the transaction that called it. A transaction reads the answers it has. For one it lacks,
    * it stops with `Ask`, and `transactAs` asks outside, then runs the transaction again.
    */
-  const can: Can = (ctx, action, node) => {
-    const decided = (ctx as TxCtx)[DECIDED];
-    if (!decided) return askCan(ctx, action, node);
-    const key = JSON.stringify([action, node.id, node.owner, node.parentId, node.updatedAt, node.trashed, ctx.owner, ctx.actor, ctx.principal ?? null]);
-    const known = decided.get(key);
+  const can: Can = async (ctx, action, node) => {
+    const held = (ctx as TxCtx)[DECIDED];
+    if (!held) return askCan(ctx, action, node);
+    // Roles follow the folders above an item. The chain is read through the transaction, so a folder that
+    // moves changes the key and the answer is asked again, and the read joins the transaction's conflict set.
+    const chain: unknown[] = [];
+    if (sharing) {
+      for (let id: string | undefined = await resourceOf(node), i = 0; id && i <= MAX_ITEM_DEPTH + 1; i++) {
+        const doc: Doc | null = await held.tx.get("resources", id);
+        chain.push(doc?.parentId ?? null);
+        id = typeof doc?.parentId === "string" ? doc.parentId : undefined;
+      }
+    }
+    const key = JSON.stringify([action, node.id, node.owner, node.parentId, node.updatedAt, node.trashed, chain, ctx.owner, ctx.actor, ctx.principal ?? null]);
+    const known = held.answers.get(key);
     if (known !== undefined) return known;
-    const { [DECIDED]: _decided, ...plain } = ctx as TxCtx;
+    const { [DECIDED]: _held, ...plain } = ctx as TxCtx;
     throw new Ask(key, plain, action, node);
   };
 
@@ -565,7 +575,7 @@ export function createDrive(deps: DriveDeps) {
 
   /** A transaction for a caller. It reads access answers that it fetched outside, one retry per missing answer. */
   async function transactAs<R>(ctx: Ctx, fn: (tx: StoreOps, ctx: Ctx) => Promise<R>): Promise<R> {
-    const decided = new Map<string, boolean>();
+    const answers = new Map<string, boolean>();
     // Every run counts and none is forgotten, so a drive that keeps changing ends in BUSY instead of a loop.
     let runs = 0;
     let asked = false;
@@ -574,15 +584,15 @@ export function createDrive(deps: DriveDeps) {
         return await transact((tx) => {
           // The store ran this transaction again because the data changed. The answers may be stale, so ask again.
           if (++runs > 2 * MAX_ASKS) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
-          if (runs > 1 && !asked) decided.clear();
+          if (runs > 1 && !asked) answers.clear();
           asked = false;
-          return fn(tx, { ...ctx, [DECIDED]: decided } as Ctx);
+          return fn(tx, { ...ctx, [DECIDED]: { answers, tx } } as Ctx);
         });
       } catch (error) {
         if (!(error instanceof Ask)) throw error;
         asked = true;
-        if (decided.size >= MAX_ASKS) throw new DriveError("BUSY", "the drive needed too many access checks. Try again.");
-        decided.set(error.key, await askCan(error.ctx, error.action, error.node));
+        if (answers.size >= MAX_ASKS) throw new DriveError("BUSY", "the drive needed too many access checks. Try again.");
+        answers.set(error.key, await askCan(error.ctx, error.action, error.node));
       }
     }
   }
