@@ -40,5 +40,4 @@ jobs:
             npm publish --access public --ignore-scripts --registry https://npm.ants.land
           fi
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.ANTS_TOKEN }}
           ANTS_TOKEN: ${{ secrets.ANTS_TOKEN }}
