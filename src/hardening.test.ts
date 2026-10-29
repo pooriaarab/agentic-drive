@@ -119,3 +119,13 @@ describe("export entry names", () => {
     expect(new TextDecoder().decode(zip.get(items.find((i) => i.name === "kept.txt")!.file!)!)).toBe("2");
   });
 });
+
+describe("download names", () => {
+  it("signs a name with quotes and answers a lone surrogate with INVALID_NAME", async () => {
+    const drive = createDrive({ store: createMemoryStore(), blobs: createMemoryBlobs() });
+    const ctx = { owner: "u1", actor: { id: "u1", kind: "human" as const } };
+    await drive.putFile(ctx, "/it's (1).csv", new Uint8Array([1]));
+    expect(await drive.downloadUrl(ctx, "/it's (1).csv")).toContain("filename*%3DUTF-8");
+    await expect(drive.putFile(ctx, "/a\ud800.csv", new Uint8Array([1]))).rejects.toMatchObject({ code: "INVALID_NAME" });
+  });
+});

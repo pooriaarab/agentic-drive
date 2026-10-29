@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: early. The library, CLI, MCP server, and HTTP API work. It is not on npm yet.
+> Status: early (0.1.0). The library, CLI, MCP server, and HTTP API work.
 > Sharing and the web UI are not built yet.
 
 ## Install
@@ -63,6 +63,7 @@ Routes: `GET /items`, `GET /stat`, `POST /folders`, `PUT /files`, `GET /files`, 
 `GET /export`, `DELETE /account?confirm=yes`. Without `DRIVE_API_TOKENS`, every request gets 401.
 Without `DRIVE_URL_SECRET` or `DRIVE_PUBLIC_URL`, every request gets 503.
 Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--location weur`.
+The Worker declares region `eu` and refuses a D1 query that a non-EU region served. `DRIVE_REGION=unknown` turns this off for local runs.
 
 ## Features
 
@@ -74,7 +75,7 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 - Storage sits behind the `Store` and `Blobs` ports of `agentic-identity`. Tests use its memory adapters. The CLI uses a local file adapter that passes the same contract suites. The Worker uses its D1 and R2 adapters.
 - Two live items never share a name in one folder. A claim document holds each name. It is written in the same transaction as the item, and it is deleted when the item goes to the trash.
 - `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
-- `downloadUrl()` returns a signed URL. The Worker verifies it and serves the bytes as an attachment with a safe type, so the link holder cannot change how the bytes are served. A link lasts 15 minutes by default and 1 hour at most. Trashing a file does not revoke a link already issued.
+- `downloadUrl()` returns a signed URL. The URL signs an attachment header with the file name and the stored type. The Worker verifies it and serves the bytes with those headers, so the link holder cannot change how the bytes are served. A link lasts 15 minutes by default and 1 hour at most. Trashing a file does not revoke a link already issued.
 - `search()` finds live items by name, type, kind, size, and who made them.
 - `buildExport()` writes everything one owner has to a zip with a `manifest.json`. Trashed items are flagged. Entries are named by item id. A file whose bytes are gone is marked `missing`.
 - `deleteAll()` deletes all items and bytes of one owner for good. Only the owner can call it.
@@ -82,11 +83,10 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 
 ## Limits
 
-- This release moves drive onto the shared ports. It keeps no old data: the Worker reads the `store_docs` table (not `docs`), and the CLI reads `store.jsonl` (not `store.json`). There is no import yet, and no claim backfill. Drive is version 0.0.0.
+- Drive reads the `store_docs` table in D1 and `store.jsonl` in the CLI folder. It does not read older layouts. There is no import and no claim backfill.
 - Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.
-- A signed URL serves an attachment without a file name. The shared port cannot sign a file name yet. That comes with agentic-identity 0.2.0.
 - Local file blobs return a `file:` URL that nothing serves or checks.
-- Blob writes are not conditional yet. Conditional writes (`ifMatch`, `ifNoneMatch`) come with agentic-identity 0.2.0. Drive then writes a new blob only when its key is free.
+- Drive writes each new blob only when its key is free (`ifNoneMatch`). A write that finds the key taken fails with `BLOB_EXISTS`.
 - Only `upload()` enforces the size cap. A caller of `putFile()` must check size first.
 - A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.
 - The file adapters allow one process at a time.

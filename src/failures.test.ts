@@ -64,7 +64,7 @@ describe("putFile never deletes the live blob", () => {
     const drive = createDrive({ store, blobs: real });
     await drive.putFile(human, "/a.txt", bytes("old"));
     const keys: string[] = [];
-    const spy: Blobs = { ...real, put: async (key, data, opts) => { keys.push(key); await real.put(key, data, opts); } };
+    const spy: Blobs = { ...real, put: async (key, data, opts) => { keys.push(key); return real.put(key, data, opts); } };
     await expect(createDrive({ store, blobs: spy }).putFile(human, "/a.txt", bytes("new"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
     expect(await real.get(keys[0]!)).toBeNull();
     expect(text((await drive.read(human, "/a.txt")).data)).toBe("old");
@@ -80,7 +80,7 @@ describe("putFile never deletes the live blob", () => {
       },
     };
     const keys: string[] = [];
-    const spy: Blobs = { ...real, put: async (key, data, opts) => { keys.push(key); await real.put(key, data, opts); } };
+    const spy: Blobs = { ...real, put: async (key, data, opts) => { keys.push(key); return real.put(key, data, opts); } };
     const drive = createDrive({ store: lossy, blobs: spy, onOrphan: () => undefined });
     await expect(drive.putFile(human, "/a.txt", bytes("new"))).rejects.toThrow("connection reset");
     expect(await real.get(keys[0]!)).not.toBeNull();

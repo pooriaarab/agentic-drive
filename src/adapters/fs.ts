@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { createMemoryStore, parseRegion, type AdapterOptions, type Blobs, type Doc, type Store, type StoreOps } from "agentic-identity";
+import { assertBlobPutOptions, assertResponseHeaders, createMemoryStore, parseRegion, type AdapterOptions, type Blobs, type Doc, type Store, type StoreOps } from "agentic-identity";
 
 type Change = [collection: string, id: string, doc: Doc | null];
 
@@ -117,7 +117,10 @@ export function createFileStore(dir: string, options: AdapterOptions & { shared?
   };
 }
 
-/** Blobs kept as files under `dir`. File names are key hashes, so no key escapes the folder. */
+/** A version names the bytes: the SHA-256 of the data. */
+const versionOf = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
+
+/** Blobs kept as files under `dir`. One process at a time: a conditional put is atomic only inside one process. File names are key hashes, so no key escapes the folder. */
 export function createFileBlobs(dir: string, options: AdapterOptions = {}): Blobs {
   mkdirSync(dir, { recursive: true });
   const path = (key: string) => join(dir, createHash("sha256").update(key).digest("hex"));
@@ -129,15 +132,30 @@ export function createFileBlobs(dir: string, options: AdapterOptions = {}): Blob
     region: options.region === undefined ? "unknown" : parseRegion(options.region),
     async put(key, data, opts) {
       need(key);
-      writeFileSync(path(key), data);
+      assertBlobPutOptions(opts);
+      const current = existsSync(path(key)) ? versionOf(readFileSync(path(key))) : undefined;
+      if ((opts?.ifNoneMatch === "*" && current !== undefined) || (opts?.ifMatch !== undefined && current !== opts.ifMatch)) return null;
+      // Write beside the target and rename, so a crash never leaves half a blob.
+      const tmp = `${path(key)}.tmp`;
+      writeFileSync(tmp, data);
       if (opts?.contentType) writeFileSync(`${path(key)}.type`, opts.contentType);
       else rmSync(`${path(key)}.type`, { force: true });
+      renameSync(tmp, path(key));
+      return { version: versionOf(data) };
     },
     async get(key) {
       need(key);
       if (!existsSync(path(key))) return null;
       const type = existsSync(`${path(key)}.type`) ? readFileSync(`${path(key)}.type`, "utf8") : undefined;
-      return { data: new Uint8Array(readFileSync(path(key))), ...(type ? { contentType: type } : {}) };
+      const data = new Uint8Array(readFileSync(path(key)));
+      return { data, version: versionOf(data), ...(type ? { contentType: type } : {}) };
+    },
+    async head(key) {
+      need(key);
+      if (!existsSync(path(key))) return null;
+      const type = existsSync(`${path(key)}.type`) ? readFileSync(`${path(key)}.type`, "utf8") : undefined;
+      const data = readFileSync(path(key));
+      return { size: data.length, version: versionOf(data), ...(type ? { contentType: type } : {}) };
     },
     async delete(key) {
       need(key);
@@ -145,12 +163,18 @@ export function createFileBlobs(dir: string, options: AdapterOptions = {}): Blob
       rmSync(`${path(key)}.type`, { force: true });
     },
     /** A local path with its expiry. Nothing serves or checks it: it exists so the port is whole. */
-    async signedUrl(key, { method, expiresInSeconds }) {
+    async signedUrl(key, opts) {
       need(key);
+      const { method, expiresInSeconds } = opts;
+      assertResponseHeaders(opts);
       if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > 604800) {
         throw new RangeError("expiresInSeconds must be an integer from 1 to 604800");
       }
-      return `file://${path(key)}?method=${method}&expires=${now() + expiresInSeconds * 1000}`;
+      const extra = [
+        opts.responseContentDisposition === undefined ? "" : `&disposition=${encodeURIComponent(opts.responseContentDisposition)}`,
+        opts.responseContentType === undefined ? "" : `&type=${encodeURIComponent(opts.responseContentType)}`,
+      ].join("");
+      return `file://${path(key)}?method=${method}&expires=${now() + expiresInSeconds * 1000}${extra}`;
     },
   };
 }

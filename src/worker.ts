@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { parseRegion } from "agentic-identity";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
 import { ACTOR_KINDS, createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
 import { buildExport } from "./export.js";
@@ -19,13 +20,14 @@ export interface WorkerEnv {
   DRIVE_PUBLIC_URL?: string;
   /** At least 32 bytes. Signs download URLs. Without it, every request gets 503. */
   DRIVE_URL_SECRET?: string;
+  DRIVE_REGION?: string;
 }
 
 const MIN_TOKEN_LENGTH = 32;
 type App = { Bindings: WorkerEnv; Variables: { drive: Drive; ctx: Ctx } };
 
 const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
-  TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409,
+  TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409, BLOB_EXISTS: 500,
   NOT_FOUND: 404, NAME_TAKEN: 409, INVALID_NAME: 400, INVALID_PATH: 400, INVALID_REF: 400, NOT_A_FOLDER: 400, NOT_A_FILE: 400,
   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
 };
@@ -83,9 +85,12 @@ function settings(env: WorkerEnv): { publicUrl: string; urlSecret: string } | nu
   return typeof urlSecret === "string" && new TextEncoder().encode(urlSecret).length >= 32 ? { publicUrl, urlSecret } : null;
 }
 
+/** The region both adapters declare. It is "eu" unless DRIVE_REGION says otherwise ("unknown" is for local runs, where D1 does not report a region). */
+const regionOf = (env: WorkerEnv) => parseRegion(env.DRIVE_REGION ?? "eu");
+
 /** The R2 bucket is declared as "eu": create it with `--jurisdiction eu`. */
 function blobsFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>) {
-  return createR2Blobs(env.FILES, { region: "eu", urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
+  return createR2Blobs(env.FILES, { region: regionOf(env), urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
 }
 
 async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<Drive> {
@@ -98,7 +103,7 @@ async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof se
     schemas.set(env.DB, ready);
   }
   await ready;
-  return createDrive({ store: createD1Store(env.DB, { region: "eu" }), blobs: blobsFor(env, config) });
+  return createDrive({ store: createD1Store(env.DB, { region: regionOf(env) }), blobs: blobsFor(env, config) });
 }
 
 const number = (v: string | undefined, name: string) => {
@@ -217,8 +222,8 @@ export function createApp(): Hono<App> {
     if (!blob) return fail("NOT_FOUND", "the bytes are gone", 404);
     return new Response(blob.data as BodyInit, {
       headers: {
-        "content-type": safeMime(blob.contentType),
-        "content-disposition": "attachment",
+        "content-type": safeMime(signed.responseContentType ?? blob.contentType),
+        "content-disposition": signed.responseContentDisposition ?? "attachment",
         "x-content-type-options": "nosniff",
         "cache-control": "private, no-store",
       },

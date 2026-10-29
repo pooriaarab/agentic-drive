@@ -23,7 +23,7 @@ beforeAll(async () => {
 });
 afterAll(() => mf.dispose());
 
-const store = () => createD1Store(db, { region: "eu" });
+const store = () => createD1Store(db, { region: "unknown" });
 const blobs = createMemoryBlobs();
 const drive = (s = store()) => createDrive({ store: s, blobs });
 let n = 0;

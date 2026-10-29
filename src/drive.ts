@@ -39,7 +39,7 @@ export type Node = {
 };
 
 export type ErrorCode =
-  | "NOT_FOUND" | "NAME_TAKEN" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
+  | "NOT_FOUND" | "NAME_TAKEN" | "BLOB_EXISTS" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
   | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY";
 
 export class DriveError extends Error {
@@ -108,7 +108,7 @@ const REF = /^[a-z][a-z0-9_-]*:[^\s/]+$/;
 /** Validates a name. Names are NFC-normalized. Two names clash when their keys match. */
 export function parseName(raw: string): { name: string; key: string } {
   const name = raw.normalize("NFC");
-  if (name.trim() === "" || name === "." || name === ".." || /[/\u0000-\u001f\u007f]/.test(name) || new TextEncoder().encode(name).length > 255) {
+  if (name.trim() === "" || /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(name) || name === "." || name === ".." || /[/\u0000-\u001f\u007f]/.test(name) || new TextEncoder().encode(name).length > 255) {
     throw new DriveError("INVALID_NAME", `invalid name ${JSON.stringify(raw)}`);
   }
   return { name, key: name.toLowerCase() };
@@ -462,7 +462,8 @@ export function createDrive(deps: DriveDeps) {
       const mime = opts.mime === undefined ? null : safeMime(opts.mime);
       const hash = await sha256Hex(data);
       const blobKey = `${ctx.owner}/${newId()}`;
-      await blobs.put(blobKey, data, mime ? { contentType: mime } : undefined);
+      const stored = await blobs.put(blobKey, data, { ifNoneMatch: "*", ...(mime ? { contentType: mime } : {}) });
+      if (!stored) throw new DriveError("BLOB_EXISTS", "a blob with this key already exists");
       let committed: { node: Node; replacedBlob: string | null };
       try {
         committed = await transact(async (tx) => {
@@ -502,8 +503,8 @@ export function createDrive(deps: DriveDeps) {
     },
 
     /**
-     * A time-limited URL to fetch the bytes. The Worker that verifies it serves an attachment with a
-     * safe type, because the shared Blobs port cannot sign those headers yet. Trashing an item does
+     * A time-limited URL to fetch the bytes. The URL signs an attachment header and the stored
+     * type, so the link holder cannot change how the bytes are served. Trashing an item does
      * not revoke a link already issued.
      */
     async downloadUrl(ctx: Ctx, loc: string, expiresInSeconds = DEFAULT_URL_SECONDS): Promise<string> {
@@ -512,7 +513,12 @@ export function createDrive(deps: DriveDeps) {
       }
       const node = await resolve(store, ctx, loc);
       if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
-      return blobs.signedUrl(node.blobKey, { method: "GET", expiresInSeconds });
+      const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(node.name).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+      return blobs.signedUrl(node.blobKey, {
+        method: "GET", expiresInSeconds,
+        responseContentDisposition: disposition.length <= 1024 ? disposition : "attachment",
+        responseContentType: node.mime ?? "application/octet-stream",
+      });
     },
 
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
