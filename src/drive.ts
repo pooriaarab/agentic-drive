@@ -241,12 +241,11 @@ const ACTIVITY_ACTIONS: readonly string[] = ["create", "rename", "move", "update
 const publicActivity = ({ owner: _owner, actorId: _actorId, subjectId: _subjectId, subjectKind: _subjectKind, ...entry }: ActivityDoc): ActivityEntry => ({
   ...entry,
   actor: { id: entry.actor.id, kind: entry.principalKind === "human" ? "human" : "agent" },
-  principalKind: (PRINCIPAL_KINDS as readonly unknown[]).includes(entry.principalKind) ? entry.principalKind : "agent",
 });
-/** A stored doc that has no shape to show is left out, so a bad doc never breaks the list or reads as a change by a person. */
+/** A stored doc that has no shape to show (a kind that is not a principal kind too) is left out, so a bad doc never breaks the list or reads as a change by a person. */
 const shown = (doc: Doc): doc is Doc & ActivityDoc =>
   typeof doc.id === "string" && typeof doc.itemId === "string" && typeof doc.at === "number" && Number.isFinite(doc.at) && ACTIVITY_ACTIONS.includes(doc.action as string) &&
-  typeof doc.actor === "object" && doc.actor !== null && typeof (doc.actor as { id?: unknown }).id === "string";
+  typeof doc.actor === "object" && doc.actor !== null && typeof (doc.actor as { id?: unknown }).id === "string" && (PRINCIPAL_KINDS as readonly unknown[]).includes(doc.principalKind);
 
 export function createDrive(deps: DriveDeps) {
   const { store, blobs } = deps;
@@ -299,7 +298,7 @@ export function createDrive(deps: DriveDeps) {
   /** What a node is, to sharing: the item itself, and its folder (or the drive root) above it. */
   const resourceDoc = async (node: Node, parent: Node): Promise<Resource> => ({ id: node.id, type: "drive", parentId: await resourceOf(parent) });
 
-  /** The log doc for one change. It is written in the same transaction as the change, so a change never lacks its entry. */
+  /** The log doc for one change. A change of an item writes it in the same transaction. A share writes it right after the grant. */
   const activityDoc = (ctx: Ctx, node: Node, action: ActivityAction, detail?: ActivityEntry["detail"]): ActivityDoc => {
     // A missing or unknown kind is an error, never a person.
     if (!(PRINCIPAL_KINDS as readonly unknown[]).includes(ctx.actor.kind)) throw new DriveError("FORBIDDEN", `an actor needs a kind: ${PRINCIPAL_KINDS.join(", ")}`);
@@ -1236,6 +1235,7 @@ export function createDrive(deps: DriveDeps) {
         if (removed === 0 && !gone) console.error(`claimRef could not remove ${node.id} after a failed share. Purge it.`);
         throw error;
       }
+      await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind: subject.kind, subjectId: subject.id, role: claim.role }));
       return node;
     },
 
@@ -1382,16 +1382,20 @@ export function createDrive(deps: DriveDeps) {
       const node = await resolve(store, ctx, loc);
       const resource = await resourceOf(node);
       const target = parseSubject(subject);
+      const entry = logDoc(ctx, node, "share", { subjectKind: target.kind, subjectId: target.id, role });
       await viaSharing(ctx, (s, p) => s.grant(p, resource, target, role));
-      await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind: target.kind, subjectId: target.id, role }));
+      await store.put(ACTIVITY, ...entry);
     },
 
     async unshare(ctx: Ctx, loc: string, subject: Subject): Promise<void> {
       const node = await resolve(store, ctx, loc);
       const resource = await resourceOf(node);
       const target = parseSubject(subject);
+      const entry = logDoc(ctx, node, "unshare", { subjectKind: target.kind, subjectId: target.id });
+      // Identity ignores a revoke of a role that nobody holds, and so does the log.
+      const held = (await allWhere(store, "grants", { resourceId: resource, subjectId: target.id, subjectKind: target.kind })).length > 0;
       await viaSharing(ctx, (s, p) => s.revokeGrant(p, resource, target));
-      await store.put(ACTIVITY, ...logDoc(ctx, node, "unshare", { subjectKind: target.kind, subjectId: target.id }));
+      if (held) await store.put(ACTIVITY, ...entry);
     },
 
     /** Invite by `email` (a person) or `handle` (an agent). The invite lasts `expiresInMs`, if given. It sends no message. */
@@ -1402,7 +1406,11 @@ export function createDrive(deps: DriveDeps) {
 
     /** `identity` is the verified email of a person, or the handle of an agent. */
     async acceptInvite(ctx: Ctx, inviteId: string, identity: { email?: string; handle?: string }): Promise<void> {
+      const invite = await store.get("invites", inviteId);
       await viaSharing(ctx, (s, p) => s.acceptInvite(p, inviteId, identity));
+      // The item that the invite names. An invite to a drive root names no item, so it leaves no entry.
+      const node = typeof invite?.resourceId === "string" ? await store.get<Node>(NODES, invite.resourceId) : null;
+      if (node && typeof invite?.role === "string") await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind: ctx.actor.kind === "human" ? "human" : "agent", subjectId: ctx.actor.id, role: invite.role }));
     },
 
     /** The token comes back once. Only its hash is stored. */

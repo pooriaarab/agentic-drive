@@ -141,10 +141,29 @@ describe("activity log", () => {
     expect(actions(await drive.listActivity(human, file.id))).toEqual(["create"]);
     const [stored] = (await store.query("drive_activity", { where: { itemId: file.id }, limit: 1 })).items;
     await store.put("drive_activity", stored!.id, { ...stored!.data, principalKind: "weird", actor: { id: "u1", kind: "human" } });
-    expect((await drive.listActivity(human, file.id))[0]).toMatchObject({ actor: { kind: "agent" }, principalKind: "agent" });
+    // A kind that is not a principal kind is not turned into one: the entry is left out.
+    expect(await drive.listActivity(human, file.id)).toEqual([]);
+    await store.put("drive_activity", stored!.id, { ...stored!.data, principalKind: "agent_of_human", actor: { id: "u1", kind: "human" } });
+    expect((await drive.listActivity(human, file.id))[0]).toMatchObject({ actor: { kind: "agent" }, principalKind: "agent_of_human" });
     await store.put("drive_activity", "broken", { id: "broken", itemId: file.id, owner: "u1", at: 5, action: "create" });
     await store.put("drive_activity", "odd", { id: "odd", itemId: file.id, owner: "u1", at: 6, action: "format-disk", actor: { id: "x", kind: "human" }, principalKind: "human" });
     expect(await drive.listActivity(human, file.id)).toHaveLength(1);
+  });
+
+  it("logs a role by claimRef and by invite, and no unshare of a role nobody held", async () => {
+    const store = createMemoryStore();
+    const drive = createDrive({ store, blobs: createMemoryBlobs(), sharing: createSharing(store) });
+    const p = (id: string): PrincipalContext => ({ principalId: id, kind: "human", chain: [{ id, kind: "human" }], scopes: ["drive:admin"] });
+    const ann: Ctx = { owner: "ann", actor: { id: "ann", kind: "human" }, principal: p("ann") };
+    const bob: Ctx = { owner: "bob", actor: { id: "bob", kind: "human" }, principal: p("bob") };
+    const ref = await drive.claimRef(ann, "/c", "docs:c1", { subject: { kind: "human", id: "bob" }, role: "editor" });
+    expect((await drive.listActivity(ann, ref.id))[0]).toMatchObject({ action: "share", detail: { subjectId: "bob", role: "editor" } });
+    const file = await drive.putFile(ann, "/f.txt", bytes("x"));
+    const invite = await drive.invite(ann, file.id, { role: "viewer", email: "bob@example.com" });
+    await drive.acceptInvite(bob, invite.id, { email: "bob@example.com" });
+    expect((await drive.listActivity(ann, file.id))[0]).toMatchObject({ action: "share", actor: { id: "bob" }, detail: { subjectId: "bob", role: "viewer" } });
+    await drive.unshare(ann, file.id, { kind: "human", id: "nobody" });
+    expect(actions(await drive.listActivity(ann, file.id))).toEqual(["share", "create"]);
   });
 
   it("keeps names out of the export for a drive that the person does not own", async () => {
