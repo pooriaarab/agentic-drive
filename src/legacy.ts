@@ -14,12 +14,6 @@ type Change = [collection: string, id: string, doc: Doc | null];
 export async function importLegacyLocal(dir: string, store: Store, blobs: Blobs): Promise<void> {
   const journal = join(dir, "db", "store.jsonl");
   if (!existsSync(journal) || (await store.get("drive_meta", "legacy_import"))) return;
-  // Data in the new store with no marker means something wrote there first. A copy would overwrite it.
-  for (const collection of ["drive_nodes", "drive_names", "principals"]) {
-    if ((await store.query(collection, { limit: 1 })).items.length > 0) {
-      throw new Error(`the folder holds old data and new data, and the old data was not imported. Move ${journal} away or import by hand.`);
-    }
-  }
   const lines = readFileSync(journal, "utf8").split("\n");
   const tail = lines.pop() as string;
   const docs = new Map<string, Change>();
@@ -63,6 +57,12 @@ export async function importLegacyLocal(dir: string, store: Store, blobs: Blobs)
   // One transaction is one write of the store file, and no half copy is left behind.
   await store.transaction(async (tx) => {
     if (await tx.get("drive_meta", "legacy_import")) return;
+    // Data in the new store with no marker means something wrote there first. A copy would overwrite it.
+    for (const collection of ["drive_nodes", "drive_names", "principals"]) {
+      if ((await tx.query(collection, { limit: 1 })).items.length > 0) {
+        throw new Error(`the folder holds old data and new data, and the old data was not imported. Move ${journal} away or import by hand.`);
+      }
+    }
     for (const [collection, id, doc] of docs.values()) if (doc) await tx.put(collection, id, doc);
     await tx.put("drive_meta", "legacy_import", { importedAt: Date.now() });
   });

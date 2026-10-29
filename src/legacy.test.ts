@@ -35,7 +35,7 @@ function oldLayout(tail = "") {
 describe("import of the old local layout", () => {
   it("moves docs and blobs, and runs once", async () => {
     const dir = oldLayout();
-    const { store, blobs } = openLocal(dir);
+    const { store, blobs } = openLocal(dir, { beforeImport: true });
     await importLegacyLocal(dir, store, blobs);
     expect(await store.get("drive_nodes", "n1")).toMatchObject({ name: "old.txt", blobKey: "blobs/old-1" });
     expect(await blobs.get("blobs/old-1")).toMatchObject({ contentType: "text/plain" });
@@ -46,19 +46,19 @@ describe("import of the old local layout", () => {
   });
   it("drops a torn last line and refuses a bad middle line", async () => {
     const torn = oldLayout('[["drive_nodes","n2",{"id"');
-    const a = openLocal(torn);
+    const a = openLocal(torn, { beforeImport: true });
     await importLegacyLocal(torn, a.store, a.blobs);
     expect(await a.store.get("drive_nodes", "n1")).not.toBeNull();
     expect(await a.store.get("drive_nodes", "n2")).toBeNull();
     const bad = oldLayout();
     writeFileSync(join(bad, "db", "store.jsonl"), `not json\n${JSON.stringify([["drive_nodes", "n1", {}]])}\n`);
-    const b = openLocal(bad);
+    const b = openLocal(bad, { beforeImport: true });
     await expect(importLegacyLocal(bad, b.store, b.blobs)).rejects.toThrow(/bad line 1/);
     expect(await b.store.get("drive_nodes", "n1")).toBeNull();
   });
   it("lets the drive read the imported file", async () => {
     const dir = oldLayout();
-    const { store, blobs } = openLocal(dir);
+    const { store, blobs } = openLocal(dir, { beforeImport: true });
     await importLegacyLocal(dir, store, blobs);
     const drive = createDrive({ store, blobs });
     expect(new TextDecoder().decode((await drive.read(me, "/old.txt")).data)).toBe("old");
@@ -68,15 +68,23 @@ describe("import of the old local layout", () => {
 it("refuses a line that parses but is not a list of changes", async () => {
   const dir = oldLayout();
   writeFileSync(join(dir, "db", "store.jsonl"), `${JSON.stringify([["drive_nodes", "n1", "text"]])}\n`);
-  const { store, blobs } = openLocal(dir);
+  const { store, blobs } = openLocal(dir, { beforeImport: true });
   await expect(importLegacyLocal(dir, store, blobs)).rejects.toThrow(/bad line 1/);
   expect(await store.get("drive_meta", "legacy_import")).toBeNull();
 });
 
 it("refuses to import over data that something wrote first", async () => {
   const dir = oldLayout();
-  const { store, blobs } = openLocal(dir);
+  const { store, blobs } = openLocal(dir, { beforeImport: true });
   await store.put("principals", "u9", { id: "u9" });
   await expect(importLegacyLocal(dir, store, blobs)).rejects.toThrow(/old data and new data/);
   expect(await store.get("drive_nodes", "n1")).toBeNull();
+});
+
+it("refuses to open an old folder before its data is imported", async () => {
+  const dir = oldLayout();
+  expect(() => openLocal(dir)).toThrow(/older version/);
+  const { store, blobs } = openLocal(dir, { beforeImport: true });
+  await importLegacyLocal(dir, store, blobs);
+  expect(() => openLocal(dir)).not.toThrow();
 });

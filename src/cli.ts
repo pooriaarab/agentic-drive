@@ -118,7 +118,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     const admin = command === "principal" || command === "key";
     const token = values.token ?? env.AGENTIC_DRIVE_TOKEN;
     if (!admin && !token) throw new AuthError(NO_TOKEN);
-    const { drive, store, blobs } = openLocal(dir);
+    const { drive, store, blobs } = openLocal(dir, { beforeImport: true });
     await importLegacyLocal(dir, store, blobs);
     if (admin || command === "key") {
       const [sub, target] = args;

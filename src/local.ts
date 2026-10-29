@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createSharing, isMachineMade, isScope, issueCredential, revokeCredential, type Blobs, type Doc, type Store } from "agentic-identity";
 import { createFileBlobs, createFileStore } from "agentic-identity/file";
@@ -7,7 +8,11 @@ import { authenticate } from "./auth.js";
 import { backfillResources } from "./migrate.js";
 
 /** The drive and the store behind it, both kept in `dir`. The store holds the principals and keys too. Sharing is on, as in the Worker. */
-export function openLocal(dir: string): { drive: Drive; store: Store; blobs: Blobs } {
+export function openLocal(dir: string, opts: { beforeImport?: boolean } = {}): { drive: Drive; store: Store; blobs: Blobs } {
+  // A folder of an older version has data that this store cannot see. Opening it empty would hide that data, so stop. `importLegacyLocal` makes the new store file.
+  if (!opts.beforeImport && existsSync(join(dir, "db", "store.jsonl")) && !existsSync(join(dir, "store.json"))) {
+    throw new Error(`${dir} holds data from an older version. Run importLegacyLocal(dir, store, blobs) first: open it with openLocal(dir, { beforeImport: true }).`);
+  }
   const store = createFileStore({ path: join(dir, "store.json") });
   const blobs = createFileBlobs({ dir: join(dir, "blobs") });
   return { store, blobs, drive: createDrive({ store, blobs, sharing: createSharing(store) }) };

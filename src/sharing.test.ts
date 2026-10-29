@@ -609,4 +609,29 @@ describe("transactions and access checks", () => {
     });
     await fails(churn.rename(A, file.id, "g.txt"), "BUSY");
   });
+  it("asks again after the store runs a transaction again", async () => {
+    const asks = async (conflicts: number) => {
+      let calls = 0;
+      let left = conflicts;
+      const spy = { ...sharing, can: (...args: Parameters<typeof sharing.can>) => (calls++, sharing.can(...args)) };
+      // A store that rolls back a transaction after its body ran, then runs the body again, as a store does on a conflict.
+      const retrying = { ...store, transaction: async (fn: Parameters<typeof store.transaction>[0]) => {
+        for (;;) {
+          try {
+            return await store.transaction(async (tx) => {
+              const result = await fn(tx);
+              if (left-- > 0) throw new Error("rerun");
+              return result;
+            });
+          } catch (error) {
+            if (!(error instanceof Error && error.message === "rerun")) throw error;
+          }
+        }
+      } } as typeof store;
+      const d = createDrive({ store: retrying, blobs: createMemoryBlobs(), sharing: spy, now: () => ++clock });
+      await d.putFile(A, `/c${conflicts}.txt`, bytes("1"));
+      return calls;
+    };
+    expect(await asks(1)).toBeGreaterThan(await asks(0));
+  });
 });

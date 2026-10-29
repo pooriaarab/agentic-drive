@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The local layout changes: the store is `store.json` in the data folder and blobs sit in `blobs/blobs/<hash>.blob`. `openLocal` now also returns `blobs`, and it throws on a folder with an old `db/store.jsonl` until `importLegacyLocal(dir, store, blobs)` (new, exported) has copied the old data. The CLI does this on its first run, once, and leaves the old files in place.
+
+### Changed
+
+- **Transactions no longer nest store calls.** Access answers come from outside the transaction, so each transaction reads before it writes and runs on the file store of `agentic-identity/file`. A test runs the sharing and person suites on it.
+
 ## 0.7.0
 
 Read the breaking changes before you upgrade.
@@ -13,13 +23,6 @@ Read the breaking changes before you upgrade.
 - **Sharing in the CLI.** New commands: `shares`, `share`, `unshare`, `invite`, `accept-invite`, `link-create`, and `link-revoke`. They act like the HTTP routes and show in `--help`.
 - **Sharing in the MCP server.** New tools: `drive_shares`, `drive_share`, `drive_unshare`, `drive_invite`, `drive_accept_invite`, `drive_create_link`, and `drive_revoke_link`.
 - **`drive_delete_account` in the MCP server.** It erases the caller like `DELETE /account` and `delete-all`. It needs `confirm: "yes"`.
-
-## Unreleased
-
-### Changed
-
-- **Transactions no longer nest store calls.** Access answers come from outside the transaction, so each transaction reads before it writes and runs on the file store of `agentic-identity/file`. A test runs the sharing and person suites on it.
-- **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The first CLI run copies old `store.jsonl` data and blobs.
 
 ## 0.6.1
 
