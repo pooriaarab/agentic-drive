@@ -2,8 +2,8 @@
 import { createReadStream, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Role } from "agentic-identity";
 import { parseArgs } from "node:util";
+import { ROLES, SUBJECT_KINDS, type Role } from "agentic-identity";
 import { inviteIdentity } from "./auth.js";
 import { DriveError, type ActorKind, type OnConflict } from "./drive.js";
 import { buildExport } from "./export.js";
@@ -59,7 +59,7 @@ Flags:
                       The key names a principal, found through agentic-identity. The drive belongs to
                       the person at the top of that principal's chain. An agent key marks items as
                       made by a machine. If the key is missing or not valid, the command exits with 3.
-  --role <r>          owner, editor, commenter, or viewer (share, invite, link-create)
+  --role <r>          share: owner, editor, commenter, or viewer. invite and link-create: editor, commenter, or viewer.
   --on-conflict <m>   fail, rename, or replace
   -p, --parents       Create missing parent folders
 
@@ -79,6 +79,14 @@ const options = {
   limit: { type: "string" }, app: { type: "string" }, yes: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "V" },
 } as const;
 
+/** A lifetime in milliseconds: a whole number above 0. */
+function lifetime(value: string | undefined, flag: string): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (value.trim() === "" || !Number.isSafeInteger(n) || n <= 0) throw new UsageError(`--${flag} needs a whole number above 0`);
+  return n;
+}
+
 function num(value: string | undefined, flag: string): number | undefined {
   if (value === undefined) return undefined;
   const n = Number(value);
@@ -86,10 +94,10 @@ function num(value: string | undefined, flag: string): number | undefined {
   return n;
 }
 
-const ROLES = ["owner", "editor", "commenter", "viewer"];
-const SUBJECT_KINDS = ["human", "agent"];
+/** An invite or a link cannot make an owner. Only a grant can. */
+const LINK_ROLES = ROLES.filter((r) => r !== "owner");
 
-function pick(value: string | undefined, allowed: string[], flag: string): string {
+function pick(value: string | undefined, allowed: readonly string[], flag: string): string {
   if (value === undefined || !allowed.includes(value)) throw new UsageError(`--${flag} needs ${allowed.join(", ")}`);
   return value;
 }
@@ -119,8 +127,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       if (command === "key" && sub === "revoke" && target) return await revokeKey(store, target), out({ revoked: true }), 0;
       throw new UsageError("usage: agentic-drive principal add <id> [--of <person>] [--scope <s>] | principal revoke <id> | key issue <principal> | key revoke <key>");
     }
-    await ensureSharing(store);
     const ctx = await resolveToken(store, token);
+    await ensureSharing(store);
     const onConflict = values["on-conflict"] as OnConflict | undefined;
     if (onConflict && !["fail", "rename", "replace"].includes(onConflict)) throw new UsageError("--on-conflict needs fail, rename, or replace");
     const print = (value: unknown) => io.out(JSON.stringify(value));
@@ -218,9 +226,9 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         break;
       case "invite": {
         need(1, "invite <path|id> --role <r> (--email <e> | --handle <h>)");
-        const expiresInMs = num(values["expires-in-ms"], "expires-in-ms");
+        const expiresInMs = lifetime(values["expires-in-ms"], "expires-in-ms");
         print(await drive.invite(ctx, args[0]!, {
-          role: pick(values.role, ROLES, "role") as Role, ...(values.email === undefined ? {} : { email: values.email }),
+          role: pick(values.role, LINK_ROLES, "role") as Role, ...(values.email === undefined ? {} : { email: values.email }),
           ...(values.handle === undefined ? {} : { handle: values.handle }), ...(expiresInMs === undefined ? {} : { expiresInMs }),
         }));
         break;
@@ -232,9 +240,9 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         break;
       case "link-create": {
         need(1, "link-create <path|id> --role <r>");
-        const expiresInMs = num(values["expires-in-ms"], "expires-in-ms");
+        const expiresInMs = lifetime(values["expires-in-ms"], "expires-in-ms");
         print(await drive.createLink(ctx, args[0]!, {
-          role: pick(values.role, ROLES, "role") as Role, signedInOnly: values["signed-in-only"] === true,
+          role: pick(values.role, LINK_ROLES, "role") as Role, signedInOnly: values["signed-in-only"] === true,
           ...(expiresInMs === undefined ? {} : { expiresAt: Date.now() + expiresInMs }),
         }));
         break;

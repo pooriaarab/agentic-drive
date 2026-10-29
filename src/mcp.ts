@@ -5,15 +5,17 @@ import { join } from "node:path";
 import { z } from "zod";
 import { inviteIdentity } from "./auth.js";
 import { ACTOR_KINDS, DriveError, type Ctx, type Drive } from "./drive.js";
-import type { Store } from "agentic-identity";
+import { ROLES, SUBJECT_KINDS, type Store } from "agentic-identity";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
 const conflict = z.enum(["fail", "rename", "replace"]).optional();
-const role = z.enum(["owner", "editor", "commenter", "viewer"]);
-const subjectKind = z.enum(["human", "agent"]);
+const role = z.enum(ROLES);
+/** An invite or a link cannot make an owner. Only a grant can. */
+const linkRole = z.enum(ROLES.filter((r) => r !== "owner") as [Exclude<(typeof ROLES)[number], "owner">, ...Exclude<(typeof ROLES)[number], "owner">[]]);
+const subjectKind = z.enum(SUBJECT_KINDS);
 const lifetime = z.number().int().positive().optional().describe("How long it lasts, in milliseconds.");
 const loc = z.string().describe('A path, such as "/x" or "<folder id>/x", or an item id.');
 
@@ -114,14 +116,14 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string, store
   tool(
     "drive_invite",
     "Invite by `email` (a person) or `handle` (an agent). It sends no message. The id comes back.",
-    { path: loc, role, email: z.string().optional(), handle: z.string().optional(), expiresInMs: lifetime },
+    { path: loc, role: linkRole, email: z.string().optional(), handle: z.string().optional(), expiresInMs: lifetime },
     async ({ path, role, email, handle, expiresInMs }) => drive.invite(ctx, path, { role, ...(email === undefined ? {} : { email }), ...(handle === undefined ? {} : { handle }), ...(expiresInMs === undefined ? {} : { expiresInMs }) }),
   );
   tool("drive_accept_invite", "Accept an invite that names you by verified email or by agent handle.", { id: z.string() }, async ({ id }) => (await drive.acceptInvite(ctx, id, await inviteIdentity(store, ctx.actor.id)), { ok: true }));
   tool(
     "drive_create_link",
     "Make a share link for an item. The token comes back once.",
-    { path: loc, role, expiresInMs: lifetime, signedInOnly: z.boolean().optional() },
+    { path: loc, role: linkRole, expiresInMs: lifetime, signedInOnly: z.boolean().optional() },
     async ({ path, role, expiresInMs, signedInOnly }) => drive.createLink(ctx, path, { role, signedInOnly: signedInOnly === true, ...(expiresInMs === undefined ? {} : { expiresAt: Date.now() + expiresInMs }) }),
   );
   tool("drive_revoke_link", "Stop a share link.", { id: z.string() }, async ({ id }) => (await drive.revokeLink(ctx, id), { ok: true }), { destructiveHint: true });

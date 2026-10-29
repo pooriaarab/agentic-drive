@@ -15,7 +15,11 @@ export function openLocal(dir: string): { drive: Drive; store: Store } {
 /** Gives the items of a folder made before sharing their `resources` docs. It runs once, and a marker records it. */
 export async function ensureSharing(store: Store): Promise<void> {
   if (await store.get("drive_meta", "sharing")) return;
-  await backfillResources(store);
+  try {
+    await backfillResources(store);
+  } catch (error) {
+    throw new Error(`the one-time sharing backfill of local items failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   await store.put("drive_meta", "sharing", { backfilledAt: Date.now() });
 }
 

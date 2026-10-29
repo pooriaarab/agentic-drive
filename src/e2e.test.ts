@@ -78,8 +78,31 @@ describe("CLI", () => {
     expect(run(["share", folder.id, "u2", "--subject-kind", "human"]).code).toBe(2);
     expect(run(["share", folder.id, "u2", "--role", "boss", "--subject-kind", "human"]).code).toBe(2);
     expect(run(["share", folder.id, "u2", "--role", "viewer"]).code).toBe(2);
-    expect(run(["link-create", folder.id, "--role", "viewer", "--expires-in-ms", "-5"]).code).toBe(2);
+    for (const bad of ["-5", "0", "1.5", ""]) expect(run(["link-create", folder.id, "--role", "viewer", "--expires-in-ms", bad]).code, bad).toBe(2);
+    expect(run(["link-create", folder.id, "--role", "owner"]).code).toBe(2);
+    expect(run(["invite", folder.id, "--role", "owner", "--handle", "h"]).code).toBe(2);
     expect(run(["shares"]).code).toBe(2);
+  }, 60_000);
+
+  it("backfills items made before sharing, once, and only for a valid key", () => {
+    const { run, raw, data, me } = fixture();
+    const folder = run(["mkdir", "/old"]).json();
+    // Simulate pre-sharing data: drop the resources docs and the marker from the store file.
+    const file = join(data, "db", "store.jsonl");
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const kept = lines
+      .map((l) => (JSON.parse(l) as [string, string, unknown][]).filter(([collection]) => !["resources", "grants", "audit", "drive_meta"].includes(collection)))
+      .filter((ops) => ops.length > 0)
+      .map((ops) => JSON.stringify(ops));
+    expect(readFileSync(file, "utf8")).toContain("resources");
+    writeFileSync(file, kept.join("\n") + "\n");
+    expect(raw(["ls", "/"], { AGENTIC_DRIVE_TOKEN: "bad" }).code).toBe(3);
+    expect(readFileSync(file, "utf8")).not.toContain("drive_meta");
+    const after = run(["shares", folder.id]);
+    expect(after.err).toBe("");
+    expect(after.json().grants).toBeDefined();
+    expect(readFileSync(file, "utf8")).toContain("drive_meta");
+    expect(me).toBeTruthy();
   }, 60_000);
 
   it("documents the sharing commands in --help", () => {
