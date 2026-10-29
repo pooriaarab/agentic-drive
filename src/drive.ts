@@ -1099,6 +1099,12 @@ export function createDrive(deps: DriveDeps) {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
       await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
       const hits: { node: Node; path: string }[] = [];
+      // Hits often share folders, so each folder is read once.
+      const seen = new Map<string, Node | null>();
+      const folder = async (id: string) => {
+        if (!seen.has(id)) seen.set(id, await rawNode(store, id, ctx.owner, ctx.actor));
+        return seen.get(id) ?? null;
+      };
       for (const { data } of await allWhere(store, NODES, { owner: ctx.owner, ref })) {
         const node = data as Node;
         if (node.kind !== "ref" || node.trashed || node.purging === true) continue;
@@ -1106,7 +1112,7 @@ export function createDrive(deps: DriveDeps) {
         const names = [node.name];
         let up: Node | null = node;
         for (let depth = 0; up && up.parentId !== ROOT_ID && depth < maxDepth; depth++) {
-          up = await rawNode(store, up.parentId, node.owner, ctx.actor);
+          up = await folder(up.parentId);
           if (up === null || up.trashed) break;
           names.push(up.name);
         }
