@@ -1094,13 +1094,21 @@ export function createDrive(deps: DriveDeps) {
     /** The live references to `ref` in the caller's own drive that the caller can read, with their paths, sorted by path. */
     async findByRef(ctx: Ctx, ref: string): Promise<{ node: Node; path: string }[]> {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
-      const all = await ownerNodes(ctx);
-      const byId = new Map(all.map((n) => [n.id, n]));
+      await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
       const hits: { node: Node; path: string }[] = [];
-      for (const node of all) {
-        if (node.kind !== "ref" || node.ref !== ref) continue;
-        const path = pathIn(byId, node, true);
-        if (path !== null && (await can(ctx, "read", node))) hits.push({ node, path });
+      for (const { data } of await allWhere(store, NODES, { owner: ctx.owner, ref })) {
+        const node = data as Node;
+        if (node.kind !== "ref" || node.trashed || node.purging === true) continue;
+        // Walk up through the parents. A trashed or missing folder hides the reference.
+        const names = [node.name];
+        let up: Node | null = node;
+        for (let depth = 0; up && up.parentId !== ROOT_ID && depth < maxDepth; depth++) {
+          up = await rawNode(store, up.parentId, node.owner, ctx.actor);
+          if (up === null || up.trashed) break;
+          names.push(up.name);
+        }
+        if (up === null || up.trashed || up.parentId !== ROOT_ID) continue;
+        if (await can(ctx, "read", node)) hits.push({ node, path: `/${names.reverse().join("/")}` });
       }
       return hits.sort((a, b) => (a.path < b.path ? -1 : 1));
     },
@@ -1122,12 +1130,13 @@ export function createDrive(deps: DriveDeps) {
       } catch (error) {
         // The item was made a moment ago. If it changed since (a rename or a move), the first try skips it, so read it again.
         let removed = 0;
-        for (let i = 0; i < 3 && removed === 0; i++) {
+        let gone = false;
+        for (let i = 0; i < 3 && removed === 0 && !gone; i++) {
           const current = await rawNode(store, node.id, node.owner, ctx.actor, true);
-          if (current === null) break;
-          removed = await removeNodes([current], undefined, ctx.principal).catch(() => 0);
+          if (current === null) gone = true;
+          else removed = await removeNodes([current], undefined, ctx.principal).catch(() => 0);
         }
-        if (removed === 0) console.error(`claimRef could not remove ${node.id} after a failed share. Purge it.`);
+        if (removed === 0 && !gone) console.error(`claimRef could not remove ${node.id} after a failed share. Purge it.`);
         throw error;
       }
       return node;
