@@ -145,6 +145,30 @@ describe("CLI", () => {
     expect(JSON.parse(revoked.err).error).toMatchObject({ code: "UNAUTHENTICATED", message: expect.stringContaining("revoked") });
     expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: "not-a-key" }).code).toBe(3);
     expect(raw(["ls", "--token", "bad key"]).code).toBe(3);
+    // A bad value must not leak the key into the error.
+    const two = raw(["ls"], { AGENTIC_DRIVE_TOKEN: `${bot}\n${bot}` });
+    expect(two.code).toBe(3);
+    expect(two.err).not.toContain(bot);
+    // A mistyped key does not revoke the real one, and says so.
+    const typo = raw(["key", "revoke", `${bot}x`]);
+    expect(typo.code).toBe(1);
+    expect(JSON.parse(typo.err).error.code).toBe("NOT_FOUND");
+  });
+  it("refuses the key of a revoked chain", () => {
+    const { raw, principal } = fixture();
+    const bot = principal("bot", "u1");
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(0);
+    // Revoke the person: the key of the agent below must stop working too.
+    expect(raw(["principal", "revoke", "u1"]).json()).toEqual({ id: "u1", revoked: true });
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(3);
+  });
+  it("reports an unknown command before it asks for a key, and makes no data folder", () => {
+    const { work } = fixture();
+    const fresh = join(work, "fresh");
+    const run = (args: string[]) => spawnSync("node", [cli, "--dir", fresh, ...args], { cwd: work, encoding: "utf8", env: { ...process.env, AGENTIC_DRIVE_TOKEN: "" } });
+    expect(run(["bogus"]).status).toBe(2);
+    expect(run(["ls"]).status).toBe(3);
+    expect(existsSync(fresh)).toBe(false);
   });
   it("documents the token in --help", () => {
     const { raw } = fixture();
@@ -160,7 +184,9 @@ describe("CLI", () => {
     expect(raw(["principal", "add", "x", "--of", "ghost"]).code).toBe(1);
     expect(raw(["principal", "add", "y", "--scope", "nope"]).code).toBe(1);
     expect(raw(["key", "issue", "ghost"]).code).toBe(1);
-    principal("ok");
+    const bot = principal("bot", "u1");
+    expect(raw(["principal", "add", "sub", "--of", "bot"]).code).toBe(1);
+    expect(bot).toBeTruthy();
   });
 });
 
@@ -210,6 +236,13 @@ describe("MCP over stdio", () => {
     } finally {
       await client.close();
     }
+  });
+  it("exits 3 with no key", async () => {
+    const { work, data } = fixture();
+    const { AGENTIC_DRIVE_TOKEN: _drop, ...base } = process.env;
+    const r = spawnSync("node", [cli, "--dir", data, "mcp"], { cwd: work, encoding: "utf8", env: base, input: "" });
+    expect(r.status).toBe(3);
+    expect(JSON.parse(r.stderr)).toMatchObject({ error: { code: "UNAUTHENTICATED" } });
   });
   it("returns tool errors with a code, and rejects bad input", async () => {
     const { client, call } = await connect();

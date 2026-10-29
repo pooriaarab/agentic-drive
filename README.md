@@ -44,9 +44,9 @@ npx agentic-drive mcp
 Every command prints JSON. A failure prints `{"error":{"code","message"}}` on stderr and exits 1.
 Exit code 2 means bad usage. Exit code 3 means no principal, or a key that is not valid.
 
-Every command except `help`, `principal`, and `key` needs a principal. Pass an API key with
+Every command except `help`, `version`, `principal`, and `key` needs a principal. Pass an API key with
 `--token <key>` or `AGENTIC_DRIVE_TOKEN`. Prefer the variable: a flag shows in `ps`.
-The key is resolved through `agentic-identity`. The drive belongs to the person at the top of the
+`agentic-identity` resolves the key. The drive belongs to the person at the top of the
 principal's chain. An agent key marks each item it makes as made by a machine. A revoked,
 expired, or unknown key fails with exit code 3.
 
@@ -56,6 +56,7 @@ export AGENTIC_DRIVE_TOKEN=$(npx agentic-drive key issue alice | jq -r .token)
 npx agentic-drive principal add helper --of alice     # an agent of alice
 npx agentic-drive key issue helper                    # the key shows once
 npx agentic-drive key revoke <key>
+npx agentic-drive principal revoke helper             # stops its keys, and its agents
 ```
 
 `principal` and `key` need no key: anyone who can read the `--dir` folder can run them.

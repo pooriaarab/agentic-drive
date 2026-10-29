@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { DriveError, type ActorKind, type OnConflict } from "./drive.js";
 import { buildExport } from "./export.js";
-import { AuthError, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey } from "./local.js";
+import { AuthError, NO_TOKEN, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
@@ -38,6 +38,7 @@ Commands:
   forget <ref>                 Move the references to an app document to the trash.
   delete-all --yes             Erase you for good: your drive, and what you shared or held.
   principal add <id>           Make a person, or an agent with --of <person>. Flag: --scope <s> (repeat). No key needed.
+  principal revoke <id>        Stop a principal, and every agent below it. No key needed.
   key issue <principal>        Print a new API key for a principal. It shows once. Flag: --label. No key needed.
   key revoke <key>             Stop a key from working. No key needed.
   mcp                          Start the MCP server on stdio.
@@ -54,6 +55,8 @@ Flags:
 
 Exit codes: 0 done, 1 error, 2 bad usage, 3 no principal or an invalid key.
 `;
+
+const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "forget", "delete-all", "mcp", "principal", "key"];
 
 export class UsageError extends Error {}
 
@@ -83,16 +86,21 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     };
     const env = io.env;
     const dir = resolve(values.dir ?? env.AGENTIC_DRIVE_DIR ?? ".agentic-drive");
+    if (!COMMANDS.includes(command)) throw new UsageError(`unknown command "${command}"`);
+    const admin = command === "principal" || command === "key";
+    const token = values.token ?? env.AGENTIC_DRIVE_TOKEN;
+    if (!admin && !token) throw new AuthError(NO_TOKEN);
     const { drive, store } = openLocal(dir);
-    if (command === "principal" || command === "key") {
+    if (admin || command === "key") {
       const [sub, target] = args;
       const out = (value: unknown) => io.out(JSON.stringify(value));
       if (command === "principal" && sub === "add" && target) return out(await addPrincipal(store, target, { parent: values.of, scopes: values.scope })), 0;
+      if (command === "principal" && sub === "revoke" && target) return await revokePrincipal(store, target), out({ id: target, revoked: true }), 0;
       if (command === "key" && sub === "issue" && target) return out({ principal: target, token: await issueKey(store, target, values.label) }), 0;
       if (command === "key" && sub === "revoke" && target) return await revokeKey(store, target), out({ revoked: true }), 0;
-      throw new UsageError("usage: agentic-drive principal add <id> [--of <person>] [--scope <s>] | key issue <principal> | key revoke <key>");
+      throw new UsageError("usage: agentic-drive principal add <id> [--of <person>] [--scope <s>] | principal revoke <id> | key issue <principal> | key revoke <key>");
     }
-    const ctx = await resolveToken(store, values.token ?? env.AGENTIC_DRIVE_TOKEN);
+    const ctx = await resolveToken(store, token);
     const onConflict = values["on-conflict"] as OnConflict | undefined;
     if (onConflict && !["fail", "rename", "replace"].includes(onConflict)) throw new UsageError("--on-conflict needs fail, rename, or replace");
     const print = (value: unknown) => io.out(JSON.stringify(value));

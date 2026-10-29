@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { isScope, issueCredential, revokeCredential, type Doc, type Store } from "agentic-identity";
 import { createFileBlobs, createFileStore } from "./adapters/fs.js";
-import { createDrive, type Ctx, type Drive, type Node } from "./drive.js";
+import { DriveError, createDrive, type Ctx, type Drive, type Node } from "./drive.js";
 import { authenticate } from "./auth.js";
 
 /** The drive and the store behind it, both kept in `dir`. The store holds the principals and keys too. */
@@ -15,14 +16,19 @@ export class AuthError extends Error {
   readonly code = "UNAUTHENTICATED";
 }
 
+export const NO_TOKEN = "no principal: pass --token <key> or set AGENTIC_DRIVE_TOKEN to an API key";
+const BAD_TOKEN = "the key is not valid: it is unknown, revoked, or expired, or its principal is revoked";
+
 /**
  * The caller behind `token`, resolved through agentic-identity like the Worker does. The owner is the root
  * of the delegation chain, and the actor is the principal itself, so an agent key shows as a machine.
  */
 export async function resolveToken(store: Store, token: string | undefined): Promise<Ctx> {
-  if (!token) throw new AuthError("no principal: pass --token <key> or set AGENTIC_DRIVE_TOKEN to an API key");
+  if (!token) throw new AuthError(NO_TOKEN);
+  // Check the shape first: a bad value must not reach the Headers constructor, whose error would echo the secret.
+  if (!/^[A-Za-z0-9_-]{1,512}$/.test(token)) throw new AuthError(BAD_TOKEN);
   const ctx = await authenticate(new Request("http://local", { headers: { authorization: `Bearer ${token}` } }), store);
-  if (!ctx) throw new AuthError("the key is not valid: it is unknown, revoked, or expired, or its principal is revoked");
+  if (!ctx) throw new AuthError(BAD_TOKEN);
   return ctx;
 }
 
@@ -34,9 +40,18 @@ export async function addPrincipal(store: Store, id: string, opts: { parent?: st
   if (bad !== undefined) throw new Error(`invalid scope "${bad}"`);
   if (await store.get("principals", id)) throw new Error(`principal "${id}" exists`);
   if (opts.parent && !(await store.get("principals", opts.parent))) throw new Error(`parent "${opts.parent}" does not exist`);
+  const parent = opts.parent ? await store.get("principals", opts.parent) : null;
+  if (parent && parent.kind !== "human") throw new Error(`parent "${opts.parent}" is not a person`);
   const doc: Doc = opts.parent ? { id, kind: "agent_of_human", parentId: opts.parent, scopes } : { id, kind: "human", scopes };
   await store.put("principals", id, doc);
   return doc;
+}
+
+/** Stop a principal. Every agent below it stops too, because its chain is no longer live. */
+export async function revokePrincipal(store: Store, id: string): Promise<void> {
+  const doc = await store.get("principals", id);
+  if (!doc) throw new DriveError("NOT_FOUND", `principal "${id}" does not exist`);
+  await store.put("principals", id, { ...doc, revokedAt: Date.now() });
 }
 
 /** Issue an API key for a principal. The token is shown once. */
@@ -46,6 +61,7 @@ export async function issueKey(store: Store, principalId: string, label?: string
 }
 
 export async function revokeKey(store: Store, token: string): Promise<void> {
+  if (!(await store.get("credentials", createHash("sha256").update(token).digest("hex")))) throw new DriveError("NOT_FOUND", "no such key");
   await revokeCredential(store, token, Date.now());
 }
 
