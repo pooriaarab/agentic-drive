@@ -53,7 +53,9 @@ export function backfillAuthorIds(store: Store, options: BackfillOptions = {}): 
     for (const { id, data } of items) {
       const created = (data.createdBy as { id?: unknown } | undefined)?.id;
       const updated = (data.updatedBy as { id?: unknown } | undefined)?.id;
-      if (typeof created !== "string" || typeof updated !== "string") continue;
+      if (!isText(created) || !isText(updated)) {
+        throw new Error(`item ${id} has no author. Fix it before you run the backfill again.`);
+      }
       if (data.createdById === created && data.updatedById === updated) continue;
       await tx.put("drive_nodes", id, { ...data, createdById: created, updatedById: updated });
       count++;

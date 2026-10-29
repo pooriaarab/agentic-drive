@@ -7,7 +7,7 @@
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
 import { describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
-import { backfillResources } from "./migrate.js";
+import { backfillAuthorIds, backfillResources } from "./migrate.js";
 
 const bytes = (s: string) => new TextEncoder().encode(s);
 const principal = (id: string): PrincipalContext => ({ principalId: id, kind: "human", chain: [{ id, kind: "human" }], scopes: ["drive:admin"] });
@@ -106,6 +106,14 @@ describe("backfillResources", () => {
     await store.put("drive_nodes", "broken", { id: "broken", parentId: "root", kind: "file" });
     await expect(backfillResources(store)).rejects.toThrow(/has no owner or parent/);
     expect(await store.get("resources", "broken")).toBeNull();
+  });
+
+  it("stops the author backfill on an item with no author, and counts nothing past it", async () => {
+    const store = createMemoryStore();
+    await store.put("drive_nodes", "noauthor", { id: "noauthor", owner: "alice", parentId: "root", kind: "file", createdBy: {}, updatedBy: {} });
+    await expect(backfillAuthorIds(store)).rejects.toThrow(/has no author/);
+    expect(await store.get("drive_nodes", "noauthor")).toMatchObject({ createdBy: {} });
+    expect(await store.get("drive_nodes", "noauthor")).not.toHaveProperty("createdById");
   });
 
   it("treats an empty owner or parent as damaged too", async () => {

@@ -24,22 +24,24 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 Read the known limits before you move a live deployment. Run the steps in this order. The old Worker keeps writing until step 3, so the backfill in step 4 must come after the deploy.
 
 1. Install the new versions: `npm install agentic-drive@0.2.0 agentic-identity@^0.3.0`.
-2. Write the principals under the old owner ids. The owner of a drive is the principal id, and the old data keeps the old owner string. So write each person with the old owner string as its id. Old tokens had no scopes, so `drive:admin` keeps the old rights of a person. Map each old actor under its owner:
-   - An actor of kind `agent_of_human` or `agent` acted in its owner's drive. Write it as `kind: "agent_of_human"` with `parentId` set to the owner's id. Give it the scopes you want it to keep, `drive:read`, `drive:write`, or `drive:admin`. An old token had all of them.
-   - An `agent_of_agent` needs a chain of principals with the same parents, written the same way.
-   - A `user_token` acted for its owner. Write it as `kind: "user_token"` with `parentId` set to the owner's id, and the scopes it should keep. A `user_token` cannot be a root.
-   - An actor that is a human other than the owner has no equal here. Share the drive with that actor's principal instead, with `POST /shares`.
+2. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights, or less to narrow them.
+   - Each owner keeps its old kind, `human` or `agent`, as a root principal. Its id is the old owner string.
+   - Each agent or `agent_of_agent` keeps its old actor id. Write an `agent_of_human` or a `user_token` with `parentId` set to its owner. An `agent_of_agent` needs a chain of parents, written the same way.
+   - A human actor who is not the owner keeps its old actor id, as a root `human`. Share the drive with it, with the role `owner`, to keep its old rights. The role `editor` cannot purge or share.
 
-   Do this for each person with the store, through the `Store` port:
+   Write each one through the `Store` port:
 
    ```js
    import { createD1Store } from "agentic-identity/cloudflare";
    import { parseRegion } from "agentic-identity";
 
-   export async function writePerson(env, id) {
+   export async function writePrincipal(env, principal) {
      const store = createD1Store(env.DB, { region: parseRegion(env.DRIVE_REGION ?? "eu") });
-     await store.put("principals", id, { id, kind: "human", scopes: ["drive:admin"] });
+     await store.put("principals", principal.id, principal);
    }
+
+   await writePrincipal(env, { id: "u1", kind: "human", scopes: ["drive:admin"] });
+   await writePrincipal(env, { id: "bot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:admin"] });
    ```
 
 3. Deploy the 0.2.0 Worker. From this point, nobody can sign in until step 5.
@@ -73,18 +75,17 @@ Read the known limits before you move a live deployment. Run the steps in this o
    };
    ```
 
-   Run `?step=authors`, then `?step=resources`. Pass each `nextCursor` as `cursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops `backfillResources`. Fix or delete that item, then run it again.
-
-   Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until the person makes it, an agent that calls first gets `NOT_FOUND`.
-5. Issue a bearer token for each principal with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to its person or agent. A token is shown only once.
-6. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
-7. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
-8. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
+   Run `?step=authors`, then `?step=resources`. Pass each `nextCursor` as `cursor`. A second run of either step changes nothing. If a call fails, run it again with the last cursor that worked. A damaged item stops a step. Fix or delete that item, then run it again.
+5. Issue a bearer token for each person with `issueCredential(store, { principalId, kind: "api_key", label })`, and give it to the person. A token is shown only once. Then make one call as each person, for example `GET /api/v1/drive/items?path=/`. That call creates the drive's root, which the items inherit their access from. Until the person makes it, an agent that calls first gets `NOT_FOUND`.
+6. Issue the tokens for the agents and the other actors, and give them out.
+7. Remove the old secret: `npx wrangler secret delete DRIVE_API_TOKENS`.
+8. If your code calls `authenticate`, await it and pass the store: `await authenticate(request, store)`.
+9. Tell your users that `DELETE /account?confirm=yes` and `agentic-drive delete-all --yes` now erase their agents and their shares too. Neither can be undone.
 
 Known limits of this release:
 
 - **OIDC sign-in gets a new id.** agentic-identity gives an OIDC person the id `u_` plus a hash of the issuer and the subject. That id is not the old owner string. A person who signs in through OIDC does not see a drive made under the old owner string. Use bearer tokens for those drives until a re-key step ships.
-- **There is no re-key step.** This release does not move items from one owner id to another. Keep the old owner ids as principal ids, as step 2 does.
+- **There is no re-key step.** This release does not move items from one owner id to another. Keep the old ids as principal ids, as step 2 does.
 
 ### Added
 
