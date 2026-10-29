@@ -24,6 +24,6 @@ export function openLocal(options: LocalOptions): { drive: Drive; ctx: Ctx } {
 
 /** A node as the CLI and MCP print it: no storage keys. */
 export function publicNode(node: Node, path?: string) {
-  const { nameKey: _nameKey, blobKey: _blobKey, ...rest } = node;
+  const { nameKey: _nameKey, blobKey: _blobKey, purging: _purging, ...rest } = node;
   return path === undefined ? rest : { path, ...rest };
 }

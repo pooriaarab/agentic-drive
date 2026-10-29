@@ -1,15 +1,16 @@
 // End to end: the real Worker under `wrangler dev`, with local D1 and R2.
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authenticate } from "./worker.js";
+import { authenticate, createApp } from "./worker.js";
 import { readZip } from "./zip.js";
 
 const root = join(import.meta.dirname, "..");
-const port = 8700 + Math.floor(Math.random() * 200);
-const base = `http://127.0.0.1:${port}`;
+let port = 0;
+let base = "";
 const tok = (name: string) => `${name}-`.padEnd(40, "k");
 const TOK_U1 = tok("u1");
 const TOK_BOT = tok("bot");
@@ -17,6 +18,7 @@ const TOK_U2 = tok("u2");
 const TOK_NO_ACTOR = tok("noactor");
 const TOK_AGENT_NO_ACTOR = tok("agentnoactor");
 const TOK_SHORT = "short-token";
+const URL_SECRET = "drive-url-secret-".padEnd(40, "s");
 const tokens = {
   [TOK_U1]: { owner: "u1", actor: "u1", kind: "human" },
   [TOK_BOT]: { owner: "u1", actor: "bot", kind: "agent_of_human" },
@@ -40,10 +42,21 @@ const json = async (res: Response) => (await res.json()) as any;
 const put = (path: string, data: string | Uint8Array, token?: string | null, q = "") =>
   call("PUT", `/files?path=${encodeURIComponent(path)}${q}`, { token, body: data as BodyInit, headers: { "content-type": "application/octet-stream" } });
 
+// The system picks the port, so a wrangler left over from an earlier run cannot answer for this one.
+const freePort = () =>
+  new Promise<number>((resolve) => {
+    const probe = createServer().listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address() as AddressInfo;
+      probe.close(() => resolve(free));
+    });
+  });
+
 beforeAll(async () => {
+  port = await freePort();
+  base = `http://127.0.0.1:${port}`;
   const persist = mkdtempSync(join(tmpdir(), "drive-wrangler-"));
-  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000"], {
-    cwd: root, stdio: "ignore", env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
+  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`], {
+    cwd: root, stdio: "ignore", detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
   });
   for (let i = 0; i < 120; i++) {
     try {
@@ -56,7 +69,8 @@ beforeAll(async () => {
   throw new Error("wrangler dev did not start");
 }, 90_000);
 afterAll(() => {
-  proc?.kill("SIGTERM");
+  // wrangler starts child processes. Stop the whole group, or they keep the port.
+  if (proc?.pid) process.kill(-proc.pid, "SIGTERM");
 });
 
 describe("sign-in", () => {
@@ -162,8 +176,54 @@ describe("files", () => {
     const res = await call("PUT", "/files?path=/note.txt", { body: "hello", headers: { "content-type": "application/x-www-form-urlencoded" } });
     expect((await json(res)).mime).toBe("text/plain");
   });
-  it("has no signed URLs until R2 keys are set", async () => {
-    expect((await call("GET", "/url?path=/dup.txt")).status).toBe(501);
+  it("refuses every API call while the URL settings are missing", async () => {
+    const app = createApp();
+    const request = () => new Request("http://x/api/v1/drive/items", { headers: { authorization: `Bearer ${TOK_U1}` } });
+    const env = { DB: {}, FILES: {}, DRIVE_API_TOKENS: JSON.stringify(tokens) };
+    for (const extra of [{}, { DRIVE_PUBLIC_URL: base }, { DRIVE_URL_SECRET: URL_SECRET }, { DRIVE_PUBLIC_URL: base, DRIVE_URL_SECRET: "too-short" }, { DRIVE_PUBLIC_URL: "not a url", DRIVE_URL_SECRET: URL_SECRET }]) {
+      const res = await app.fetch(request(), { ...env, ...extra } as never);
+      expect(res.status, JSON.stringify(extra)).toBe(503);
+      expect((await json(res)).error.code).toBe("NOT_CONFIGURED");
+    }
+  });
+});
+
+describe("signed download URLs", () => {
+  const signed = async (path: string, expires = "") => (await json(await call("GET", `/url?path=${encodeURIComponent(path)}${expires}`))).url as string;
+  it("serve the bytes as an attachment with the stored type, with no bearer token", async () => {
+    await put("/sig/data.csv", "a,b\n1,2\n", TOK_U1, "&parents=true&mime=text/csv");
+    const url = await signed("/sig/data.csv");
+    expect(url.startsWith(`${base}/api/v1/drive/blob?`)).toBe(true);
+    const res = await fetch(url);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/csv");
+    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await res.text()).toBe("a,b\n1,2\n");
+  });
+  it("serve a stored page as opaque bytes, never as a page", async () => {
+    await put("/sig/page.html", "<script>alert(1)</script>", TOK_U1, "&mime=text/html");
+    const res = await fetch(await signed("/sig/page.html"));
+    expect(res.headers.get("content-type")).toBe("application/octet-stream");
+    expect(res.headers.get("content-disposition")).toBe("attachment");
+  });
+  it("refuse a changed key, a changed signature, a missing part, and another route's token", async () => {
+    const url = new URL(await signed("/sig/data.csv"));
+    const other = new URL(await signed("/sig/page.html"));
+    const swapped = new URL(url);
+    swapped.searchParams.set("key", other.searchParams.get("key")!);
+    const bad = new URL(url);
+    bad.searchParams.set("sig", "0".repeat(64));
+    const noSig = new URL(url);
+    noSig.searchParams.delete("sig");
+    for (const target of [swapped, bad, noSig]) expect((await fetch(target)).status, target.search).toBe(403);
+    expect((await fetch(`${base}/api/v1/drive/blob`)).status).toBe(403);
+  });
+  it("stop working at the expiry", async () => {
+    const url = await signed("/sig/data.csv", "&expires=1");
+    expect((await fetch(url)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 2100));
+    expect((await fetch(url)).status).toBe(403);
   });
 });
 

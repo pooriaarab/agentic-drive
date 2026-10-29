@@ -2,6 +2,7 @@
   // Local and deploy config. Create the bucket with `wrangler r2 bucket create agentic-drive-files --jurisdiction eu`.
   // Create the database with `wrangler d1 create agentic-drive --location weur`, then put its id below.
   // Set tokens with `wrangler secret put DRIVE_API_TOKENS`. Without it, every request gets 401.
+  // Set `DRIVE_URL_SECRET` (32 bytes or more) and `DRIVE_PUBLIC_URL`. Without them, every request gets 503.
   "name": "agentic-drive",
   "main": "src/worker.ts",
   "compatibility_date": "2026-01-01",

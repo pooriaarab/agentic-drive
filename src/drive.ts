@@ -1,15 +1,13 @@
-import { StoreConflictError, type Blobs, type Scalar, type Store, type StoreOps } from "./ports.js";
+import type { Blobs, Doc, Store, StoreOps } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
+/** One claim doc per live name. Its id is a hash of the owner, the folder, and the name. */
+const NAMES = "drive_names";
 
 export const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"] as const;
 export type ActorKind = (typeof ACTOR_KINDS)[number];
 
-/** Rules a database must enforce itself. Two live items never share a name in one folder. */
-export const DRIVE_UNIQUE_INDEXES: { name: string; collection: string; fields: string[]; where: Record<string, Scalar> }[] = [
-  { name: "drive_live_names", collection: NODES, fields: ["owner", "parentId", "nameKey"], where: { trashed: false } },
-];
 export type Actor = { id: string; kind: ActorKind };
 /** `owner` is the drive's owner. `actor` is who acts for them. */
 export type Ctx = { owner: string; actor: Actor };
@@ -36,6 +34,8 @@ export type Node = {
   updatedBy: Actor;
   trashed: boolean;
   trashedAt: number | null;
+  /** Set while a purge deletes the item. Nothing can see or change it then. */
+  purging: boolean;
 };
 
 export type ErrorCode =
@@ -80,6 +80,8 @@ export type Drive = ReturnType<typeof createDrive>;
 
 const MAX_PATH_SEGMENTS = 64;
 const DEFAULT_MAX_DEPTH = 256;
+/** Nodes a purge marks or deletes in one transaction. A Worker call has a cap on database queries. */
+const CHUNK = 25;
 export const DEFAULT_URL_SECONDS = 900;
 export const MAX_URL_SECONDS = 3600;
 const OPAQUE = "application/octet-stream";
@@ -122,6 +124,26 @@ function splitPath(path: string) {
   return parts.map(parseName);
 }
 
+type Claim = { nodeId: string; owner: string; parentId: string };
+type Write = { collection: string; id: string; doc: Doc | null };
+
+/** The writes of one transaction. Every read comes first, then `apply` writes them all. */
+function batch() {
+  const writes: Write[] = [];
+  /** Folders made in this batch. They have no children yet, so nobody needs to read them. */
+  const fresh = new Set<string>();
+  return {
+    fresh,
+    put: (collection: string, id: string, doc: Doc) => void writes.push({ collection, id, doc }),
+    remove: (collection: string, id: string) => void writes.push({ collection, id, doc: null }),
+    async apply(ops: StoreOps) {
+      for (const w of writes) await (w.doc ? ops.put(w.collection, w.id, w.doc) : ops.delete(w.collection, w.id));
+    },
+  };
+}
+
+const claimId = (owner: string, parentId: string, key: string) => sha256Hex(new TextEncoder().encode(`${owner}\0${parentId}\0${key}`));
+
 export function createDrive(deps: DriveDeps) {
   const { store, blobs } = deps;
   const now = deps.now ?? Date.now;
@@ -133,13 +155,13 @@ export function createDrive(deps: DriveDeps) {
 
   const rootNode = (ctx: Ctx): Node => ({
     id: ROOT_ID, owner: ctx.owner, parentId: "", kind: "folder", name: "", nameKey: "", size: 0, mime: null, hash: null,
-    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: ctx.actor, updatedBy: ctx.actor, trashed: false, trashedAt: null,
+    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: ctx.actor, updatedBy: ctx.actor, trashed: false, trashedAt: null, purging: false,
   });
   const who = (ctx: Ctx): Actor => ({ id: ctx.actor.id, kind: ctx.actor.kind });
 
-  async function fetch(ops: StoreOps, ctx: Ctx, id: string): Promise<Node | null> {
+  async function fetch(ops: StoreOps, ctx: Ctx, id: string, purgeAgain = false): Promise<Node | null> {
     const node = id === ROOT_ID ? rootNode(ctx) : await ops.get<Node>(NODES, id);
-    return node && (await can(ctx, "read", node)) ? node : null;
+    return node && (purgeAgain || node.purging !== true) && (await can(ctx, "read", node)) ? node : null;
   }
   async function need(ctx: Ctx, action: Action, node: Node) {
     if (!(await can(ctx, action, node))) throw new DriveError("FORBIDDEN", `not allowed to ${action} ${node.id}`);
@@ -153,8 +175,17 @@ export function createDrive(deps: DriveDeps) {
       cursor = page.nextCursor;
     }
   }
-  const liveChild = async (ops: StoreOps, ctx: Ctx, parentId: string, key: string) =>
-    (await children(ops, ctx.owner, parentId, { nameKey: key })).find((n) => !n.trashed) ?? null;
+  /**
+   * Who holds a name in a folder. `taken` is true for any claim doc, even one that names no live item:
+   * a claim that cannot be explained still blocks the name. `node` is set only for a live item.
+   */
+  async function claimed(ops: StoreOps, owner: string, parentId: string, key: string) {
+    const claim = await ops.get<Claim>(NAMES, await claimId(owner, parentId, key));
+    const found = claim ? await ops.get<Node>(NODES, claim.nodeId) : null;
+    const node = found && !found.trashed && found.purging !== true && found.parentId === parentId && found.nameKey === key ? found : null;
+    return { taken: claim !== null, node };
+  }
+  const liveChild = async (ops: StoreOps, ctx: Ctx, parentId: string, key: string) => (await claimed(ops, ctx.owner, parentId, key)).node;
 
   /** True when the node and each ancestor are out of the trash. */
   async function isLive(ops: StoreOps, ctx: Ctx, node: Node) {
@@ -191,19 +222,20 @@ export function createDrive(deps: DriveDeps) {
     const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
     for (let n = 2; ; n++) {
       const candidate = `${base} (${n})${ext}`;
-      if (!(await liveChild(ops, ctx, parentId, parseName(candidate).key))) return candidate;
+      if (!(await claimed(ops, ctx.owner, parentId, parseName(candidate).key)).taken) return candidate;
     }
   }
 
-  /** Walks the parents of a path. With `create`, missing folders appear. */
-  async function folderAt(ops: StoreOps, ctx: Ctx, segs: ReturnType<typeof splitPath>, create: boolean) {
+  /** Walks the parents of a path. With `create`, missing folders are added to the batch. */
+  async function folderAt(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, segs: ReturnType<typeof splitPath>, create: boolean) {
     let node = rootNode(ctx);
     for (const seg of segs) {
       if (node.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${node.name} is not a folder`);
-      let next = await liveChild(ops, ctx, node.id, seg.key);
+      let next = w.fresh.has(node.id) ? null : await liveChild(ops, ctx, node.id, seg.key);
       if (!next) {
         if (!create) throw new DriveError("NOT_FOUND", `no folder ${seg.name}`);
-        next = (await insert(ops, ctx, node, seg.name, { kind: "folder" }, "fail")).node;
+        next = (await insert(ops, w, ctx, node, seg.name, { kind: "folder" }, "fail")).node;
+        w.fresh.add(next.id);
       }
       node = next;
     }
@@ -212,15 +244,16 @@ export function createDrive(deps: DriveDeps) {
   }
 
   type NewFields = Partial<Pick<Node, "kind" | "size" | "mime" | "hash" | "ref" | "blobKey">>;
-  async function insert(ops: StoreOps, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict) {
+  async function insert(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict) {
     let { name, key } = parseName(rawName);
-    await need(ctx, "write", parent);
-    const clash = await liveChild(ops, ctx, parent.id, key);
-    if (clash) {
-      if (onConflict === "replace" && clash.kind === "file" && fields.kind === "file") {
-        const node: Node = { ...clash, ...fields, updatedAt: now(), updatedBy: who(ctx) } as Node;
-        await ops.put(NODES, node.id, node);
-        return { node, replacedBlob: clash.blobKey };
+    const empty = w.fresh.has(parent.id);
+    if (!empty) await need(ctx, "write", parent);
+    const slot = empty ? null : await claimed(ops, ctx.owner, parent.id, key);
+    if (slot?.taken) {
+      if (onConflict === "replace" && slot.node?.kind === "file" && fields.kind === "file") {
+        const node: Node = { ...slot.node, ...fields, updatedAt: now(), updatedBy: who(ctx) } as Node;
+        w.put(NODES, node.id, node);
+        return { node, replacedBlob: slot.node.blobKey };
       }
       if (onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
       name = await freeName(ops, ctx, parent.id, name);
@@ -229,22 +262,23 @@ export function createDrive(deps: DriveDeps) {
     const t = now();
     const node: Node = {
       id: newId(), owner: ctx.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
-      ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null,
+      ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null, purging: false,
       ...fields,
     };
-    await ops.put(NODES, node.id, node);
+    w.put(NODES, node.id, node);
+    w.put(NAMES, await claimId(ctx.owner, parent.id, key), { nodeId: node.id, owner: ctx.owner, parentId: parent.id });
     return { node, replacedBlob: null as string | null };
   }
 
   /** Splits a path into its parent folder and the new item's name. */
-  async function parentAndName(ops: StoreOps, ctx: Ctx, path: string, parents: boolean) {
+  async function parentAndName(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, path: string, parents: boolean) {
     const segs = splitPath(path);
     const last = segs.pop();
     if (!last) throw new DriveError("IS_ROOT", "the root already exists");
-    return { parent: await folderAt(ops, ctx, segs, parents), name: last.name };
+    return { parent: await folderAt(ops, w, ctx, segs, parents), name: last.name };
   }
 
-  async function relocate(ops: StoreOps, ctx: Ctx, node: Node, destLoc: string, opts: { name?: string; onConflict?: OnConflict }) {
+  async function relocate(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, node: Node, destLoc: string, opts: { name?: string; onConflict?: OnConflict }) {
     if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
     const dest = await resolve(ops, ctx, destLoc);
     if (dest.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${dest.name} is not a folder`);
@@ -259,14 +293,20 @@ export function createDrive(deps: DriveDeps) {
     await need(ctx, "write", node);
     await need(ctx, "write", dest);
     let { name, key } = parseName(opts.name ?? node.name);
-    const clash = await liveChild(ops, ctx, dest.id, key);
-    if (clash && clash.id !== node.id) {
+    const slot = await claimed(ops, ctx.owner, dest.id, key);
+    if (slot.taken && slot.node?.id !== node.id) {
       if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
       name = await freeName(ops, ctx, dest.id, name);
       key = parseName(name).key;
     }
     const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), updatedBy: who(ctx) };
-    await ops.put(NODES, moved.id, moved);
+    w.put(NODES, moved.id, moved);
+    const [from, to] = [await claimId(ctx.owner, node.parentId, node.nameKey), await claimId(ctx.owner, dest.id, key)];
+    if (from !== to) {
+      // Release only a claim that this item holds.
+      if ((await ops.get<Claim>(NAMES, from))?.nodeId === node.id) w.remove(NAMES, from);
+      w.put(NAMES, to, { nodeId: moved.id, owner: ctx.owner, parentId: dest.id });
+    }
     return moved;
   }
 
@@ -286,13 +326,13 @@ export function createDrive(deps: DriveDeps) {
       onOrphan(key, error);
     }
   }
-  async function ownerNodes(ctx: Ctx): Promise<Node[]> {
+  async function ownerNodes(ctx: Ctx, withMarked = false): Promise<Node[]> {
     const root = rootNode(ctx);
     if (!(await can(ctx, "read", root))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
     const out: Node[] = [];
     for (let cursor: string | undefined; ; ) {
       const page = await store.query<Node>(NODES, { where: { owner: ctx.owner }, limit: 100, cursor });
-      out.push(...page.items.map((item) => item.data));
+      out.push(...page.items.map((item) => item.data).filter((node) => withMarked || node.purging !== true));
       if (!page.nextCursor) return out;
       cursor = page.nextCursor;
     }
@@ -310,28 +350,82 @@ export function createDrive(deps: DriveDeps) {
     return null;
   }
 
-  /** A store conflict means another writer won the name, or the data kept changing. Say so as a drive error. */
+  /**
+   * A transaction that loses a name race runs again, finds the claim, and fails with NAME_TAKEN.
+   * One that keeps losing for another reason gives up, and the store says so in its message.
+   */
   async function transact<R>(fn: (tx: StoreOps) => Promise<R>): Promise<R> {
     try {
       return await store.transaction(fn);
     } catch (error) {
-      if (error instanceof StoreConflictError) throw new DriveError("NAME_TAKEN", "that name was taken, or the drive changed at the same time. Try again.");
+      if (error instanceof Error && /transaction kept conflicting/.test(error.message)) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
       throw error;
     }
   }
 
   /**
-   * Blobs go first (a delete is idempotent), then rows in chunks, children before parents. A
-   * failure at any step leaves rows that still name what is left, so the same call can run again.
+   * Deletes nodes for good, and returns how many it deleted. Step 1 marks each node that still looks as
+   * it did when it was read. A marked node is invisible and cannot be restored, moved, or changed, so
+   * nothing can bring it back while its bytes go. A node that changed before its mark stays untouched,
+   * with its bytes and its name. With a `top` item, parents come before children, and a node is marked
+   * only when its parent is: a subtree that a restore moved out is skipped whole. If the top item
+   * changed, nothing is deleted. Step 2 deletes the blobs of the marked nodes, then their rows
+   * (children first) and their claims. Work comes in small chunks, and each chunk commits, so a call
+   * that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
+   * new mark, so the same call can run again until it is done.
    */
-  async function removeNodes(nodes: Node[]) {
-    for (const node of nodes) if (node.blobKey) await blobs.delete(node.blobKey);
-    const rows = [...nodes].reverse();
-    for (let i = 0; i < rows.length; i += 400) {
-      await store.transaction(async (tx) => {
-        for (const node of rows.slice(i, i + 400)) await tx.delete(NODES, node.id);
+  async function removeNodes(nodes: Node[], top?: Node): Promise<number> {
+    const unchanged = (now: Node | null, seen: Node) =>
+      now !== null && now.trashed === seen.trashed && now.parentId === seen.parentId && now.updatedAt === seen.updatedAt;
+    const marked: Node[] = [];
+    const markedIds = new Set<string>();
+    for (let i = 0; i < nodes.length; i += CHUNK) {
+      const slice = nodes.slice(i, i + CHUNK);
+      for (const node of slice) {
+        if (node.purging === true) {
+          marked.push(node);
+          markedIds.add(node.id);
+        }
+      }
+      const found = await transact(async (tx) => {
+        const out: Node[] = [];
+        const ids = new Set(markedIds);
+        for (const node of slice) {
+          if (node.purging === true) continue;
+          if (top && node.id !== top.id && !ids.has(node.parentId)) continue;
+          const current = await tx.get<Node>(NODES, node.id);
+          if (unchanged(current, node)) {
+            out.push(current as Node);
+            ids.add(node.id);
+          }
+        }
+        for (const node of out) await tx.put(NODES, node.id, { ...node, purging: true });
+        return out;
+      });
+      for (const node of found) {
+        marked.push(node);
+        markedIds.add(node.id);
+      }
+      if (top && i === 0 && !markedIds.has(top.id)) throw new DriveError("BUSY", `${top.name} changed during the purge. Nothing was deleted.`);
+    }
+    const rows = marked.reverse();
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
+      await transact(async (tx) => {
+        const held: { node: Node; claim: string | null; owns: boolean }[] = [];
+        for (const node of chunk) {
+          // A trashed item gave up its name when it was trashed, and another item may hold it now.
+          const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
+          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id });
+        }
+        for (const { node, claim, owns } of held) {
+          await tx.delete(NODES, node.id);
+          if (claim && owns) await tx.delete(NAMES, claim);
+        }
       });
     }
+    return marked.length;
   }
 
   const api = {
@@ -344,16 +438,19 @@ export function createDrive(deps: DriveDeps) {
       const folder = await resolve(store, ctx, loc);
       if (folder.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${folder.name} is not a folder`);
       return (await children(store, folder.owner, folder.id))
-        .filter((n) => !n.trashed)
+        .filter((n) => !n.trashed && n.purging !== true)
         .sort((a, b) => (a.nameKey < b.nameKey ? -1 : a.nameKey > b.nameKey ? 1 : a.name < b.name ? -1 : 1));
     },
 
     async mkdir(ctx: Ctx, path: string, opts: { parents?: boolean } = {}): Promise<Node> {
       return transact(async (tx) => {
-        const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
-        const existing = await liveChild(tx, ctx, parent.id, parseName(name).key);
+        const w = batch();
+        const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
+        const existing = w.fresh.has(parent.id) ? null : await liveChild(tx, ctx, parent.id, parseName(name).key);
         if (opts.parents && existing?.kind === "folder") return existing;
-        return (await insert(tx, ctx, parent, name, { kind: "folder" }, "fail")).node;
+        const { node } = await insert(tx, w, ctx, parent, name, { kind: "folder" }, "fail");
+        await w.apply(tx);
+        return node;
       });
     },
 
@@ -369,8 +466,11 @@ export function createDrive(deps: DriveDeps) {
       let committed: { node: Node; replacedBlob: string | null };
       try {
         committed = await transact(async (tx) => {
-          const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
-          return insert(tx, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
+          const w = batch();
+          const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
+          const result = await insert(tx, w, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
+          await w.apply(tx);
+          return result;
         });
       } catch (error) {
         // The commit may have landed before the error. Keep the blob unless no node holds it.
@@ -385,8 +485,11 @@ export function createDrive(deps: DriveDeps) {
     async putRef(ctx: Ctx, path: string, ref: string, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
       return transact(async (tx) => {
-        const { parent, name } = await parentAndName(tx, ctx, path, opts.parents ?? false);
-        return (await insert(tx, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "replace" ? "fail" : opts.onConflict ?? "fail")).node;
+        const w = batch();
+        const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
+        const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "replace" ? "fail" : opts.onConflict ?? "fail");
+        await w.apply(tx);
+        return node;
       });
     },
 
@@ -399,8 +502,9 @@ export function createDrive(deps: DriveDeps) {
     },
 
     /**
-     * A time-limited URL to fetch the bytes straight from the blob store. It always serves an
-     * attachment with the stored type. Trashing an item does not revoke a link already issued.
+     * A time-limited URL to fetch the bytes. The Worker that verifies it serves an attachment with a
+     * safe type, because the shared Blobs port cannot sign those headers yet. Trashing an item does
+     * not revoke a link already issued.
      */
     async downloadUrl(ctx: Ctx, loc: string, expiresInSeconds = DEFAULT_URL_SECONDS): Promise<string> {
       if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 1 || expiresInSeconds > MAX_URL_SECONDS) {
@@ -408,19 +512,25 @@ export function createDrive(deps: DriveDeps) {
       }
       const node = await resolve(store, ctx, loc);
       if (node.kind !== "file" || !node.blobKey) throw new DriveError("NOT_A_FILE", `${node.name} is not a file`);
-      return blobs.signedUrl(node.blobKey, {
-        method: "GET", expiresInSeconds, responseContentDisposition: "attachment", responseContentType: safeMime(node.mime),
-      });
+      return blobs.signedUrl(node.blobKey, { method: "GET", expiresInSeconds });
     },
 
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
-      return transact(async (tx) => relocate(tx, ctx, await resolve(tx, ctx, src), destLoc, opts));
+      return transact(async (tx) => {
+        const w = batch();
+        const moved = await relocate(tx, w, ctx, await resolve(tx, ctx, src), destLoc, opts);
+        await w.apply(tx);
+        return moved;
+      });
     },
 
     async rename(ctx: Ctx, loc: string, name: string): Promise<Node> {
       return transact(async (tx) => {
+        const w = batch();
         const node = await resolve(tx, ctx, loc);
-        return relocate(tx, ctx, node, node.parentId, { name });
+        const renamed = await relocate(tx, w, ctx, node, node.parentId, { name });
+        await w.apply(tx);
+        return renamed;
       });
     },
 
@@ -430,9 +540,13 @@ export function createDrive(deps: DriveDeps) {
         const node = await resolve(tx, ctx, loc);
         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot trash the root");
         await need(ctx, "delete", node);
+        const claim = await claimId(node.owner, node.parentId, node.nameKey);
+        const held = await tx.get<Claim>(NAMES, claim);
         const t = now();
         const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, updatedBy: who(ctx) };
         await tx.put(NODES, node.id, trashed);
+        // Trashing frees the name. Release only a claim that this item holds.
+        if (held?.nodeId === node.id) await tx.delete(NAMES, claim);
         return trashed;
       });
     },
@@ -441,7 +555,7 @@ export function createDrive(deps: DriveDeps) {
     async listTrash(ctx: Ctx): Promise<Node[]> {
       const page = await store.query<Node>(NODES, { where: { owner: ctx.owner, trashed: true }, limit: 1000 });
       const out: Node[] = [];
-      for (const { data } of page.items) if (await can(ctx, "read", data)) out.push(data);
+      for (const { data } of page.items) if (data.purging !== true && (await can(ctx, "read", data))) out.push(data);
       return out.sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
     },
 
@@ -457,13 +571,14 @@ export function createDrive(deps: DriveDeps) {
           throw new DriveError("PARENT_GONE", `the folder of ${node.name} is gone or in the trash`);
         }
         let { name, key } = parseName(node.name);
-        if (await liveChild(tx, ctx, parent.id, key)) {
+        if ((await claimed(tx, ctx.owner, parent.id, key)).taken) {
           if (opts.onConflict !== "rename") throw new DriveError("NAME_TAKEN", `"${name}" already exists`);
           name = await freeName(tx, ctx, parent.id, name);
           key = parseName(name).key;
         }
         const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), updatedBy: who(ctx) };
         await tx.put(NODES, restored.id, restored);
+        await tx.put(NAMES, await claimId(ctx.owner, parent.id, key), { nodeId: restored.id, owner: ctx.owner, parentId: parent.id });
         return restored;
       });
     },
@@ -478,7 +593,7 @@ export function createDrive(deps: DriveDeps) {
       const hits: { node: Node; path: string }[] = [];
       for (const node of all) {
         const path = pathIn(byId, node, true);
-        if (path === null) continue;
+        if (path === null || node.purging) continue;
         if (needle !== undefined && !node.nameKey.includes(needle)) continue;
         if (q.kind && node.kind !== q.kind) continue;
         if (q.mime && !(q.mime.endsWith("/*") ? node.mime?.startsWith(q.mime.slice(0, -1)) : node.mime === q.mime)) continue;
@@ -502,24 +617,22 @@ export function createDrive(deps: DriveDeps) {
       return out;
     },
 
-    /** Deletes every item and byte of the owner for good. Only the owner may do this, never an agent for them. */
-    /** Deletes every item and blob of one owner. Blobs go first, so a failure can be retried. */
+    /** Deletes every item and blob of the owner for good. Only the owner may do this, never an agent for them. A failed call can run again. */
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
       if (ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
       await need(ctx, "delete", rootNode(ctx));
       let removed = 0;
       // A file created during a pass shows up in the next one.
       for (let pass = 0; pass < 5; pass++) {
-        const all = await ownerNodes(ctx);
+        const all = await ownerNodes(ctx, true);
         if (all.length === 0) return { removed };
-        await removeNodes(all);
-        removed += all.length;
+        removed += await removeNodes(all);
       }
       throw new DriveError("BUSY", "the drive kept changing while it was deleted. Run it again.");
     },
     /** Deletes a trashed item for good, with everything under it and all their bytes. */
     async purge(ctx: Ctx, id: string): Promise<{ removed: number }> {
-      const top = await fetch(store, ctx, id);
+      const top = await fetch(store, ctx, id, true);
       if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
       if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
       await need(ctx, "delete", top);
@@ -530,8 +643,7 @@ export function createDrive(deps: DriveDeps) {
         nodes.push(node);
         if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
       }
-      await removeNodes(nodes);
-      return { removed: nodes.length };
+      return { removed: await removeNodes(nodes, top) };
     },
 
   };

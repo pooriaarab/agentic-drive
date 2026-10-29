@@ -1,9 +1,9 @@
 // Ways search, export, and hard delete can leak or lose data.
 import { describe, expect, it, beforeEach } from "vitest";
-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
 import { buildExport } from "./export.js";
-import type { Blobs } from "./ports.js";
+import type { Blobs } from "agentic-identity";
 import { readZip } from "./zip.js";
 
 const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };

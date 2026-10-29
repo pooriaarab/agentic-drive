@@ -1,8 +1,8 @@
 // Failure modes first. Each case names a way the drive can lose bytes or build a cycle.
 import { describe, expect, it } from "vitest";
-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
 import { createDrive, type Ctx } from "./drive.js";
-import type { Blobs, Store } from "./ports.js";
+import type { Blobs, Store } from "agentic-identity";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const text = (data: Uint8Array) => new TextDecoder().decode(data);

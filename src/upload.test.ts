@@ -1,9 +1,9 @@
 // Ways an upload can fail: too big, wrong type claim, broken stream, name clash.
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
-import type { Blobs, Store } from "./ports.js";
+import type { Blobs, Store } from "agentic-identity";
 import { sniffMime, upload } from "./upload.js";
 
 const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };

@@ -1,9 +1,9 @@
 // Failure modes first. Each case names a way hard delete or export can leak, lose, or escape.
 import { describe, expect, it } from "vitest";
-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
 import { buildExport } from "./export.js";
-import type { Blobs, Store } from "./ports.js";
+import type { Blobs, Store } from "agentic-identity";
 import { readZip, safeEntryName, writeZip } from "./zip.js";
 
 const me: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };
@@ -56,10 +56,14 @@ describe("purge deletes blobs before rows", () => {
 
 describe("deleteAll deletes blobs first and misses nothing", () => {
   it("keeps every row when a blob delete fails, then removes all on retry", async () => {
-    const { drive, inner, state } = setup((call) => call === 2);
+    const { drive, store, inner, state } = setup((call) => call === 2);
     for (let i = 0; i < 4; i++) await drive.putFile(me, `/f${i}.txt`, b("x"));
     await expect(drive.deleteAll(me)).rejects.toThrow("storage 503");
-    expect(await drive.list(me, "/")).toHaveLength(4);
+    // The items are marked for erase and hidden, and every row stays so the retry can finish.
+    expect(await drive.list(me, "/")).toHaveLength(0);
+    expect((await store.query("drive_nodes", { limit: 100 })).items).toHaveLength(4);
+    // An export leaves out items that are marked for erase.
+    expect((await drive.exportData(me)).map((e) => e.node.name)).toEqual([]);
     state.failing = false;
     expect(await drive.deleteAll(me)).toEqual({ removed: 4 });
     expect(await blobKeys(drive, inner)).toEqual([]);
