@@ -27,7 +27,7 @@
 //  26. A move or restore reads an unbounded subtree, and a big folder can never move.
 //  27. rename("/") fails with a plain error, not IS_ROOT.
 //  28. The root claims it was made by a person when a machine owns the drive.
-//  29. An editor moves an item into a folder they own, and becomes its owner.
+//  29. An editor, or an agent of an editor with fewer scopes, moves an item into a folder they own, and becomes its owner.
 //  30. Counting a height reads file pages, so a folder of files runs past a query cap.
 //  31. A big folder cannot move up, rename, or restore to its own parent, because its height is counted when it cannot get deeper.
 //  32. mkdir -p returns an existing folder whose sharing record is gone.
@@ -425,7 +425,11 @@ describe("depth, scope, and in-place changes", () => {
     await drive.shareWith(A, "/g", "bob", "owner");
     const [x, f, g] = [await drive.stat(A, "/f/x.txt"), await drive.stat(A, "/f"), await drive.stat(A, "/g")];
     await fails(drive.move(B, x.id, g.id), "FORBIDDEN");
+    // An agent with fewer scopes than its person must not do what the person may not.
+    const bobBot = ctxOf(principal("bobbot", "agent_of_human", ["drive:write"], [{ id: "bob", kind: "human" }, { id: "bobbot", kind: "agent_of_human" }]));
+    await fails(drive.move(bobBot, x.id, g.id), "FORBIDDEN");
     await drive.trash(B, x.id);
+    await fails(drive.restore(bobBot, x.id, { parentId: g.id }), "FORBIDDEN");
     await fails(drive.restore(B, x.id, { parentId: g.id }), "FORBIDDEN");
     await drive.restore(B, x.id);
     await fails(drive.createLink(B, x.id, { role: "viewer" }), "FORBIDDEN");

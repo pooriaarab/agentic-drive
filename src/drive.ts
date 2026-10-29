@@ -285,7 +285,9 @@ export function createDrive(deps: DriveDeps) {
   }
   /** An item takes the roles of its new folder. A caller may not climb to owner by moving an item they only edit. */
   async function noClimb(ctx: Ctx, node: Node, dest: Node) {
-    if ((await can(ctx, "delete", dest)) && !(await can(ctx, "delete", node))) {
+    // Compare the roles of the person at the root of the chain. An agent's scopes would hide a role, so lift them here.
+    const person: Ctx = ctx.principal ? { ...ctx, principal: { ...ctx.principal, scopes: ["drive:admin"] } } : ctx;
+    if ((await can(person, "delete", dest)) && !(await can(person, "delete", node))) {
       throw new DriveError("FORBIDDEN", "moving into a folder you own needs owner on the item");
     }
   }
