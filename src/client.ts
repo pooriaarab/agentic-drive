@@ -55,7 +55,13 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ApiErrorCode>([
 
 type Check<T> = (value: unknown) => value is T;
 const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const isItem: Check<Item> = (v): v is Item => record(v) && typeof v.id === "string" && typeof v.name === "string" && (v.kind === "folder" || v.kind === "file" || v.kind === "ref") && typeof v.size === "number" && typeof v.trashed === "boolean";
+const text = (v: unknown) => typeof v === "string";
+const orNull = (test: (v: unknown) => boolean) => (v: unknown) => v === null || test(v);
+const num = (v: unknown) => typeof v === "number";
+const actor = (v: unknown) => record(v) && text(v.id) && text(v.kind);
+const isItem: Check<Item> = (v): v is Item =>
+  record(v) && text(v.id) && text(v.owner) && text(v.parentId) && text(v.name) && (v.kind === "folder" || v.kind === "file" || v.kind === "ref") && num(v.size) && orNull(text)(v.mime) && orNull(text)(v.hash) &&
+  orNull(text)(v.ref) && num(v.createdAt) && num(v.updatedAt) && actor(v.createdBy) && actor(v.updatedBy) && text(v.createdById) && text(v.updatedById) && typeof v.trashed === "boolean" && orNull(num)(v.trashedAt);
 const isPathItem: Check<PathItem> = (v): v is PathItem => isItem(v) && typeof (v as { path?: unknown }).path === "string";
 const listOf = <T>(check: Check<T>): Check<T[]> => (v): v is T[] => Array.isArray(v) && v.every(check);
 const shape = <T>(test: (v: Record<string, unknown>) => boolean): Check<T> => (v): v is T => record(v) && test(v);
@@ -146,13 +152,14 @@ export function createClient(options: ClientOptions) {
       value = await response.json();
     } catch (error) {
       if (init.signal?.aborted) throw error;
+      if (!(error instanceof SyntaxError)) throw new DriveApiError("NETWORK_ERROR", 0, "the connection dropped while the body came in");
       throw new DriveApiError("BAD_RESPONSE", response.status, "the answer is not JSON");
     }
     if (!check(value)) throw new DriveApiError("BAD_RESPONSE", response.status, "the answer is not the shape that the API sends");
     return value;
   }
 
-  /** The bytes, checked against the hash that the server sends. */
+  /** The bytes. With `verify`, they must match the hash that the server sends. */
   async function bytes(path: string, init: Parameters<typeof send>[2], verify = false): Promise<Downloaded> {
     const response = await send("GET", path, init);
     let data: Uint8Array;
@@ -163,7 +170,9 @@ export function createClient(options: ClientOptions) {
       throw new DriveApiError("NETWORK_ERROR", 0, "the connection dropped while the body came in");
     }
     const sha256 = response.headers.get("x-content-sha256") ?? "";
-    if (verify && sha256 !== "") {
+    if (verify) {
+      // The Worker sends the hash of every stored file. An answer without it is not the API's.
+      if (!/^[0-9a-f]{64}$/.test(sha256)) throw new DriveApiError("BAD_RESPONSE", response.status, "the answer has no valid x-content-sha256");
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource));
       if (Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("") !== sha256) throw new DriveApiError("BAD_RESPONSE", response.status, "the bytes do not match their hash");
     }
@@ -175,8 +184,11 @@ export function createClient(options: ClientOptions) {
 
   const isUrl = shape<{ url: string; expiresInSeconds: number }>((v) => typeof v.url === "string" && typeof v.expiresInSeconds === "number");
   const isShares = shape<{ grants: { subjectKind: SubjectKind; subjectId: string; role: Role }[]; links: { id: string; role: Role; signedInOnly: boolean; expiresAt: number | null; revoked: boolean }[]; invites: { id: string; role: Role; email: string | null; handle: string | null; expiresAt: number | null; accepted: boolean }[] }>(
-    (v) => Array.isArray(v.grants) && Array.isArray(v.links) && Array.isArray(v.invites));
-  const isHome = shape<{ apps: Record<string, number>; files: number; items: (PathItem & { app: string | null })[] }>((v) => record(v.apps) && typeof v.files === "number" && listOf(isPathItem)(v.items));
+    (v) =>
+      listOf(shape((g) => (g.subjectKind === "human" || g.subjectKind === "agent") && text(g.subjectId) && text(g.role)))(v.grants) &&
+      listOf(shape((l) => text(l.id) && text(l.role) && typeof l.signedInOnly === "boolean" && orNull(num)(l.expiresAt) && typeof l.revoked === "boolean"))(v.links) &&
+      listOf(shape((i) => text(i.id) && text(i.role) && orNull(text)(i.email) && orNull(text)(i.handle) && orNull(num)(i.expiresAt) && typeof i.accepted === "boolean"))(v.invites));
+  const isHome = shape<{ apps: Record<string, number>; files: number; items: (PathItem & { app: string | null })[] }>((v) => record(v.apps) && Object.values(v.apps).every(num) && num(v.files) && listOf(shape((i) => isPathItem(i) && orNull(text)((i as Record<string, unknown>).app)))(v.items));
   const isId = shape<{ id: string }>((v) => typeof v.id === "string");
   const isLink = shape<{ id: string; token: string }>((v) => typeof v.id === "string" && typeof v.token === "string");
 

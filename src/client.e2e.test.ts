@@ -228,6 +228,12 @@ describe("the client without a server", () => {
     expect(unknown).toMatchObject({ code: "BAD_RESPONSE", status: 429 });
     const wrongBytes = answering(() => new Response("tampered", { headers: { "x-content-sha256": createHash("sha256").update("original").digest("hex") } }));
     expect(await failure(wrongBytes.download("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => new Response("tampered")).download("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => Response.json({ grants: [1], links: ["x"], invites: [null] })).shares("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => Response.json({ apps: { docs: "many" }, files: 0, items: [] })).home())).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => Response.json({ id: "x", name: "n", kind: "file", size: 1, trashed: false })).stat("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    const cut = answering(() => new Response(new ReadableStream({ start: (c) => { c.enqueue(new TextEncoder().encode("[{")); c.error(new Error("reset")); } })));
+    expect(await failure(cut.list("/"))).toMatchObject({ code: "NETWORK_ERROR", status: 0 });
     const dropped = answering(() => new Response(new ReadableStream({ start: (c) => c.error(new Error("reset")) })));
     expect(await failure(dropped.download("/a"))).toMatchObject({ code: "NETWORK_ERROR", status: 0 });
   });
