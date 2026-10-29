@@ -115,7 +115,7 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 - Sharing is on in the Worker and in the SDK (`createDrive({ sharing })`). The CLI and the MCP server work on a local drive with one owner, so they do not share yet.
 - Drive writes the `resources` doc of each item itself, in the same transaction, because identity has no call that does it in a transaction. A drive with `sharing` off keeps no such docs, so turn it on at the start.
 - An invite sends no message. The caller passes the invite id on.
-- Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path, move, or restore fails with `TOO_DEEP`. A move or a restore of a folder reads its subtree once, outside the transaction, to count its height.
+- Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path, move, or restore fails with `TOO_DEEP`. A move or a restore of a folder reads up to 200 of its subfolders once, outside the transaction, to count its height. A bigger folder fails with `TOO_MANY_ITEMS`: move its parts one by one. An edit inside the folder while it moves can leave items past the cap. Nobody can then reach them, and moving the folder back up repairs it.
 - Every access check writes one audit row, and a transaction that runs again writes its rows again. The audit holds ids and kinds only: no emails and no content.
 - Data made before sharing has no `resources` docs, so its owner gets `NOT_FOUND`. There is no backfill yet.
 - A person who is not an owner cannot move an item into their own drive: the move fails with `CROSS_DRIVE`.

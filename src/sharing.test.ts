@@ -23,6 +23,10 @@
 //  22. A restore puts a subtree deeper than sharing can follow.
 //  23. A path walk reaches an item that an id lookup denies, because its sharing record is gone.
 //  24. A folder whose parent is missing takes new items.
+//  25. A restore reads a whole subtree for a caller who has no role, so cost and status show that the id exists.
+//  26. A move or restore reads an unbounded subtree, and a big folder can never move.
+//  27. rename("/") fails with a plain error, not IS_ROOT.
+//  28. The root claims it was made by a person when a machine owns the drive.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
@@ -380,5 +384,34 @@ describe("depth, scope, and in-place changes", () => {
     const inner = await drive.mkdir(A, "/a/b", { parents: true });
     await store.delete("drive_nodes", (await drive.stat(A, "/a")).id);
     await fails(drive.putFile(A, `${inner.id}/x.txt`, bytes("x")), "TRASHED");
+  });
+  it("reads no subtree for a caller with no role, and answers NOT_FOUND", async () => {
+    await drive.mkdir(A, "/big", { parents: true });
+    for (let i = 0; i < 30; i++) await drive.mkdir(A, `/big/f${i}`);
+    const big = await drive.stat(A, "/big");
+    await drive.trash(A, "/big");
+    let queries = 0;
+    const counted = createDrive({ store: { ...store, query: async (c, q) => (queries++, store.query(c, q)), transaction: (fn) => store.transaction(fn) } as typeof store, blobs: createMemoryBlobs(), sharing });
+    await fails(counted.restore(B, big.id, { parentId: "root" }), "NOT_FOUND");
+    expect(queries).toBeLessThan(5);
+  });
+  it("refuses to move a folder with too many subfolders to count, and moves a smaller one", { timeout: 120_000 }, async () => {
+    await drive.mkdir(A, "/dest");
+    await drive.mkdir(A, "/wide");
+    for (let i = 0; i < 201; i++) await drive.mkdir(A, `/wide/f${i}`);
+    await fails(drive.move(A, "/wide", "/dest"), "TOO_MANY_ITEMS");
+    expect((await drive.stat(A, "/wide")).parentId).toBe("root");
+    await drive.mkdir(A, "/narrow");
+    for (let i = 0; i < 150; i++) await drive.mkdir(A, `/narrow/f${i}`);
+    expect((await drive.move(A, "/narrow", "/dest")).name).toBe("narrow");
+  });
+  it("answers IS_ROOT to a rename of the root", async () => {
+    await fails(drive.rename(A, "/", "x"), "IS_ROOT");
+    await fails(drive.trash(A, "/"), "IS_ROOT");
+  });
+  it("names the kind of the owner on the root, whatever that kind is", async () => {
+    const robot = ctxOf(principal("robo", "agent"));
+    expect((await drive.stat(robot, "/")).createdBy).toEqual({ id: "robo", kind: "agent" });
+    expect((await drive.stat(A, "/")).createdBy).toEqual({ id: "alice", kind: "human" });
   });
 });
