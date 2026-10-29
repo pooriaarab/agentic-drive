@@ -47,18 +47,7 @@ await drive.trash(me, "/reports/2026");
 
 ## CLI and MCP
 
-```sh
-npx agentic-drive mkdir -p /reports
-npx agentic-drive upload ./q1.pdf /reports/
-npx agentic-drive search --name q1
-npx agentic-drive export ./everything.zip
-npx agentic-drive mcp
-```
-
-Every command prints JSON. A failure prints `{"error":{"code","message"}}` on stderr and exits 1.
-Exit code 2 means bad usage. Exit code 3 means no principal, or a key that is not valid.
-
-Every command except `help`, `version`, `principal`, and `key` needs a principal. Pass an API key with
+Every command except `help`, `--version`, `principal`, and `key` needs a principal. Pass an API key with
 `--token <key>` or `AGENTIC_DRIVE_TOKEN`. Prefer the variable: a flag shows in `ps`.
 `agentic-identity` resolves the key. The drive belongs to the person at the top of the
 principal's chain. An agent key marks each item it makes as made by a machine. A revoked,
@@ -73,9 +62,20 @@ npx agentic-drive key revoke <key>
 npx agentic-drive principal revoke helper             # stops its keys, and its agents
 ```
 
-`principal` and `key` need no key: anyone who can read the `--dir` folder can run them.
+`principal` and `key` need no key: anyone who can write to the `--dir` folder can run them.
 Set `--dir` (or `AGENTIC_DRIVE_DIR`) to choose the data folder.
 The local drive checks the owner only. It does not apply the scopes of an agent key.
+
+```sh
+npx agentic-drive mkdir -p /reports
+npx agentic-drive upload ./q1.pdf /reports/
+npx agentic-drive search --name q1
+npx agentic-drive export ./everything.zip
+npx agentic-drive mcp
+```
+
+Every command prints JSON, except `help`, `--version`, `mcp`, and `download` to `-`. A failure prints `{"error":{"code","message"}}` on stderr and exits 1.
+Exit code 2 means bad usage. Exit code 3 means no principal, or a key that is not valid.
 
 ## HTTP API
 
