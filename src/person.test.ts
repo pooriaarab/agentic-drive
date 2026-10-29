@@ -171,7 +171,7 @@ describe("export and erase of a person", () => {
     // Nothing about the owner of the item or its current name: only what the person wrote.
     expect(Object.keys(manifest.authored[0]).sort()).toEqual(["by", "created", "createdAt", "id", "kind", "updated", "updatedAt"]);
     expect(JSON.stringify(manifest.authored)).not.toContain("bob");
-    expect(manifest.shares.held).toEqual(expect.arrayContaining([{ subjectId: "alice", resourceId: team.id, role: "editor" }]));
+    expect(manifest.shares.held).toEqual(expect.arrayContaining([{ subjectKind: "human", subjectId: "alice", resourceId: team.id, role: "editor" }]));
     expect(manifest.shares.invitesCreated).toEqual([expect.objectContaining({ id: invite.id, role: "viewer", accepted: false })]);
     expect(manifest.audit.length).toBeGreaterThan(0);
     expect(manifest.audit.every((e: { principalKind: string }) => e.principalKind === "human")).toBe(true);
@@ -340,8 +340,12 @@ describe("export and erase of a person", () => {
     expect(forBob.agents[0].items.map((i: { name: string }) => i.name).sort()).toEqual(["agent-own.txt", "agent-shared"]);
     expect(forBob.shares.held.map((g: { subjectId: string }) => g.subjectId)).toContain("p_agent");
     expect(forBob.audit.some((e: { principalId: string }) => e.principalId === "p_agent")).toBe(true);
+    const agentItems = (await store.query("drive_nodes", { where: { owner: "p_agent" } })).items.map((n) => n.id);
+    const auditOf = async (ids: string[]) => (await store.query("audit", { limit: 500 })).items.filter((e) => ids.includes(e.data.resourceId as string));
+    expect((await auditOf(agentItems)).length).toBeGreaterThan(0);
     const result = await drive.erasePerson(B);
     expect(result.removed).toBeGreaterThanOrEqual(5);
+    expect(await auditOf(agentItems)).toEqual([]);
     expect((await store.query("drive_nodes", { where: { owner: "p_agent" } })).items).toEqual([]);
     expect((await store.query("grants", { where: { subjectId: "p_agent" } })).items).toEqual([]);
     expect((await store.query("invites", { limit: 10 })).items).toEqual([]);

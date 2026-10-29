@@ -175,11 +175,13 @@ const appOf = (node: Node): string | null => (node.kind === "ref" && node.ref ? 
 /** Stands in for the id of an erased person on items that other people own. */
 const ERASED = "erased";
 
-/** The kind that holds a role, for the kind of a principal. An unknown kind is an error: it never defaults to a person. */
+/**
+ * The kind that holds a role, for the kind of a principal at the root of a chain. Only the root of a chain holds a
+ * role, so only `human` and `agent` map. Any other kind, a delegated one too, is an error: it never defaults to a person.
+ */
 export function subjectKindOf(kind: unknown): SubjectKind {
-  if (kind === "human" || kind === "user_token") return "human";
-  if (kind === "agent" || kind === "agent_of_human" || kind === "agent_of_agent") return "agent";
-  throw new DriveError("INVALID_SHARE", `unknown principal kind: ${String(kind)}`);
+  if (kind === "human" || kind === "agent") return kind;
+  throw new DriveError("INVALID_SHARE", `a ${typeof kind === "string" ? kind : "missing"} principal cannot hold a role. Only the root of a chain can: human or agent`);
 }
 
 /** A subject from input: both parts are checked. */
@@ -535,11 +537,8 @@ export function createDrive(deps: DriveDeps) {
   }
   /** The person behind a call: the root of the chain. The kind is null unless the chain or the person in person says it. */
   const subjectOf = (ctx: Ctx) => ({ id: ctx.owner, kind: ctx.principal?.chain[0]?.kind ?? (isInPerson(ctx) ? ctx.actor.kind : null) });
-  /** Who can hold a grant among a person's actors: the person, and the agents with their own identity. A grant has the kind of its subject, so a person and an agent with one id stay apart. */
-  const heldBy = (id: string, actors: string[], ownedAgents: string[]): [string, SubjectKind][] => [
-    [id, subjectKindOf("human")],
-    ...ownedAgents.filter((a) => actors.includes(a)).map((a): [string, SubjectKind] => [a, subjectKindOf("agent")]),
-  ];
+  /** Who can hold a grant among the actors of a person: the person, and the agents with their own identity. A grant has the kind of its subject, so a person and an agent with one id stay apart. */
+  const heldBy = (who: { id: string; kind: unknown }, ownedAgents: string[]): [string, SubjectKind][] => [[who.id, subjectKindOf(who.kind)], ...ownedAgents.map((a): [string, SubjectKind] => [a, subjectKindOf("agent")])];
   /** Every doc of a collection that matches every field, page by page. */
   async function allWhere(ops: StoreOps, collection: string, where: Record<string, string>, orderBy?: { field: string }) {
     const out: { id: string; data: Doc }[] = [];
@@ -583,13 +582,7 @@ export function createDrive(deps: DriveDeps) {
       const all = await rawOwnerNodes(owner, true);
       if (all.length === 0) {
         // The root has shares too. Erase them, so an old share never reaches a new file.
-        const rootId = await rootResource(owner);
-        await eraseResource(principal, rootId);
-        await transact(async (tx) => {
-          const shares = sharing ? await sharesOf(tx, rootId) : [];
-          for (const share of shares) await tx.delete(share.collection, share.id);
-          if (sharing) await tx.delete("resources", rootId);
-        });
+        await finishResource(principal, await rootResource(owner));
         return removed;
       }
       removed += await removeNodes(all, undefined, principal);
@@ -598,16 +591,31 @@ export function createDrive(deps: DriveDeps) {
   }
 
   /**
-   * Asks identity to erase a resource: its grants, links, invites, and audit entries. It needs a caller who owns the
-   * resource, so a drive erased for an agent without an identity of its own falls back on the sweep in the same
-   * transaction as the item. Identity says forbidden for a resource that is gone, and refuses one with children or too many owners. The sweep covers those.
+   * Erases what hangs on a resource: its grants, links, invites, and audit entries, and the resource itself. Identity
+   * does it for a caller who owns the resource. Identity says forbidden for another caller and refuses a resource with
+   * children or too many owners. A drive erased for an agent without an identity of its own has no such caller. In
+   * those cases a sweep does the same. It runs after the item is gone, so a failed call leaves a share with no item
+   * behind, never an item with no share record. The share cannot reach anything, and the same erase removes it.
    */
-  async function eraseResource(principal: PrincipalContext | undefined, resourceId: string): Promise<void> {
-    if (!sharing || !principal) return;
-    try {
-      await sharing.deleteResource(principal, resourceId);
-    } catch (error) {
-      if (!(error instanceof EraseRefusedError) && !(error instanceof Error && error.message === "forbidden")) throw error;
+  async function finishResource(principal: PrincipalContext | undefined, resourceId: string): Promise<void> {
+    if (!sharing) return;
+    if (principal) {
+      try {
+        await sharing.deleteResource(principal, resourceId);
+        return;
+      } catch (error) {
+        if (!(error instanceof EraseRefusedError) && !(error instanceof Error && error.message === "forbidden")) throw error;
+      }
+    }
+    await transact(async (tx) => {
+      for (const share of await sharesOf(tx, resourceId)) await tx.delete(share.collection, share.id);
+      await tx.delete("resources", resourceId);
+    });
+    for (let cursor: string | undefined; ; ) {
+      const page = await store.query("audit", { where: { resourceId }, limit: 100, cursor });
+      for (const entry of page.items) await store.delete("audit", entry.id);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
     }
   }
 
@@ -675,23 +683,20 @@ export function createDrive(deps: DriveDeps) {
     for (let i = 0; i < rows.length; i += size) {
       const chunk = rows.slice(i, i + size);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
-      for (const node of chunk) await eraseResource(principal, node.id);
       await transact(async (tx) => {
-        const held: { node: Node; claim: string | null; owns: boolean; shares: { collection: string; id: string }[] }[] = [];
+        const held: { node: Node; claim: string | null; owns: boolean }[] = [];
         for (const node of chunk) {
           // A trashed item gave up its name when it was trashed, and another item may hold it now.
           const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
-          // The shares of a deleted item go with it: its grants, links, and invites.
-          const shares = sharing ? await sharesOf(tx, node.id) : [];
-          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id, shares });
+          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id });
         }
-        for (const { node, claim, owns, shares } of held) {
+        for (const { node, claim, owns } of held) {
           await tx.delete(NODES, node.id);
           if (claim && owns) await tx.delete(NAMES, claim);
-          if (sharing) await tx.delete("resources", node.id);
-          for (const share of shares) await tx.delete(share.collection, share.id);
         }
       });
+      // The shares of a deleted item go with it: its grants, links, invites, and audit entries. Children come first.
+      for (const node of chunk) await finishResource(principal, node.id);
     }
     return marked.length;
   }
@@ -1037,8 +1042,8 @@ export function createDrive(deps: DriveDeps) {
           by: [...new Set([actors.includes(n.createdById) ? n.createdBy : null, actors.includes(n.updatedById) ? n.updatedBy : null].filter((a) => a !== null).map((a) => JSON.stringify(a)))].map((a) => JSON.parse(a as string)),
         }))
         .sort((x, y) => (x.id < y.id ? -1 : 1));
-      const held: { subjectId: unknown; resourceId: unknown; role: unknown }[] = [];
-      for (const [actor, kind] of heldBy(subject.id, actors, ownedAgents)) for (const g of await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })) held.push({ subjectId: g.data.subjectId, resourceId: g.data.resourceId, role: g.data.role });
+      const held: { subjectKind: unknown; subjectId: unknown; resourceId: unknown; role: unknown }[] = [];
+      for (const [actor, kind] of heldBy(subject, ownedAgents)) for (const g of await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })) held.push({ subjectKind: g.data.subjectKind, subjectId: g.data.subjectId, resourceId: g.data.resourceId, role: g.data.role });
       // An agent with its own identity has its own drive. It belongs to the person. The bytes are not in the export.
       const agents = [];
       for (const agent of ownedAgents) {
@@ -1064,7 +1069,7 @@ export function createDrive(deps: DriveDeps) {
      * they hold and the invites they or their agents sent, on drive items only: the grants of other apps stay for
      * those apps and for identity. What they or their agents made in other drives stays, because it belongs to
      * those drives: the id becomes "erased", and the kind stays, so machine-made work keeps its label. The audit
-     * trail stays: it holds ids and kinds only. A failed call can run again.
+     * entries of the erased items go with them. The ones about what the person did in other drives stay: they hold ids and kinds only. A failed call can run again.
      */
     async erasePerson(ctx: Ctx): Promise<{ removed: number; grants: number; invites: number; anonymized: number }> {
       assertInPerson(ctx, "erase a person");
@@ -1088,7 +1093,7 @@ export function createDrive(deps: DriveDeps) {
       };
       let grants = 0;
       let invites = 0;
-      for (const [actor, kind] of heldBy(id, actors, ownedAgents)) grants += await sweep(await ofDrive(await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })), "grants");
+      for (const [actor, kind] of heldBy(subjectOf(ctx), ownedAgents)) grants += await sweep(await ofDrive(await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })), "grants");
       for (const actor of actors) invites += await sweep(await ofDrive(await allWhere(store, "invites", { createdBy: actor })), "invites");
       const todo = await madeBy(store, actors);
       for (let i = 0; i < todo.length; i += CHUNK) {

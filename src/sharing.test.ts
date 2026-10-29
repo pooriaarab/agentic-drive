@@ -487,6 +487,28 @@ describe("identity erase and kinds", () => {
     await drive.deleteAll(A);
     expect(await entriesOf(root)).toEqual([]);
   });
+  it("erases the audit entries of a purged folder and everything under it", async () => {
+    const file = await drive.putFile(A, "/dir/sub/f.txt", bytes("f"), { parents: true });
+    const ids = [file.id, file.parentId!, (await drive.stat(A, "/dir")).id];
+    await drive.stat(A, file.id);
+    await drive.trash(A, "/dir");
+    await drive.purge(A, ids[2]!);
+    for (const id of ids) expect(await entriesOf(id)).toEqual([]);
+    expect((await store.query("resources", { limit: 50 })).items.map((r) => r.id)).not.toEqual(expect.arrayContaining(ids));
+  });
+  it("lets a purge run again after a failed transaction", async () => {
+    let fail = false;
+    const flaky = { ...store, transaction: ((fn: never) => (fail ? Promise.reject(new Error("transient")) : store.transaction(fn))) as typeof store.transaction } as typeof store;
+    const d = createDrive({ store: flaky, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
+    const file = await d.putFile(A, "/r.txt", bytes("r"));
+    await d.trash(A, file.id);
+    fail = true;
+    await expect(d.purge(A, file.id)).rejects.toThrow("transient");
+    fail = false;
+    expect(await d.purge(A, file.id)).toEqual({ removed: 1 });
+    expect(await entriesOf(file.id)).toEqual([]);
+    expect(await store.get("resources", file.id)).toBeNull();
+  });
   it("keeps a person and an agent with one id apart", async () => {
     const file = await drive.putFile(A, "/k.txt", bytes("k"));
     await drive.shareWith(A, file.id, { kind: "agent", id: "bob" }, "viewer");
@@ -500,8 +522,8 @@ describe("identity erase and kinds", () => {
       await fails(drive.unshare(A, "/k.txt", subject as never), "INVALID_SHARE");
     }
   });
-  it("maps principal kinds to subject kinds and throws on an unknown one", () => {
-    expect(["human", "user_token", "agent", "agent_of_human", "agent_of_agent"].map(subjectKindOf)).toEqual(["human", "human", "agent", "agent", "agent"]);
-    for (const bad of [undefined, "", "robot", "Human"]) expect(() => subjectKindOf(bad)).toThrow(/unknown principal kind/);
+  it("maps the root kinds of a chain and throws on any other kind", () => {
+    expect(["human", "agent"].map(subjectKindOf)).toEqual(["human", "agent"]);
+    for (const bad of [undefined, "", "robot", "Human", "user_token", "agent_of_human", "agent_of_agent"]) expect(() => subjectKindOf(bad)).toThrow(/cannot hold a role/);
   });
 });

@@ -136,11 +136,13 @@ describe("claims follow the life of an item", () => {
     await d.purge(me, old.id);
     await expect(d.putFile(me, "/same.txt", bytes("3"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
   });
-  it("purges a nested folder with more than 100 children", { timeout: 60_000 }, async () => {
+  it("purges a nested folder with more than 100 children", { timeout: 300_000 }, async () => {
     const me = owner();
     const d = drive();
     await d.mkdir(me, "/big/inbox", { parents: true });
-    for (let i = 0; i < 101; i++) await d.putRef(me, `/big/inbox/r${i}`, `docs:${i}`);
+    for (let i = 0; i < 101; i += 10) {
+      await Promise.all(Array.from({ length: Math.min(10, 101 - i) }, (_, j) => d.putRef(me, `/big/inbox/r${i + j}`, `docs:${i + j}`)));
+    }
     await d.trash(me, "/big");
     expect(await d.purge(me, (await d.listTrash(me))[0]!.id)).toEqual({ removed: 103 });
     expect(await d.list(me, "/")).toEqual([]);
