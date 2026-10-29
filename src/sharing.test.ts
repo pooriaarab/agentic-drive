@@ -27,6 +27,10 @@
 //  26. A move or restore reads an unbounded subtree, and a big folder can never move.
 //  27. rename("/") fails with a plain error, not IS_ROOT.
 //  28. The root claims it was made by a person when a machine owns the drive.
+//  29. An editor moves an item into a folder they own, and becomes its owner.
+//  30. Counting a height reads file pages, so a folder of files runs past a query cap.
+//  31. A big folder cannot move up, rename, or restore to its own parent, because its height is counted when it cannot get deeper.
+//  32. mkdir -p returns an existing folder whose sharing record is gone.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
@@ -413,5 +417,46 @@ describe("depth, scope, and in-place changes", () => {
     const robot = ctxOf(principal("robo", "agent"));
     expect((await drive.stat(robot, "/")).createdBy).toEqual({ id: "robo", kind: "agent" });
     expect((await drive.stat(A, "/")).createdBy).toEqual({ id: "alice", kind: "human" });
+  });
+  it("stops an editor from becoming owner of an item by moving it into a folder they own", async () => {
+    await drive.putFile(A, "/f/x.txt", bytes("x"), { parents: true });
+    await drive.mkdir(A, "/g");
+    await drive.shareWith(A, "/f", "bob", "editor");
+    await drive.shareWith(A, "/g", "bob", "owner");
+    const [x, f, g] = [await drive.stat(A, "/f/x.txt"), await drive.stat(A, "/f"), await drive.stat(A, "/g")];
+    await fails(drive.move(B, x.id, g.id), "FORBIDDEN");
+    await drive.trash(B, x.id);
+    await fails(drive.restore(B, x.id, { parentId: g.id }), "FORBIDDEN");
+    await drive.restore(B, x.id);
+    await fails(drive.createLink(B, x.id, { role: "viewer" }), "FORBIDDEN");
+    // Inside a folder where the caller has the same role everywhere, a move is fine.
+    await drive.mkdir(B, `${f.id}/sub`);
+    expect((await drive.move(B, x.id, `${f.id}/sub`)).parentId).not.toBe(f.id);
+    // An owner of both folders may move between them.
+    await drive.move(A, x.id, g.id);
+    expect((await drive.move(B, x.id, f.id)).parentId).toBe(f.id);
+  });
+  it("counts a height from folders only, never from file pages", async () => {
+    await drive.mkdir(A, "/many");
+    for (let i = 0; i < 300; i++) await drive.putFile(A, `/many/f${i}.txt`, bytes("x"));
+    await drive.mkdir(A, "/dest");
+    let queries = 0;
+    const counted = createDrive({ store: { ...store, query: async (c, q) => (queries++, store.query(c, q)) } as typeof store, blobs: createMemoryBlobs(), sharing });
+    await counted.move(A, "/many", "/dest");
+    expect(queries).toBeLessThan(10);
+  });
+  it("moves a big folder up, renames it, and restores it to its own parent", { timeout: 120_000 }, async () => {
+    await drive.mkdir(A, "/up/wide", { parents: true });
+    for (let i = 0; i < 201; i++) await drive.mkdir(A, `/up/wide/f${i}`);
+    expect((await drive.rename(A, "/up/wide", "wider")).name).toBe("wider");
+    expect((await drive.move(A, "/up/wider", "/")).parentId).toBe("root");
+    await drive.trash(A, "/wider");
+    const wider = (await drive.listTrash(A))[0]!;
+    expect((await drive.restore(A, wider.id, { parentId: "root" })).name).toBe("wider");
+  });
+  it("refuses mkdir -p on an existing folder that the caller cannot read", async () => {
+    const dir = await drive.mkdir(A, "/gone");
+    await store.delete("resources", dir.id);
+    await fails(drive.mkdir(A, "/gone", { parents: true }), "NOT_FOUND");
   });
 });

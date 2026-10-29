@@ -91,7 +91,7 @@ const DEFAULT_MAX_DEPTH = 256;
 const CHUNK = 25;
 /** With sharing, each node costs about three more queries, so a chunk is smaller. */
 const SHARED_CHUNK = 10;
-/** The most folders a move or a restore reads to count the height of a subtree. */
+/** The most queries a move or a restore spends to count the height of a subtree. */
 const HEIGHT_BUDGET = 200;
 export const DEFAULT_URL_SECONDS = 900;
 export const MAX_URL_SECONDS = 3600;
@@ -248,23 +248,46 @@ export function createDrive(deps: DriveDeps) {
     return depth;
   }
   /**
-   * How many levels of items sit below a folder: 0 for an empty folder, 1 when it holds only files. It reads
-   * at most HEIGHT_BUDGET folders, and refuses a bigger tree, so one call never runs past a database query cap.
+   * How many levels of items sit below a folder, counted from its subfolders only: 1 for a folder with no
+   * subfolders (items may sit in it), and one more for each level of subfolders. File pages are never read.
+   * It spends at most HEIGHT_BUDGET queries, and refuses a bigger tree, so a call never runs past a query cap.
    */
   async function heightOf(ops: StoreOps, folder: Node): Promise<number> {
     let level = [folder];
-    let read = 0;
-    for (let height = 0; height <= MAX_ITEM_DEPTH; height++) {
+    let queries = 0;
+    for (let height = 1; height <= MAX_ITEM_DEPTH; height++) {
       const next: Node[] = [];
       for (const f of level) {
-        if (f.kind !== "folder") continue;
-        if (++read > HEIGHT_BUDGET) throw new DriveError("TOO_MANY_ITEMS", `${folder.name} has too many folders to count. Move its parts one by one.`);
-        next.push(...(await children(ops, f.owner, f.id)));
+        for (let cursor: string | undefined; ; ) {
+          if (++queries > HEIGHT_BUDGET) throw new DriveError("TOO_MANY_ITEMS", `${folder.name} has too many folders to count. Move its parts one by one.`);
+          const page = await ops.query<Node>(NODES, { where: { owner: f.owner, parentId: f.id, kind: "folder" }, limit: 100, cursor });
+          next.push(...page.items.map((item) => item.data));
+          if (!page.nextCursor) break;
+          cursor = page.nextCursor;
+        }
       }
       if (next.length === 0) return height;
       level = next;
     }
     return MAX_ITEM_DEPTH + 1;
+  }
+  /**
+   * The height to check for a folder that moves under `dest`. It is 0 when the folder cannot get deeper:
+   * a file, a rename in place, or a move up or sideways. Then nothing is counted.
+   */
+  async function heightFor(ctx: Ctx, node: Node, dest: Node | string): Promise<number> {
+    if (!sharing || node.kind !== "folder") return 0;
+    const target = typeof dest === "string" ? await resolve(store, ctx, dest) : dest;
+    if (target.id === node.parentId) return 0;
+    const w = batch();
+    if ((await depthOf(store, w, target)) + 1 <= (await depthOf(store, w, node))) return 0;
+    return heightOf(store, node);
+  }
+  /** An item takes the roles of its new folder. A caller may not climb to owner by moving an item they only edit. */
+  async function noClimb(ctx: Ctx, node: Node, dest: Node) {
+    if ((await can(ctx, "delete", dest)) && !(await can(ctx, "delete", node))) {
+      throw new DriveError("FORBIDDEN", "moving into a folder you own needs owner on the item");
+    }
   }
   /** Fails when a node, with `height` levels of items below it, would sit deeper than sharing can follow under `dest`. */
   async function fitsUnder(ops: StoreOps, w: ReturnType<typeof batch>, dest: Node, height: number) {
@@ -398,6 +421,7 @@ export function createDrive(deps: DriveDeps) {
     // A change inside the same folder is a rename. It needs no right on the folder.
     if (dest.id !== node.parentId) {
       await need(ctx, "write", dest);
+      await noClimb(ctx, node, dest);
       await fitsUnder(ops, w, dest, opts.height ?? 0);
     }
     let { name, key } = parseName(opts.name ?? node.name);
@@ -590,7 +614,10 @@ export function createDrive(deps: DriveDeps) {
         const w = batch();
         const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
         const existing = w.fresh.has(parent.id) ? null : await liveChild(tx, parent, parseName(name).key);
-        if (opts.parents && existing?.kind === "folder") return existing;
+        if (opts.parents && existing?.kind === "folder") {
+          if (!(await can(ctx, "read", existing))) throw new DriveError("NOT_FOUND", `no item ${path}`);
+          return existing;
+        }
         const { node } = await insert(tx, w, ctx, parent, name, { kind: "folder" }, "fail");
         await w.apply(tx);
         return node;
@@ -661,7 +688,7 @@ export function createDrive(deps: DriveDeps) {
     async move(ctx: Ctx, src: string, destLoc: string, opts: { name?: string; onConflict?: OnConflict } = {}): Promise<Node> {
       // The height of a moved folder is read once, outside the transaction, so the transaction stays short.
       const probe = sharing ? await resolve(store, ctx, src) : null;
-      const height = probe?.kind === "folder" ? await heightOf(store, probe) : 0;
+      const height = probe ? await heightFor(ctx, probe, destLoc) : 0;
       return transact(async (tx) => {
         const w = batch();
         const moved = await relocate(tx, w, ctx, await resolve(tx, ctx, src), destLoc, { ...opts, height });
@@ -711,9 +738,13 @@ export function createDrive(deps: DriveDeps) {
 
     /** Puts a trashed item back. It needs a live parent folder. */
     async restore(ctx: Ctx, id: string, opts: { parentId?: string; onConflict?: OnConflict } = {}): Promise<Node> {
-      // Only a caller who may read the folder, and who names a new parent, makes the store count its subtree.
-      const probe = sharing && opts.parentId !== undefined ? await fetch(store, ctx, id) : null;
-      const height = probe?.kind === "folder" && probe.trashed ? await heightOf(store, probe) : 0;
+      // Only a caller who may read both the folder and the new parent makes the store count the subtree.
+      let height = 0;
+      if (sharing && opts.parentId !== undefined) {
+        const probe = await fetch(store, ctx, id);
+        const target = await rawNode(store, opts.parentId, ctx.owner, ctx.actor);
+        if (probe?.trashed && target && (await can(ctx, "read", target))) height = await heightFor(ctx, probe, target);
+      }
       return transact(async (tx) => {
         const node = await fetch(tx, ctx, id);
         if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
@@ -729,6 +760,7 @@ export function createDrive(deps: DriveDeps) {
         if (parent.owner !== node.owner) throw new DriveError("CROSS_DRIVE", "an item cannot move into another person's drive");
         if (parent.id !== node.parentId) {
           await need(ctx, "write", parent);
+          await noClimb(ctx, node, parent);
           await fitsUnder(tx, batch(), parent, height);
         }
         let { name, key } = parseName(node.name);
