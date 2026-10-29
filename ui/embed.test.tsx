@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, type DriveUiOptions, type MountedDrive } from "./embed.js";
+import { createRoot } from "react-dom/client";
+import { ToastProvider, TooltipProvider } from "agentic-design/react";
+import { DriveBrowser, mount, type DriveUiOptions, type MountedDrive } from "./embed.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -181,5 +183,30 @@ describe("mount", () => {
     await act(async () => void (await new Promise((r) => setTimeout(r, 20))));
     expect(first).not.toHaveBeenCalled();
     expect(server.seen.at(-1)!.authorization).toBe("Bearer new");
+  });
+
+  it("DriveBrowser, the React component, also sends nothing after it unmounts during an upload", async () => {
+    const getToken = vi.fn(() => "tok-1");
+    const root = createRoot(host);
+    await act(async () => root.render(<TooltipProvider><ToastProvider><DriveBrowser baseUrl={base.baseUrl} getToken={getToken} /></ToastProvider></TooltipProvider>));
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+    let release!: () => void;
+    server.fetch.mockImplementation(async (_input, init) => {
+      if (init?.method === "PUT") await new Promise<void>((resolve, reject) => { release = resolve; init.signal?.addEventListener("abort", () => reject(init.signal!.reason)); });
+      return new Response(JSON.stringify(item("u", "u.txt", "file", "root")), { headers: { "content-type": "application/json" } });
+    });
+    const files = ["a.txt", "b.txt", "c.txt"].map((n) => new File(["x"], n));
+    await act(async () => { Object.defineProperty(input, "files", { value: files }); input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const puts = () => server.fetch.mock.calls.filter(([, i]) => i?.method === "PUT").length;
+    expect(puts()).toBe(1);
+    const tokenCalls = getToken.mock.calls.length;
+    await act(async () => root.unmount());
+    release();
+    await settle();
+    await settle();
+    expect(puts()).toBe(1);
+    expect(getToken.mock.calls.length).toBe(tokenCalls);
   });
 });

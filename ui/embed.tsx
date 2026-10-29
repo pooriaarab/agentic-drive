@@ -1,7 +1,7 @@
 // The drive UI for an app that embeds it: `agentic-drive/ui`. The app gives the address of a drive server and a function that
 // returns the bearer token. React and react-dom are peer dependencies. The styles are in `agentic-drive/ui.css`. The host owns
 // the theme, the page address, and sign-in, so the embed changes none of them.
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { FolderIcon, SidebarNav, ToastProvider, TooltipProvider } from "agentic-design/react";
 import { createClient, type DriveClient } from "../src/client.js";
@@ -37,10 +37,16 @@ function makeClient({ baseUrl, getToken }: DriveUiOptions) {
 }
 
 /** The folders and trash of the signed-in caller, with upload, share, and the machine-made label. It needs the tooltip and toast providers above it. `mount` adds them.
- * It shows the root again when `baseUrl` changes. A bad `baseUrl` or `getToken` throws while it renders. */
+ * It shows the root again when `baseUrl` changes. A bad `baseUrl` or `getToken` throws. Pass a stable `getToken`, because a new function makes a new client. */
 export function DriveBrowser({ baseUrl, getToken }: DriveUiOptions) {
-  const client = useMemo(() => makeClient({ baseUrl, getToken }).client, [baseUrl, getToken]);
-  return <DriveView key={baseUrl} client={client} origin={new URL(baseUrl).origin} />;
+  const [client, setClient] = useState<DriveClient>();
+  // The client closes when the component unmounts or an option changes, so work of the old one sends nothing more.
+  useEffect(() => {
+    const made = makeClient({ baseUrl, getToken });
+    setClient(made.client);
+    return () => made.close();
+  }, [baseUrl, getToken]);
+  return client ? <DriveView key={baseUrl} client={client} origin={new URL(baseUrl).origin} /> : null;
 }
 
 function DriveView({ client, origin }: { client: DriveClient; origin: string }) {
