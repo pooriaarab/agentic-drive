@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: 0.9.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
+> Status: 0.10.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
 > A small web UI works. See [UI](#ui).
 
 ## Live demo
@@ -162,6 +162,12 @@ The root export, `agentic-drive`, also exports these names. The package typings 
 
   The local functions trust their caller. Local data is the trust boundary: anyone who can write the folder
   can act as any principal in it.
+
+## Account export and erase
+
+A host that runs account export and erase across many packages calls `driveAccount` (from `agentic-drive/account`). It has `exportAccount(subject, { drive, ctx })` and `eraseAccount(subject, { drive, ctx })`, so the host does not read the storage layout. `subject` is an id and a kind, and `ctx` is the drive context of that subject. A context for someone else throws `FORBIDDEN`.
+
+The export is plain JSON with `items` (your drive, trashed items flagged, file bytes as base64 in `data`), `authored` (items you made in other drives), `agents`, `grants` (shares you hold), `invites` (invites you sent), and `audit`. An agent subject gets empty collections apart from its own `items`. The erase removes your drive with its bytes, the shares you hold, and the invites you sent. It returns counts of `items`, `grants`, `invites`, and `anonymized`. What you made in other drives stays, with your id set to `erased` and the kind kept. Only the person in person may erase: an agent subject gets `FORBIDDEN`. A second erase counts zero. The shape is provisional until `agentic-identity` adds its `AccountPackage` contract.
 
 ## UI
 

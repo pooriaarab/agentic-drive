@@ -9,3 +9,5 @@ export type { SearchQuery } from "./drive.js";
 export { importLegacyLocal } from "./legacy.js";
 export { AuthError, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 export { backfillAuthorIds, backfillResources, type BackfillOptions, type BackfillResult } from "./migrate.js";
+export { driveAccount } from "./account.js";
+export type { DriveAccount, DriveAccountDeps } from "./account.js";
