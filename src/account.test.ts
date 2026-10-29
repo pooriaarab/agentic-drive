@@ -62,6 +62,58 @@ describe("subject", () => {
   });
 });
 
+describe("each guard on its own", () => {
+  // Each case reaches the drive, which would answer, so only the one guard named here refuses it.
+  it("refuses a context for someone else that has no principal, and leaves their drive", async () => {
+    // A drive with sharing refuses a principal-less context by itself, so this drive has none.
+    const bare = createDrive({ store: backend.store(), blobs: createMemoryBlobs() });
+    await bare.putFile(B, "/b.txt", bytes("bob secret"));
+    const bobNoPrincipal = { owner: B.owner, actor: B.actor } as Ctx;
+    await expect(driveAccount.exportAccount(ALICE, { drive: bare, ctx: bobNoPrincipal })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(driveAccount.eraseAccount(ALICE, { drive: bare, ctx: bobNoPrincipal })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await bare.read(B, "/b.txt")).data).toEqual(bytes("bob secret"));
+  });
+
+  it("refuses a principal that is another person, with Alice's own owner and actor", async () => {
+    await seed();
+    const mallory = { ...A, principal: principal("mallory", "human", [ALICE]) };
+    await expect(driveAccount.exportAccount(ALICE, deps(mallory))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(driveAccount.eraseAccount(ALICE, deps(mallory))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await drive.read(A, "/mine/a.txt")).data).toEqual(bytes("alice file"));
+  });
+
+  it("refuses an agent subject whose chain has two links, where the drive would answer empty", async () => {
+    await seed();
+    const twoLinks = { ...OWN, principal: principal("robo", "agent", [ROBO, ROBO]) };
+    await expect(driveAccount.exportAccount(ROBO, deps(twoLinks))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("refuses an actor of another kind, with no principal", async () => {
+    await seed();
+    const asAgent = { owner: A.owner, actor: { id: "alice", kind: "agent" } } as Ctx;
+    await expect(driveAccount.exportAccount(ALICE, deps(asAgent))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(driveAccount.eraseAccount(ALICE, deps(asAgent))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await drive.read(A, "/mine/a.txt")).data).toEqual(bytes("alice file"));
+  });
+
+  // The drive refuses these contexts by itself, so a stub answers the way a permissive drive would. It pins the package's own guards.
+  const permissive = (partial: boolean) =>
+    ({
+      exportData: async () => [],
+      exportPerson: async () => ({ subject: ALICE, partial, authored: [], agents: [], shares: { held: [], invitesCreated: [] }, audit: [] }),
+      erasePerson: async () => ({ removed: 0, grants: 0, invites: 0, anonymized: 0 }),
+    }) as unknown as Drive;
+
+  it("refuses a person's export that comes back partial", async () => {
+    await expect(driveAccount.exportAccount(ALICE, { drive: permissive(true), ctx: A })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("refuses an actor of another kind when the drive would answer", async () => {
+    const asAgent = { owner: A.owner, actor: { id: "alice", kind: "agent" } } as Ctx;
+    await expect(driveAccount.exportAccount(ALICE, { drive: permissive(false), ctx: asAgent })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
 describe("exportAccount", () => {
   it("holds the subject's data under stable names, as plain JSON, and nothing of others", async () => {
     const team = await seed();
