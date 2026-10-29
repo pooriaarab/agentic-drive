@@ -47,6 +47,10 @@ describe("subject", () => {
     }
     await expect(driveAccount.exportAccount(ALICE, deps(B))).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(driveAccount.eraseAccount(ALICE, deps(BOT))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // Same owner and actor, but the principal runs through an agent: a whole export would look partial, so it is refused.
+    const VIA_BOT = { ...A, principal: BOT.principal };
+    await expect(driveAccount.exportAccount(ALICE, deps(VIA_BOT))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(driveAccount.eraseAccount(ALICE, deps(VIA_BOT))).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(driveAccount.exportAccount(ALICE, {} as never)).rejects.toThrow("needs deps.drive");
     await expect(driveAccount.eraseAccount(ALICE, undefined as never)).rejects.toThrow("needs deps.drive");
   });

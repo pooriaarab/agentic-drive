@@ -40,6 +40,9 @@ function check(subject: Actor, deps: DriveAccountDeps): void {
   if (typeof subject?.id !== "string" || subject.id.trim() === "" || !known) throw new TypeError("subject needs an id and a known kind");
   // The drive of the subject is the one they own, and the caller is the subject. A context for someone else would export or erase that drive.
   if (ctx.owner !== subject.id || ctx.actor?.id !== subject.id || ctx.actor.kind !== subject.kind) throw new DriveError("FORBIDDEN", "context does not match the subject");
+  // The principal must be the subject alone. A chain that runs through another principal (an agent acting for a person) is not the subject.
+  const p = ctx.principal;
+  if (p !== undefined && (p?.principalId !== subject.id || p.kind !== subject.kind || p.chain?.length !== 1 || p.chain[0]?.id !== subject.id)) throw new DriveError("FORBIDDEN", "context does not match the subject");
 }
 
 const b64 = (data: Uint8Array) => {
@@ -54,6 +57,8 @@ export const driveAccount: DriveAccount = {
     check(subject, deps);
     const { drive, ctx } = deps;
     const person = await drive.exportPerson(ctx);
+    // A person's export must be whole. A partial one would look complete to the host, so it is refused.
+    if (person.partial && subject.kind === "human") throw new DriveError("FORBIDDEN", "the person's export is partial");
     const items = (await drive.exportData(ctx)).map(({ node, path, data, missing }) => ({ ...publicNode(node, path), data: data ? b64(data) : null, ...(missing ? { missing: true } : {}) }));
     return {
       items: plain(items),
