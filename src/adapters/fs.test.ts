@@ -15,12 +15,11 @@ import { createFileBlobs, createFileStore } from "./fs.js";
 const fresh = () => mkdtempSync(join(tmpdir(), "drive-fs-"));
 const shared = new Map<string, string>();
 
-runStoreContract((options) => {
-  // Stores that share a name share one directory and one live dataset.
-  const dir = options.shared === undefined ? fresh() : (shared.get(options.shared) ?? shared.set(options.shared, fresh()).get(options.shared)!);
-  return createFileStore(dir, options);
-});
-runBlobsContract((options) => createFileBlobs(fresh(), options));
+// Instances that share a name share one directory and one live dataset.
+const dirFor = (name: string | undefined) => (name === undefined ? fresh() : (shared.get(name) ?? shared.set(name, fresh()).get(name)!));
+
+runStoreContract((options) => createFileStore(dirFor(options.shared), options));
+runBlobsContract((options) => createFileBlobs(dirFor(options.shared), options));
 
 describe("file store journal", () => {
   it("keeps committed writes across a restart and drops rolled-back ones", async () => {

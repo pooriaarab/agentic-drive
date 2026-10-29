@@ -55,7 +55,7 @@ beforeAll(async () => {
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
   const persist = mkdtempSync(join(tmpdir(), "drive-wrangler-"));
-  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`], {
+  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`, "--var", "DRIVE_REGION:unknown"], {
     cwd: root, stdio: "ignore", detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
   });
   for (let i = 0; i < 120; i++) {
@@ -197,7 +197,7 @@ describe("signed download URLs", () => {
     const res = await fetch(url);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/csv");
-    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(res.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''data.csv");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.text()).toBe("a,b\n1,2\n");
   });
@@ -205,7 +205,7 @@ describe("signed download URLs", () => {
     await put("/sig/page.html", "<script>alert(1)</script>", TOK_U1, "&mime=text/html");
     const res = await fetch(await signed("/sig/page.html"));
     expect(res.headers.get("content-type")).toBe("application/octet-stream");
-    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(res.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''page.html");
   });
   it("refuse a changed key, a changed signature, a missing part, and another route's token", async () => {
     const url = new URL(await signed("/sig/data.csv"));
