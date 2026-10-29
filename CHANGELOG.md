@@ -6,7 +6,7 @@ Read the breaking changes before you upgrade.
 
 ### Breaking changes
 
-- **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The local layout changes: the store is `store.json` in the data folder and blobs sit in `blobs/blobs/<hash>.blob`. `openLocal` now also returns `blobs`, and it throws on a folder with an old `db/store.jsonl` until `importLegacyLocal(dir, store, blobs)` (new, exported) has copied the old data. The CLI does this on its first run, once, and leaves the old files in place.
+- **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The local layout changes: the store is `store.json` in the data folder and blobs sit in `blobs/blobs/<hash>.blob`. `openLocal` now also returns `blobs`, and it throws on a folder with an old `db/store.jsonl` until `importLegacyLocal(dir, store, blobs)` (new, exported) has copied the old data. To get `store` and `blobs` for that call, open the folder with `openLocal(dir, { beforeImport: true })`. The CLI does the import on its first run, once, and leaves the old files in place. A local drive makes no download URL, because its blobs have no signing secret. Use `download` there.
 
 ### Added
 
