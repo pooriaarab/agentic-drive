@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: 0.7.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
+> Status: 0.8.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
 > A small web UI works. See [UI](#ui).
 
 ## Live demo

@@ -11,7 +11,7 @@ const byName = (a: Item, b: Item) => (a.kind === "folder" ? 0 : 1) - (b.kind ===
 const who = (a: Item["createdBy"], owner: string): PresenceEntry =>
   a.kind === "human" ? { id: a.id, name: a.id, kind: "person" } : { id: a.id, name: a.id, kind: "agent", actingFor: owner };
 /** The AI Act marker. It has text, and it reads `machineMade` from the API. */
-const MachineLabel = ({ item }: { item: Item }) => (item.machineMade ? <span className="ad-pill">Created by agent</span> : null);
+const MachineLabel = ({ item }: { item: Item }) => (item.machineMade ? <span className="agd-pill">Created by agent</span> : null);
 
 type Load<T> = { status: "loading" } | { status: "error"; error: string } | { status: "ok"; data: T };
 /** Runs `fn` on mount and on `reload`. A view remounts per route, so state never leaks between folders. */
@@ -28,7 +28,7 @@ function useLoad<T>(fn: () => Promise<T>): [Load<T>, () => void] {
 }
 
 function Status({ state, retry, children }: { state: Load<unknown>; retry: () => void; children: ReactNode }) {
-  if (state.status === "loading") return <p role="status" className="drive-status"><span className="ad-spinner" aria-hidden="true" /> Loading…</p>;
+  if (state.status === "loading") return <p role="status" className="drive-status"><span className="agd-spinner" aria-hidden="true" /> Loading…</p>;
   if (state.status === "error") return <div role="alert"><EmptyState title="Could not load this page" description={state.error} action={<Button onClick={retry}>Try again</Button>} /></div>;
   return <>{children}</>;
 }
