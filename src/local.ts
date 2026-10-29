@@ -65,8 +65,9 @@ export async function revokeKey(store: Store, token: string): Promise<void> {
   await revokeCredential(store, token, Date.now());
 }
 
-/** A node as the CLI and MCP print it: no storage keys. */
+/** A node as the CLI and MCP print it: no storage keys. `machineMade` is true when an agent principal created it. */
 export function publicNode(node: Node, path?: string) {
   const { nameKey: _nameKey, blobKey: _blobKey, purging: _purging, ...rest } = node;
-  return path === undefined ? rest : { path, ...rest };
+  const shown = { ...rest, machineMade: node.createdBy.kind !== "human" };
+  return path === undefined ? shown : { path, ...shown };
 }

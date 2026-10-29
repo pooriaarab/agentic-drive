@@ -168,7 +168,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
           const { folder, root, crumbs, items, tree } = state.data;
           const actions = (item: Item) => (
             <>
-              {isAgent(item.createdBy) && !isAgent(item.updatedBy) && <span className="ad-pill">Created by agent</span>}
+              {isAgent(item.createdBy) && <span className="ad-pill">Created by agent</span>}
               <Menu align="end" trigger={<IconButton label={`Actions for ${item.name}`} icon={<MoreIcon />} variant="ghost" />} items={[
                 { label: "Rename", onSelect: () => setDlg({ kind: "rename", item }) },
                 { label: "Move", onSelect: () => setDlg({ kind: "move", item }) },

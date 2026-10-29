@@ -103,12 +103,14 @@ test("an item made by an agent carries a marker, in the list and in the grid", a
   const made = row(page, "agent-notes.txt");
   await expect(made.getByText("Agent", { exact: true })).toBeVisible();
   await expect(made).toContainText("helper");
+  await expect(made.getByText("Created by agent", { exact: true })).toBeVisible();
   await expect(row(page, "Reports")).not.toContainText("Agent");
   await audit(page, "06-agent-marker");
 
   await page.getByRole("button", { name: "Grid view" }).click();
   await expect(page.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("list", { name: /Items in/ }).getByText("Agent", { exact: true })).toBeVisible();
+  await expect(page.getByRole("list", { name: /Items in/ }).getByText("Created by agent", { exact: true })).toBeVisible();
   await audit(page, "07-grid");
 });
 

@@ -7,7 +7,8 @@ export type SubjectKind = "human" | "agent";
 export type Subject = { kind: SubjectKind; id: string };
 
 /** An item as the API prints it: no storage keys. */
-export type Item = Omit<Node, "nameKey" | "blobKey" | "purging">;
+/** `machineMade` is true when an agent principal created the item. */
+export type Item = Omit<Node, "nameKey" | "blobKey" | "purging"> & { machineMade: boolean };
 /** A search hit, or a home item: an item with its path. */
 export type PathItem = Item & { path: string };
 

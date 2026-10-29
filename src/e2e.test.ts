@@ -49,6 +49,16 @@ describe("CLI", () => {
     expect(run(["register", "not-a-ref", "x"]).code).toBe(1);
   });
 
+  it("marks an item an agent created as machine made, from creation on", () => {
+    const { run, raw, principal } = fixture();
+    const agent = principal("bot1", "u1");
+    const made = raw(["mkdir", "/by-agent"], { AGENTIC_DRIVE_TOKEN: agent }).json();
+    expect(made.createdBy.kind).not.toBe("human");
+    expect(made.machineMade).toBe(true);
+    expect(raw(["ls", "/"], { AGENTIC_DRIVE_TOKEN: agent }).json().find((n: { name: string }) => n.name === "by-agent").machineMade).toBe(true);
+    expect(run(["mkdir", "/by-person"]).json().machineMade).toBe(false);
+  });
+
   it("runs the whole life of a file", () => {
     const { work, run } = fixture();
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
