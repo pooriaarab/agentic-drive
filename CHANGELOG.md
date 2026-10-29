@@ -10,6 +10,7 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 - **The owner of a drive is the root of the principal's chain.** Before, the owner was the `owner` string of the token. Now a person's drive has the id of that person's principal.
 - **Items from before sharing need a backfill.** Sharing is on in the Worker. Each item needs a `resources` doc, and items from 0.1.0 do not have one. Until you run `backfillResources`, their owner gets `NOT_FOUND`. See the migration steps.
 - **Folders nest 15 deep, not 256, in a drive with sharing on.** The Worker turns sharing on. Sharing checks at most 16 resources on a path, the drive root included. A deeper item, move, or restore fails with `TOO_DEEP`. A local drive without sharing keeps 256. An item already deeper than 15 folders cannot be reached with sharing. Move it up in 0.1.0 before you upgrade.
+- **Paths start in your own drive.** A path without an id resolves in the caller's own drive. A folder shared with you is reached by its id, as `<folder id>/a.txt`.
 - **Big folders may not move.** A move or restore that must count the height of a folder with about 200 or more subfolders fails with `TOO_MANY_ITEMS`.
 - **`authenticate` has a new signature.** It was `authenticate(request, env)`. It is now `authenticate(request, store, now?)`, and it returns a promise. The `Ctx` it returns has a `principal` field.
 - **Agent tokens follow their grant scopes.** An agent used to act with the full rights of its owner in that drive. Now each action needs a scope in the agent's grant. An agent without the scope gets `FORBIDDEN`.
@@ -24,9 +25,9 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 Read the known limits before you move a live deployment. Run the steps in this order. The old Worker keeps writing until step 3, so the backfill in step 4 must come after the deploy.
 
 1. Install the new versions: `npm install agentic-drive@0.2.0 agentic-identity@^0.3.0`.
-2. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights, or less to narrow them.
-   - Each owner keeps its old kind, `human` or `agent`, as a root principal. Its id is the old owner string.
-   - Each agent or `agent_of_agent` keeps its old actor id. Write an `agent_of_human` or a `user_token` with `parentId` set to its owner. An `agent_of_agent` needs a chain of parents, written the same way.
+2. Write the principals, with the old ids. The owner of a drive is the principal id, and the old data keeps the old ids. Old tokens had no scopes. Give `drive:admin` to keep the old rights, or less to narrow them. The 0.1.0 data does not say what kind an owner is. Use `human` for a person. Use `agent` only for a machine that acts with no person. A wrong kind breaks the chains under that owner.
+   - An owner of kind `human` is a root `human`. Its agents are `agent_of_human`, with `parentId` set to the owner. Its `user_token` actors are `user_token`, with `parentId` set to the owner. An `agent_of_agent` sits under one of those. 0.1.0 recorded no parent ids, so choose one, and keep the chain to 5 links (`MAX_CHAIN_DEPTH`).
+   - An owner of kind `agent` is a root `agent`. Its actors are `agent_of_agent`, with `parentId` set to the owner. The same 5-link limit applies.
    - A human actor who is not the owner keeps its old actor id, as a root `human`. Share the drive with it, with the role `owner`, to keep its old rights. The role `editor` cannot purge or share.
 
    Write each one through the `Store` port:
@@ -86,6 +87,7 @@ Known limits of this release:
 
 - **OIDC sign-in gets a new id.** agentic-identity gives an OIDC person the id `u_` plus a hash of the issuer and the subject. That id is not the old owner string. A person who signs in through OIDC does not see a drive made under the old owner string. Use bearer tokens for those drives until a re-key step ships.
 - **There is no re-key step.** This release does not move items from one owner id to another. Keep the old ids as principal ids, as step 2 does.
+- **Old items keep their old kind labels.** An old actor of kind `agent` may now be `agent_of_human`. New items carry the new kind, so a search by `--created-by-kind` sees the old and the new work under different kinds.
 
 ### Added
 

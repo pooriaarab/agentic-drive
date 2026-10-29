@@ -23,9 +23,13 @@ async function walk(
   options: BackfillOptions,
   fix: (tx: StoreOps, items: { id: string; data: Doc }[]) => Promise<number>,
 ): Promise<BackfillResult> {
+  const { maxPages } = options;
+  if (maxPages !== undefined && !(Number.isSafeInteger(maxPages) && maxPages > 0)) {
+    throw new Error("maxPages must be a positive whole number");
+  }
   let fixed = 0;
   let cursor = options.cursor;
-  for (let pages = 0; options.maxPages === undefined || pages < options.maxPages; pages++) {
+  for (let pages = 0; maxPages === undefined || pages < maxPages; pages++) {
     const page = await store.query("drive_nodes", { limit: PAGE, cursor });
     fixed += await store.transaction(async (tx) => {
       const items: { id: string; data: Doc }[] = [];

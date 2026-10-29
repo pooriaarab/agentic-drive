@@ -116,6 +116,12 @@ describe("backfillResources", () => {
     expect(await store.get("drive_nodes", "noauthor")).not.toHaveProperty("createdById");
   });
 
+  it("refuses a page count that is not a positive whole number, rather than report done", async () => {
+    const store = createMemoryStore();
+    await expect(backfillResources(store, { maxPages: Number.NaN })).rejects.toThrow(/positive whole number/);
+    await expect(backfillAuthorIds(store, { maxPages: 0 })).rejects.toThrow(/positive whole number/);
+  });
+
   it("treats an empty owner or parent as damaged too", async () => {
     const store = createMemoryStore();
     await store.put("drive_nodes", "empty", { id: "empty", owner: "", parentId: "root", kind: "file" });
