@@ -76,6 +76,23 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string): McpS
     { readOnlyHint: true },
   );
   tool(
+    "drive_home",
+    "List files and app documents together, newest change first. Pass `app` (such as docs) to see one app's documents.",
+    { app: z.string().optional(), limit: z.number().int().min(1).optional() },
+    async ({ app, limit }) => {
+      const home = await drive.home(ctx, { app, limit });
+      return { apps: home.apps, files: home.files, items: home.items.map((i) => ({ ...publicNode(i.node, i.path), app: i.app })) };
+    },
+    { readOnlyHint: true },
+  );
+  tool(
+    "drive_register_document",
+    "Put an app document in the drive, as a reference such as docs:<id>. A document that is already there comes back as it is.",
+    { ref: z.string(), name: z.string(), folder: z.string().optional() },
+    async ({ ref, name, folder }) => publicNode(await drive.registerDocument(ctx, { ref, name, folder })),
+  );
+  tool("drive_forget_document", "Move every reference to an app document to the trash.", { ref: z.string() }, async ({ ref }) => drive.forgetDocument(ctx, ref));
+  tool(
     "drive_export",
     "Write everything the owner has to a new zip file in the export folder. Give a plain file name that ends in .zip. It never overwrites a file.",
     { name: z.string() },

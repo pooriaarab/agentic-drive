@@ -22,6 +22,7 @@ const TOK_READ_BOT = tok("readbot");
 const TOK_REVOKED = tok("revoked");
 const TOK_GHOST = tok("ghost");
 const TOK_EXPIRED = tok("expired");
+const TOK_CUT = tok("cut");
 const URL_SECRET = "drive-url-secret-".padEnd(40, "s");
 // Each token is a credential of identity's store-backed sign-in: a doc keyed by the SHA-256 of the token.
 const credentials: [token: string, doc: Doc][] = [
@@ -32,6 +33,7 @@ const credentials: [token: string, doc: Doc][] = [
   [TOK_REVOKED, { principalId: "revoked", kind: "api_key" }],
   [TOK_GHOST, { principalId: "nobody", kind: "api_key" }],
   [TOK_EXPIRED, { principalId: "u1", kind: "api_key", expiresAt: 1 }],
+  [TOK_CUT, { principalId: "u1", kind: "api_key", revokedAt: 1 }],
 ];
 const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
 // The people and agents behind the tokens, in the shape the identity package keeps them.
@@ -118,6 +120,7 @@ describe("sign-in", () => {
     expect(await authenticate(as(TOK_GHOST), store)).toBeNull();
     expect(await authenticate(as(TOK_REVOKED), store)).toBeNull();
     expect(await authenticate(as(TOK_EXPIRED), store)).toBeNull();
+    expect(await authenticate(as(TOK_CUT), store)).toBeNull();
     expect(await authenticate(as(`${TOK_U1} x`), store)).toBeNull();
     // A session cookie is not enough: only a bearer token counts.
     expect(await authenticate(new Request("http://x", { headers: { cookie: `session=${TOK_U1}` } }), store)).toBeNull();
@@ -138,9 +141,9 @@ describe("sign-in", () => {
     ];
     for (const [method, path] of routes) expect((await call(method, path, { token: null })).status, `${method} ${path}`).toBe(401);
   });
-  it("answers 401 for a credential of a missing or revoked principal, and for an expired one", async () => {
+  it("answers 401 for a credential of a missing or revoked principal, and for an expired or revoked credential", async () => {
     expect((await put("/keep-me.txt", "keep")).status).toBe(201);
-    for (const token of [TOK_GHOST, TOK_REVOKED, TOK_EXPIRED]) {
+    for (const token of [TOK_GHOST, TOK_REVOKED, TOK_EXPIRED, TOK_CUT]) {
       expect((await call("GET", "/items", { token })).status, token).toBe(401);
       expect((await call("DELETE", "/account?confirm=yes", { token })).status, token).toBe(401);
       expect((await call("POST", "/trash", { token, json: { path: "/keep-me.txt" } })).status, token).toBe(401);

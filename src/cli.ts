@@ -33,7 +33,10 @@ Commands:
   purge <id>                   Delete a trashed item for good.
   search                       Find items. Flags: --name --mime --kind --min-size --max-size --created-by-kind --limit
   export <out.zip>             Write everything you own to a zip with a JSON manifest.
-  delete-all --yes             Delete everything you own for good.
+  home [--app <name>]          List files and app documents, newest change first.
+  register <ref> <name>        Put an app document in the drive. Flag: --parent <folder>
+  forget <ref>                 Move the references to an app document to the trash.
+  delete-all --yes             Erase you for good: your drive, and what you shared or held.
   mcp                          Start the MCP server on stdio.
 
 Flags:
@@ -52,7 +55,7 @@ const options = {
   "on-conflict": { type: "string" }, parents: { type: "boolean", short: "p" }, mime: { type: "string" },
   "max-bytes": { type: "string" }, kind: { type: "string" }, name: { type: "string" }, parent: { type: "string" },
   "min-size": { type: "string" }, "max-size": { type: "string" }, "created-by-kind": { type: "string" },
-  limit: { type: "string" }, yes: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "V" },
+  limit: { type: "string" }, app: { type: "string" }, yes: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "V" },
 } as const;
 
 function num(value: string | undefined, flag: string): number | undefined {
@@ -147,9 +150,22 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         print({ saved: resolve(args[0]!), size: zip.byteLength });
         break;
       }
+      case "home": {
+        const home = await drive.home(ctx, { app: values.app, limit: num(values.limit, "limit") });
+        print({ apps: home.apps, files: home.files, items: home.items.map((i) => ({ ...publicNode(i.node, i.path), app: i.app })) });
+        break;
+      }
+      case "register":
+        need(2, "register <ref> <name>");
+        print(publicNode(await drive.registerDocument(ctx, { ref: args[0]!, name: args[1]!, folder: values.parent })));
+        break;
+      case "forget":
+        need(1, "forget <ref>");
+        print(await drive.forgetDocument(ctx, args[0]!));
+        break;
       case "delete-all":
-        if (!values.yes) throw new UsageError("delete-all removes everything you own for good. Add --yes to confirm.");
-        print(await drive.deleteAll(ctx));
+        if (!values.yes) throw new UsageError("delete-all erases you for good. Add --yes to confirm.");
+        print(await drive.erasePerson(ctx));
         break;
       case "mcp": {
         const { startMcp } = await import("./mcp.js");
