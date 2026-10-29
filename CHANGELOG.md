@@ -1,15 +1,29 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+Read the breaking changes before you upgrade or deploy.
 
 ### Breaking changes
 
 - **The CLI acts as a real principal.** The `--owner`, `--actor`, and `--actor-kind` flags and the `AGENTIC_DRIVE_OWNER`, `_ACTOR`, and `_KIND` variables are gone. Pass an API key with `--token` or `AGENTIC_DRIVE_TOKEN`. agentic-identity resolves the key. With no key, or a revoked or unknown key, the CLI and `mcp` exit with code 3. The default owner `me` is gone.
 - **`openLocal(dir)` takes a folder and returns `{ drive, store }`.** Use `resolveToken(store, token)` to get the `ctx`.
+- **The Worker serves the web UI from `ui-dist`.** `wrangler.jsonc` names `ui-dist` as the assets folder. Run `npm run build:ui` before each `wrangler deploy`. Without the build, the deploy fails because `ui-dist` does not exist. A `ui-dist` left from an older build ships an old UI.
+- **Paths other than `/api/*` and `/health` get the UI.** The assets answer every other path. An unknown GET path gets the UI page, not a 404 from the Worker. A client that expects a 404 for such a path must change.
 
 ### Added
 
 - **`principal add`, `principal revoke`, `key issue`, and `key revoke`** make local principals and keys.
+- **A web UI.** The Worker serves it from `ui-dist` (`npm run build:ui`). It uses agentic-design and the typed client. It has a folder tree, breadcrumbs, a list and a grid, upload by button and by drop, new folder, rename, move, trash and restore, and a share dialog. An item that an agent made shows a "Created by agent" label while a person is its last editor. "Edited by" names the last editor, a person or an agent. A Playwright test with an axe WCAG 2.2 AA check covers each view in light and dark.
+- **A content security policy.** The UI loads scripts and fonts only from its own origin. Inline styles are allowed. The UI refuses to be framed. It also sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+- **Same-origin downloads.** The UI refuses a download link on another origin. Set `DRIVE_PUBLIC_URL` to the origin that serves the UI.
+- **The UI ships in the package.** `npm pack` runs `build:ui` in `prepack`, and the tarball has `ui-dist`.
+
+### Changed
+
+- `npm run ci:local` and CI also build the UI and run `npm run test:e2e`. The E2E test needs Chromium.
+- The package adds no runtime dependency. The UI build and test tools are dev dependencies.
+
 
 ## 0.3.0
 
@@ -23,7 +37,6 @@ Read the breaking changes before you upgrade. The migration steps follow them.
 
 ### Added
 
-- **A web UI.** The Worker serves it from `ui-dist` (`npm run build:ui`). It uses agentic-design and the typed client. A Playwright test with an axe WCAG 2.2 AA check covers each view in light and dark.
 - **`agentic-drive/client`.** A typed client for the HTTP API: `createClient({ baseUrl, token, fetch?, retries? })`. It has one method for each bearer route and each shared route, a typed `DriveApiError` with the API `code` and the HTTP `status`, and `AbortSignal` support. It sends a write once. It uses only `fetch`.
 
 ### Changed
