@@ -134,7 +134,8 @@ describe("exportAccount", () => {
   it("holds the subject's data under stable names, as plain JSON, and nothing of others", async () => {
     const team = await seed();
     const out = await driveAccount.exportAccount(ALICE, deps(A));
-    expect(Object.keys(out)).toEqual(["items", "authored", "agents", "grants", "invites", "audit"]);
+    expect(Object.keys(out)).toEqual(["items", "authored", "agents", "grants", "invites", "audit", "activity"]);
+    expect(out.activity.length).toBeGreaterThan(0);
     const names = out.items.map((i) => i.name).sort();
     expect(names).toEqual(["a.txt", "gone.txt", "mine"]);
     const file = out.items.find((i) => i.name === "a.txt")!;
@@ -188,7 +189,7 @@ describe("exportAccount", () => {
   it("returns plain JSON, with undefined keys dropped and dates as strings", async () => {
     const stub = {
       exportData: async () => [],
-      exportPerson: async () => ({ partial: false, authored: [{ id: "x", at: new Date(0), gone: undefined }], agents: [], shares: { held: [], invitesCreated: [] }, audit: [] }),
+      exportPerson: async () => ({ partial: false, authored: [{ id: "x", at: new Date(0), gone: undefined }], agents: [], shares: { held: [], invitesCreated: [] }, audit: [], activity: [] }),
       erasePerson: async () => ({ removed: 0, grants: 0, invites: 0, anonymized: 0 }),
     } as unknown as Drive;
     const out = await driveAccount.exportAccount(ALICE, { drive: stub, ctx: A });

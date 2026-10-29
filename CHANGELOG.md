@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Account plug-in.** `driveAccount` (from `agentic-drive/account`, also exported from the root) has `exportAccount` and `eraseAccount`, so a host runs a GDPR export and erase without reading the drive storage layout. The export has `items`, `authored`, `agents`, `grants`, `invites`, and `audit`. The erase returns counts, and a second erase counts zero.
+- **Account plug-in.** `driveAccount` (from `agentic-drive/account`, also exported from the root) has `exportAccount` and `eraseAccount`, so a host runs a GDPR export and erase without reading the drive storage layout. The export has `items`, `authored`, `agents`, `grants`, `invites`, `audit`, and `activity`. The erase returns counts, and a second erase counts zero.
 
 ## 0.9.0
 
