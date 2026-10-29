@@ -2,12 +2,18 @@
 
 ## 0.9.1
 
-Patch. No change to the SDK, CLI, MCP or HTTP shape.
+No change to the SDK, CLI, MCP or HTTP shape. One breaking change for hosts that pin `agentic-design` to `^0.4.0`, see the first item under Breaking.
+
+### Breaking
+
+- **A host that pins `agentic-design` to `^0.4.0` must move its pin to `^0.5.0`.** The 0.9.0 README told hosts to add `agentic-design@^0.4.0` to their own dependencies. This release depends on `agentic-design` `^0.5.0`, so a host that keeps `^0.4.0` gets two copies. The two copies do not share React context. A host that wraps `DriveBrowser` in its own `ToastProvider` or `TooltipProvider` from `agentic-design/react` on 0.4 gets the error `useToast needs a ToastProvider above it`. `mount()` brings its own providers and is not affected.
+- A host that also pins `agentic-identity` to `^0.6.0` gets two copies of it, and the identity error classes and types from one copy do not match the other. Move the host's pin to `^0.9.0`.
+
+### Changed
 
 - `agentic-identity` is `^0.9.0`. It was `^0.6.0`. The lockfile follows. The 0.7.0 to 0.9.0 additions are not used by the drive package.
-- `agentic-design` is `^0.5.0`. It was `^0.4.0`. The design release changes colors and sizes only. The token names and the `agd-` prefix do not change. The web UI and the embedded UI take the new look: a cooler palette, 2.25rem controls, smaller headings and more dialog padding. The screenshots in `docs/ui` show the 0.4 look until they are refreshed.
+- `agentic-design` is `^0.5.0`. It was `^0.4.0`. The design release changes values only: colors, borders, shadows, the large radius, and the disabled and danger button styles. The token names and the `agd-` prefix do not change. The web UI and the embedded UI take the new look. The screenshots in `docs/ui` show the 0.4 look until they are refreshed.
 - The README embed section names `agentic-design@^0.5.0`.
-- A host that also pins `agentic-identity` to `^0.6.0` or `agentic-design` to `^0.4.0` gets two copies of it. Move the host's pins to `^0.9.0` and `^0.5.0`.
 
 ## 0.9.0
 
