@@ -1,6 +1,7 @@
 // End to end: the real Worker under `wrangler dev`, with local D1 and R2.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
+import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,19 +21,19 @@ const TOK_U2 = tok("u2");
 const TOK_READ_BOT = tok("readbot");
 const TOK_REVOKED = tok("revoked");
 const TOK_GHOST = tok("ghost");
-const TOK_NO_PRINCIPAL = tok("noprincipal");
-const TOK_SHORT = "short-token";
+const TOK_EXPIRED = tok("expired");
 const URL_SECRET = "drive-url-secret-".padEnd(40, "s");
-const tokens = {
-  [TOK_U1]: { principalId: "u1" },
-  [TOK_BOT]: { principalId: "bot" },
-  [TOK_READ_BOT]: { principalId: "readbot" },
-  [TOK_U2]: { principalId: "u2" },
-  [TOK_REVOKED]: { principalId: "revoked" },
-  [TOK_GHOST]: { principalId: "nobody" },
-  [TOK_NO_PRINCIPAL]: {},
-  [TOK_SHORT]: { principalId: "u1" },
-};
+// Each token is a credential of identity's store-backed sign-in: a doc keyed by the SHA-256 of the token.
+const credentials: [token: string, doc: Doc][] = [
+  [TOK_U1, { principalId: "u1", kind: "api_key" }],
+  [TOK_BOT, { principalId: "bot", kind: "api_key" }],
+  [TOK_READ_BOT, { principalId: "readbot", kind: "api_key" }],
+  [TOK_U2, { principalId: "u2", kind: "api_key" }],
+  [TOK_REVOKED, { principalId: "revoked", kind: "api_key" }],
+  [TOK_GHOST, { principalId: "nobody", kind: "api_key" }],
+  [TOK_EXPIRED, { principalId: "u1", kind: "api_key", expiresAt: 1 }],
+];
+const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
 // The people and agents behind the tokens, in the shape the identity package keeps them.
 const principals: Doc[] = [
   { id: "u1", kind: "human", scopes: ["drive:admin"] },
@@ -44,6 +45,8 @@ const principals: Doc[] = [
 const seedSql = () =>
   `${D1_SCHEMA};\n${principals
     .map((p) => `INSERT INTO store_docs (collection, id, body) VALUES ('principals', '${p.id}', '${JSON.stringify(p)}');`)
+    .join("\n")}\n${credentials
+    .map(([token, doc]) => `INSERT INTO store_docs (collection, id, body) VALUES ('credentials', '${hashOf(token)}', '${JSON.stringify(doc)}');`)
     .join("\n")}\nINSERT INTO store_docs (collection, id, body) VALUES ('users', 'u2', '${JSON.stringify({ email: "U2@example.com", emailVerified: true })}');\n`;
 let proc: ChildProcess;
 
@@ -79,7 +82,7 @@ beforeAll(async () => {
     cwd: root, encoding: "utf8", env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
   });
   if (seeded.status !== 0) throw new Error(`could not seed the database: ${seeded.stderr}`);
-  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`], {
+  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`, "--var", "DRIVE_REGION:unknown"], {
     cwd: root, stdio: "ignore", detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
   });
   for (let i = 0; i < 120; i++) {
@@ -105,27 +108,27 @@ describe("sign-in", () => {
     expect((await json(await call("GET", "/items", { token: null }))).error.code).toBe("UNAUTHORIZED");
     expect((await fetch(`${base}/health`)).status).toBe(200);
   });
-  it("fails closed when tokens are unset or broken, or the principal is not live", async () => {
+  it("fails closed on a missing, unknown, expired, or revoked credential, and on a principal that is not live", async () => {
     const store = createMemoryStore();
     for (const p of principals) await store.put("principals", p.id as string, p);
+    for (const [token, doc] of credentials) await store.put("credentials", hashOf(token), doc);
     const as = (token: string) => new Request("http://x", { headers: { authorization: `Bearer ${token}` } });
-    const env = (grants: unknown = tokens) => ({ DRIVE_API_TOKENS: JSON.stringify(grants) }) as never;
-    expect(await authenticate(as(TOK_U1), {} as never, store)).toBeNull();
-    expect(await authenticate(as(TOK_U1), { DRIVE_API_TOKENS: "{not json" } as never, store)).toBeNull();
-    expect(await authenticate(as(TOK_U1), env(null), store)).toBeNull();
-    expect(await authenticate(as(TOK_NO_PRINCIPAL), env(), store)).toBeNull();
-    expect(await authenticate(as(TOK_GHOST), env(), store)).toBeNull();
-    expect(await authenticate(as(TOK_REVOKED), env(), store)).toBeNull();
-    expect(await authenticate(as(TOK_SHORT), env(), store)).toBeNull();
-    for (const bad of [7, "", ["u1"], { id: "u1" }, null]) expect(await authenticate(as(TOK_U1), env({ [TOK_U1]: { principalId: bad } }), store)).toBeNull();
-    expect(await authenticate(as(TOK_U1), env(), store)).toMatchObject({ owner: "u1", actor: { id: "u1", kind: "human" }, principal: { scopes: ["drive:admin"] } });
+    expect(await authenticate(new Request("http://x"), store)).toBeNull();
+    expect(await authenticate(as("not-a-credential"), store)).toBeNull();
+    expect(await authenticate(as(TOK_GHOST), store)).toBeNull();
+    expect(await authenticate(as(TOK_REVOKED), store)).toBeNull();
+    expect(await authenticate(as(TOK_EXPIRED), store)).toBeNull();
+    expect(await authenticate(as(`${TOK_U1} x`), store)).toBeNull();
+    // A session cookie is not enough: only a bearer token counts.
+    expect(await authenticate(new Request("http://x", { headers: { cookie: `session=${TOK_U1}` } }), store)).toBeNull();
+    expect(await authenticate(as(TOK_U1), store)).toMatchObject({ owner: "u1", actor: { id: "u1", kind: "human" }, principal: { scopes: ["drive:admin"] } });
     // An agent acts in its owner's drive, with the narrower scopes of its own grant.
-    expect(await authenticate(as(TOK_READ_BOT), env(), store)).toMatchObject({
+    expect(await authenticate(as(TOK_READ_BOT), store)).toMatchObject({
       owner: "u1", actor: { id: "readbot", kind: "agent_of_human" }, principal: { scopes: ["drive:read"], chain: [{ id: "u1", kind: "human" }, { id: "readbot", kind: "agent_of_human" }] },
     });
     // Revoking the owner revokes the agent below it.
     await store.put("principals", "u1", { ...principals[0]!, revokedAt: 1 });
-    expect(await authenticate(as(TOK_BOT), env(), store)).toBeNull();
+    expect(await authenticate(as(TOK_BOT), store)).toBeNull();
   });
   it("answers 401 on every route without a token", async () => {
     const routes: [string, string][] = [
@@ -135,9 +138,9 @@ describe("sign-in", () => {
     ];
     for (const [method, path] of routes) expect((await call(method, path, { token: null })).status, `${method} ${path}`).toBe(401);
   });
-  it("answers 401 for a token with no principal, an unknown or revoked one, and a short one", async () => {
+  it("answers 401 for a credential of a missing or revoked principal, and for an expired one", async () => {
     expect((await put("/keep-me.txt", "keep")).status).toBe(201);
-    for (const token of [TOK_NO_PRINCIPAL, TOK_GHOST, TOK_REVOKED, TOK_SHORT]) {
+    for (const token of [TOK_GHOST, TOK_REVOKED, TOK_EXPIRED]) {
       expect((await call("GET", "/items", { token })).status, token).toBe(401);
       expect((await call("DELETE", "/account?confirm=yes", { token })).status, token).toBe(401);
       expect((await call("POST", "/trash", { token, json: { path: "/keep-me.txt" } })).status, token).toBe(401);
@@ -208,7 +211,7 @@ describe("files", () => {
   it("refuses every API call while the URL settings are missing", async () => {
     const app = createApp();
     const request = () => new Request("http://x/api/v1/drive/items", { headers: { authorization: `Bearer ${TOK_U1}` } });
-    const env = { DB: {}, FILES: {}, DRIVE_API_TOKENS: JSON.stringify(tokens) };
+    const env = { DB: {}, FILES: {} };
     for (const extra of [{}, { DRIVE_PUBLIC_URL: base }, { DRIVE_URL_SECRET: URL_SECRET }, { DRIVE_PUBLIC_URL: base, DRIVE_URL_SECRET: "too-short" }, { DRIVE_PUBLIC_URL: "not a url", DRIVE_URL_SECRET: URL_SECRET }]) {
       const res = await app.fetch(request(), { ...env, ...extra } as never);
       expect(res.status, JSON.stringify(extra)).toBe(503);
@@ -226,7 +229,7 @@ describe("signed download URLs", () => {
     const res = await fetch(url);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/csv");
-    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(res.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''data.csv");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.text()).toBe("a,b\n1,2\n");
   });
@@ -234,7 +237,7 @@ describe("signed download URLs", () => {
     await put("/sig/page.html", "<script>alert(1)</script>", TOK_U1, "&mime=text/html");
     const res = await fetch(await signed("/sig/page.html"));
     expect(res.headers.get("content-type")).toBe("application/octet-stream");
-    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(res.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''page.html");
   });
   it("refuse a changed key, a changed signature, a missing part, and another route's token", async () => {
     const url = new URL(await signed("/sig/data.csv"));

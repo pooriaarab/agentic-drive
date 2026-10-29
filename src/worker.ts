@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
-import { createSharing, resolveChain, type Principal, type Role, type Store } from "agentic-identity";
+import { createSharing, createStoreAuth, parseRegion, type Role, type Store } from "agentic-identity";
 import { createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
@@ -9,26 +9,19 @@ import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
 export interface WorkerEnv {
   DB: D1Like;
   FILES: R2Like;
-  /**
-   * JSON: `{ "<token>": { "principalId": "u1" } }`. A token is at least 32 characters. The principal must exist
-   * in the `principals` collection, and its whole chain must be live. A token for a missing, revoked, or
-   * expired principal gets 401. Without the secret, every request fails with 401.
-   * This is a stopgap until agentic-identity ships its store-backed sign-in.
-   */
-  DRIVE_API_TOKENS?: string;
   DRIVE_MAX_BYTES?: string;
   /** The origin of this Worker, such as `https://drive.example.com`. Signed download URLs start with it. */
   DRIVE_PUBLIC_URL?: string;
   /** At least 32 bytes. Signs download URLs. Without it, every request gets 503. */
   DRIVE_URL_SECRET?: string;
+  DRIVE_REGION?: string;
 }
 
-const MIN_TOKEN_LENGTH = 32;
 type App = { Bindings: WorkerEnv; Variables: { drive: Drive; store: Store; ctx: Ctx } };
 
 const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
   CROSS_DRIVE: 409, INVALID_SHARE: 400, TOO_MANY_ITEMS: 409,
-  TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409,
+  TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409, BLOB_EXISTS: 500,
   NOT_FOUND: 404, NAME_TAKEN: 409, INVALID_NAME: 400, INVALID_PATH: 400, INVALID_REF: 400, NOT_A_FOLDER: 400, NOT_A_FILE: 400,
   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
 };
@@ -36,38 +29,15 @@ const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
 const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 503) =>
   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } });
 
-function sameText(a: string, b: string): boolean {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  return diff === 0;
-}
-
 /**
- * The caller behind a bearer token: the principal the token names, and the rights that remain after
- * every step of its delegation chain. Any problem gives null.
+ * The caller behind a bearer token, resolved by the store-backed Auth of agentic-identity: the credential
+ * names a principal, and the whole delegation chain must be live. Only a bearer token counts. A session
+ * cookie is refused, because no check of the request origin stands behind it here. Any problem gives null.
  */
-export async function authenticate(request: Request, env: WorkerEnv, store: Store, now: () => number = Date.now): Promise<Ctx | null> {
-  const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
-  if (!token || !env.DRIVE_API_TOKENS) return null;
-  let grants: Record<string, unknown>;
-  try {
-    grants = JSON.parse(env.DRIVE_API_TOKENS) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  if (typeof grants !== "object" || grants === null) return null;
-  let found: unknown;
-  for (const [candidate, grant] of Object.entries(grants)) {
-    if (sameText(candidate, token) && candidate.length >= MIN_TOKEN_LENGTH) found = grant;
-  }
-  const principalId = typeof found === "object" && found !== null ? (found as Record<string, unknown>).principalId : undefined;
-  if (typeof principalId !== "string" || principalId === "") return null;
-  const resolved = await resolveChain(principalId, async (id) => ((await store.get("principals", id)) as Principal | null) ?? undefined, { now: now() });
-  if (!resolved.ok) return null;
-  const principal = { principalId: resolved.principalId, kind: resolved.kind, chain: resolved.chain, scopes: resolved.scopes };
-  return { owner: resolved.chain[0]!.id, actor: { id: resolved.principalId, kind: resolved.kind as ActorKind }, principal };
+export async function authenticate(request: Request, store: Store, now?: () => number): Promise<Ctx | null> {
+  if (!/^Bearer [A-Za-z0-9_-]{1,512}$/.test(request.headers.get("authorization") ?? "")) return null;
+  const principal = await createStoreAuth(store, now ? { now } : {}).authenticate(request);
+  return principal ? { owner: principal.chain[0]!.id, actor: { id: principal.principalId, kind: principal.kind as ActorKind }, principal } : null;
 }
 
 /** The database is ready once its table exists. The check runs once per binding. */
@@ -84,9 +54,12 @@ function settings(env: WorkerEnv): { publicUrl: string; urlSecret: string } | nu
   return typeof urlSecret === "string" && new TextEncoder().encode(urlSecret).length >= 32 ? { publicUrl, urlSecret } : null;
 }
 
+/** The region both adapters declare. It is "eu" unless DRIVE_REGION says otherwise ("unknown" is for local runs, where D1 does not report a region). */
+const regionOf = (env: WorkerEnv) => parseRegion(env.DRIVE_REGION ?? "eu");
+
 /** The R2 bucket is declared as "eu": create it with `--jurisdiction eu`. */
 function blobsFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>) {
-  return createR2Blobs(env.FILES, { region: "eu", urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
+  return createR2Blobs(env.FILES, { region: regionOf(env), urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
 }
 
 async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<{ drive: Drive; store: Store }> {
@@ -99,7 +72,7 @@ async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof se
     schemas.set(env.DB, ready);
   }
   await ready;
-  const store = createD1Store(env.DB, { region: "eu" });
+  const store = createD1Store(env.DB, { region: regionOf(env) });
   return { store, drive: createDrive({ store, blobs: blobsFor(env, config), sharing: createSharing(store) }) };
 }
 
@@ -123,7 +96,7 @@ export function createApp(): Hono<App> {
     const config = settings(c.env);
     if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
     const { drive, store } = await driveFor(c.env, config);
-    const ctx = await authenticate(c.req.raw, c.env, store);
+    const ctx = await authenticate(c.req.raw, store);
     if (!ctx) return fail("UNAUTHORIZED", "send a valid bearer token", 401);
     c.set("ctx", ctx);
     c.set("drive", drive);
@@ -221,8 +194,8 @@ export function createApp(): Hono<App> {
     if (!blob) return fail("NOT_FOUND", "the bytes are gone", 404);
     return new Response(blob.data as BodyInit, {
       headers: {
-        "content-type": safeMime(blob.contentType),
-        "content-disposition": "attachment",
+        "content-type": safeMime(signed.responseContentType ?? blob.contentType),
+        "content-disposition": signed.responseContentDisposition ?? "attachment",
         "x-content-type-options": "nosniff",
         "cache-control": "private, no-store",
       },
@@ -284,7 +257,7 @@ export function createApp(): Hono<App> {
     const config = settings(c.env);
     if (!config) return { stop: fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503) };
     const { drive, store } = await driveFor(c.env, config);
-    const ctx = await authenticate(c.req.raw, c.env, store);
+    const ctx = await authenticate(c.req.raw, store);
     if (!ctx && c.req.header("authorization")) return { stop: fail("UNAUTHORIZED", "send a valid bearer token", 401) };
     return { drive, principal: ctx?.principal ?? null, token: c.req.header("x-link-token") };
   };
