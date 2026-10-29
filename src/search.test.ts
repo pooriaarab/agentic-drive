@@ -69,7 +69,9 @@ describe("export", () => {
   });
   it("rejects a zip with a changed byte", async () => {
     const bytes = await buildExport(drive, me);
-    bytes[bytes.indexOf(0x70) + 0] ^= 0xff;
+    // Flip the first byte of the first entry. A byte picked by value may land in a header field that no check covers.
+    const nameLength = bytes[26]! | (bytes[27]! << 8);
+    bytes[30 + nameLength] ^= 0xff;
     expect(() => readZip(bytes)).toThrow(/zip/i);
   });
 });

@@ -1,10 +1,13 @@
 // End to end: the real Worker under `wrangler dev`, with local D1 and R2.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
-import { mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createMemoryStore, type Doc } from "agentic-identity";
+import { D1_SCHEMA } from "agentic-identity/cloudflare";
 import { authenticate, createApp } from "./worker.js";
 import { readZip } from "./zip.js";
 
@@ -15,18 +18,36 @@ const tok = (name: string) => `${name}-`.padEnd(40, "k");
 const TOK_U1 = tok("u1");
 const TOK_BOT = tok("bot");
 const TOK_U2 = tok("u2");
-const TOK_NO_ACTOR = tok("noactor");
-const TOK_AGENT_NO_ACTOR = tok("agentnoactor");
-const TOK_SHORT = "short-token";
+const TOK_READ_BOT = tok("readbot");
+const TOK_REVOKED = tok("revoked");
+const TOK_GHOST = tok("ghost");
+const TOK_EXPIRED = tok("expired");
 const URL_SECRET = "drive-url-secret-".padEnd(40, "s");
-const tokens = {
-  [TOK_U1]: { owner: "u1", actor: "u1", kind: "human" },
-  [TOK_BOT]: { owner: "u1", actor: "bot", kind: "agent_of_human" },
-  [TOK_U2]: { owner: "u2", actor: "u2", kind: "human" },
-  [TOK_NO_ACTOR]: { owner: "u1", kind: "human" },
-  [TOK_AGENT_NO_ACTOR]: { owner: "u1", kind: "agent_of_human" },
-  [TOK_SHORT]: { owner: "u1", actor: "u1", kind: "human" },
-};
+// Each token is a credential of identity's store-backed sign-in: a doc keyed by the SHA-256 of the token.
+const credentials: [token: string, doc: Doc][] = [
+  [TOK_U1, { principalId: "u1", kind: "api_key" }],
+  [TOK_BOT, { principalId: "bot", kind: "api_key" }],
+  [TOK_READ_BOT, { principalId: "readbot", kind: "api_key" }],
+  [TOK_U2, { principalId: "u2", kind: "api_key" }],
+  [TOK_REVOKED, { principalId: "revoked", kind: "api_key" }],
+  [TOK_GHOST, { principalId: "nobody", kind: "api_key" }],
+  [TOK_EXPIRED, { principalId: "u1", kind: "api_key", expiresAt: 1 }],
+];
+const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
+// The people and agents behind the tokens, in the shape the identity package keeps them.
+const principals: Doc[] = [
+  { id: "u1", kind: "human", scopes: ["drive:admin"] },
+  { id: "u2", kind: "human", scopes: ["drive:admin"] },
+  { id: "bot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:write"] },
+  { id: "readbot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:read"] },
+  { id: "revoked", kind: "human", scopes: ["drive:admin"], revokedAt: 1 },
+];
+const seedSql = () =>
+  `${D1_SCHEMA};\n${principals
+    .map((p) => `INSERT INTO store_docs (collection, id, body) VALUES ('principals', '${p.id}', '${JSON.stringify(p)}');`)
+    .join("\n")}\n${credentials
+    .map(([token, doc]) => `INSERT INTO store_docs (collection, id, body) VALUES ('credentials', '${hashOf(token)}', '${JSON.stringify(doc)}');`)
+    .join("\n")}\nINSERT INTO store_docs (collection, id, body) VALUES ('users', 'u2', '${JSON.stringify({ email: "U2@example.com", emailVerified: true })}');\n`;
 let proc: ChildProcess;
 
 async function call(method: string, path: string, opts: { token?: string | null; json?: unknown; body?: BodyInit; headers?: Record<string, string> } = {}) {
@@ -55,7 +76,13 @@ beforeAll(async () => {
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
   const persist = mkdtempSync(join(tmpdir(), "drive-wrangler-"));
-  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`, "--var", "DRIVE_REGION:unknown"], {
+  const seed = join(persist, "seed.sql");
+  writeFileSync(seed, seedSql());
+  const seeded = spawnSync("npx", ["wrangler", "d1", "execute", "agentic-drive", "--local", "--persist-to", persist, "--file", seed], {
+    cwd: root, encoding: "utf8", env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
+  });
+  if (seeded.status !== 0) throw new Error(`could not seed the database: ${seeded.stderr}`);
+  proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`, "--var", "DRIVE_REGION:unknown"], {
     cwd: root, stdio: "ignore", detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
   });
   for (let i = 0; i < 120; i++) {
@@ -81,34 +108,39 @@ describe("sign-in", () => {
     expect((await json(await call("GET", "/items", { token: null }))).error.code).toBe("UNAUTHORIZED");
     expect((await fetch(`${base}/health`)).status).toBe(200);
   });
-  it("fails closed when tokens are unset or broken", () => {
+  it("fails closed on a missing, unknown, expired, or revoked credential, and on a principal that is not live", async () => {
+    const store = createMemoryStore();
+    for (const p of principals) await store.put("principals", p.id as string, p);
+    for (const [token, doc] of credentials) await store.put("credentials", hashOf(token), doc);
     const as = (token: string) => new Request("http://x", { headers: { authorization: `Bearer ${token}` } });
-    const withGrant = (grant: unknown, token = TOK_U1) => ({ DRIVE_API_TOKENS: JSON.stringify({ [token]: grant }) }) as never;
-    expect(authenticate(as(TOK_U1), {} as never)).toBeNull();
-    expect(authenticate(as(TOK_U1), { DRIVE_API_TOKENS: "{not json" } as never)).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({}))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant(null))).toBeNull();
-    expect(authenticate(as(TOK_U1), { DRIVE_API_TOKENS: JSON.stringify(tokens) } as never)).toEqual({ owner: "u1", actor: { id: "u1", kind: "human" } });
-    // Each part of the principal is required. A missing or malformed part denies the token.
-    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", kind: "human" }))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: "u1" }))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: "", kind: "human" }))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({ owner: "", actor: "u1", kind: "human" }))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: "u1", kind: "root" }))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({ owner: 7, actor: "u1", kind: "human" }))).toBeNull();
-    expect(authenticate(as(TOK_U1), withGrant({ owner: "u1", actor: ["u1"], kind: "human" }))).toBeNull();
-    expect(authenticate(as(TOK_SHORT), withGrant({ owner: "u1", actor: "u1", kind: "human" }, TOK_SHORT))).toBeNull();
+    expect(await authenticate(new Request("http://x"), store)).toBeNull();
+    expect(await authenticate(as("not-a-credential"), store)).toBeNull();
+    expect(await authenticate(as(TOK_GHOST), store)).toBeNull();
+    expect(await authenticate(as(TOK_REVOKED), store)).toBeNull();
+    expect(await authenticate(as(TOK_EXPIRED), store)).toBeNull();
+    expect(await authenticate(as(`${TOK_U1} x`), store)).toBeNull();
+    // A session cookie is not enough: only a bearer token counts.
+    expect(await authenticate(new Request("http://x", { headers: { cookie: `session=${TOK_U1}` } }), store)).toBeNull();
+    expect(await authenticate(as(TOK_U1), store)).toMatchObject({ owner: "u1", actor: { id: "u1", kind: "human" }, principal: { scopes: ["drive:admin"] } });
+    // An agent acts in its owner's drive, with the narrower scopes of its own grant.
+    expect(await authenticate(as(TOK_READ_BOT), store)).toMatchObject({
+      owner: "u1", actor: { id: "readbot", kind: "agent_of_human" }, principal: { scopes: ["drive:read"], chain: [{ id: "u1", kind: "human" }, { id: "readbot", kind: "agent_of_human" }] },
+    });
+    // Revoking the owner revokes the agent below it.
+    await store.put("principals", "u1", { ...principals[0]!, revokedAt: 1 });
+    expect(await authenticate(as(TOK_BOT), store)).toBeNull();
   });
   it("answers 401 on every route without a token", async () => {
     const routes: [string, string][] = [
       ["GET", "/items"], ["GET", "/stat?path=/"], ["POST", "/folders"], ["PUT", "/files?path=/x"], ["GET", "/files?path=/x"], ["GET", "/url?path=/x"],
       ["POST", "/move"], ["POST", "/trash"], ["GET", "/trash"], ["POST", "/restore"], ["POST", "/purge"], ["GET", "/search"], ["GET", "/export"], ["DELETE", "/account?confirm=yes"],
+      ["GET", "/shares?path=/x"], ["POST", "/shares"], ["DELETE", "/shares?path=/x&subjectId=u2"], ["POST", "/invites"], ["POST", "/invites/accept"], ["POST", "/links"], ["DELETE", "/links?id=x"],
     ];
     for (const [method, path] of routes) expect((await call(method, path, { token: null })).status, `${method} ${path}`).toBe(401);
   });
-  it("answers 401 for a token with no actor, and an agent token with no actor cannot delete anything", async () => {
+  it("answers 401 for a credential of a missing or revoked principal, and for an expired one", async () => {
     expect((await put("/keep-me.txt", "keep")).status).toBe(201);
-    for (const token of [TOK_NO_ACTOR, TOK_AGENT_NO_ACTOR, TOK_SHORT]) {
+    for (const token of [TOK_GHOST, TOK_REVOKED, TOK_EXPIRED]) {
       expect((await call("GET", "/items", { token })).status, token).toBe(401);
       expect((await call("DELETE", "/account?confirm=yes", { token })).status, token).toBe(401);
       expect((await call("POST", "/trash", { token, json: { path: "/keep-me.txt" } })).status, token).toBe(401);
@@ -179,7 +211,7 @@ describe("files", () => {
   it("refuses every API call while the URL settings are missing", async () => {
     const app = createApp();
     const request = () => new Request("http://x/api/v1/drive/items", { headers: { authorization: `Bearer ${TOK_U1}` } });
-    const env = { DB: {}, FILES: {}, DRIVE_API_TOKENS: JSON.stringify(tokens) };
+    const env = { DB: {}, FILES: {} };
     for (const extra of [{}, { DRIVE_PUBLIC_URL: base }, { DRIVE_URL_SECRET: URL_SECRET }, { DRIVE_PUBLIC_URL: base, DRIVE_URL_SECRET: "too-short" }, { DRIVE_PUBLIC_URL: "not a url", DRIVE_URL_SECRET: URL_SECRET }]) {
       const res = await app.fetch(request(), { ...env, ...extra } as never);
       expect(res.status, JSON.stringify(extra)).toBe(503);
@@ -264,5 +296,100 @@ describe("trash, search, export, erase", () => {
     expect(gone.removed).toBeGreaterThan(3);
     expect(await json(await call("GET", "/items"))).toEqual([]);
     expect((await json(await call("GET", "/items", { token: TOK_U2 }))).map((n: { name: string }) => n.name)).toEqual(["theirs.txt"]);
+  });
+});
+
+describe("sharing over HTTP", () => {
+  const post = (path: string, json: unknown, token?: string | null) => call("POST", path, { token, json });
+  const status = async (res: Promise<Response>) => (await res).status;
+  const visit = (path: string, headers: Record<string, string> = {}) => fetch(`${base}/api/v1/drive/shared${path}`, { headers });
+  let folderId = "";
+  let fileId = "";
+  it("hides an item from a person with no role, and shows it after a viewer share", async () => {
+    expect((await put("/pub/docs/a.txt", "hello", TOK_U1, "&parents=true&mime=text/plain")).status).toBe(201);
+    folderId = (await json(await call("GET", "/stat?path=/pub"))).id;
+    fileId = (await json(await call("GET", "/stat?path=/pub/docs/a.txt"))).id;
+    expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
+    expect(await status(call("GET", `/items?path=${folderId}`, { token: TOK_U2 }))).toBe(404);
+    expect(await status(call("GET", `/files?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
+    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", role: "viewer" }))).toBe(200);
+    expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(200);
+    expect((await json(await call("GET", `/items?path=${folderId}`, { token: TOK_U2 }))).map((n: { name: string }) => n.name)).toEqual(["docs"]);
+    expect(await (await call("GET", `/files?path=${fileId}`, { token: TOK_U2 })).text()).toBe("hello");
+    expect(await status(fetch(await json(await call("GET", `/url?path=${fileId}`, { token: TOK_U2 })).then((b) => b.url)))).toBe(200);
+  });
+  it("answers 403 to a viewer on every write route, and on every share route", async () => {
+    const as = TOK_U2;
+    expect(await status(put(`${folderId}/n.txt`, "x", as))).toBe(403);
+    expect(await status(post("/folders", { path: `${folderId}/d` }, as))).toBe(403);
+    expect(await status(post("/trash", { path: fileId }, as))).toBe(403);
+    expect(await status(post("/move", { src: fileId, folder: folderId }, as))).toBe(403);
+    expect(await status(post("/shares", { path: folderId, subjectId: "u2", role: "owner" }, as))).toBe(403);
+    expect(await status(call("GET", `/shares?path=${folderId}`, { token: as }))).toBe(403);
+    expect(await status(post("/links", { path: folderId, role: "viewer" }, as))).toBe(403);
+    expect(await status(post("/invites", { path: folderId, role: "viewer", handle: "x" }, as))).toBe(403);
+    expect(await status(call("DELETE", `/shares?path=${folderId}&subjectId=u1`, { token: as }))).toBe(403);
+    expect((await call("GET", "/search?name=a.txt", { token: as })).status).toBe(200);
+    expect(await json(await call("GET", "/search?name=a.txt", { token: as }))).toEqual([]);
+  });
+  it("lets an editor write into the shared folder, in the owner's drive, but not purge or share", async () => {
+    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", role: "editor" }))).toBe(200);
+    const made = await put(`${folderId}/n.txt`, "from u2", TOK_U2);
+    expect(made.status).toBe(201);
+    const node = await json(made);
+    expect(node).toMatchObject({ owner: "u1", createdBy: { id: "u2", kind: "human" } });
+    expect(await status(put("/pub/n.txt", "dup"))).toBe(409);
+    expect(await status(post("/trash", { path: node.id }, TOK_U2))).toBe(200);
+    expect(await status(post("/purge", { id: node.id }, TOK_U2))).toBe(403);
+    expect(await status(post("/shares", { path: folderId, subjectId: "u2", role: "owner" }, TOK_U2))).toBe(403);
+    expect(await status(post("/purge", { id: node.id }))).toBe(200);
+  });
+  it("narrows an agent to its scopes", async () => {
+    expect(await status(call("GET", "/items?path=/pub", { token: TOK_READ_BOT }))).toBe(200);
+    expect(await status(put("/pub/by-readbot.txt", "x", TOK_READ_BOT))).toBe(403);
+    expect(await status(put("/pub/by-bot.txt", "x", TOK_BOT))).toBe(201);
+    expect(await status(post("/shares", { path: "/pub", subjectId: "u2", role: "owner" }, TOK_BOT))).toBe(403);
+  });
+  it("serves a linked folder to a visitor, and stops at the expiry, the revoke, and a wrong token", async () => {
+    await call("DELETE", `/shares?path=/pub&subjectId=u2`);
+    expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
+    const link = await json(await post("/links", { path: "/pub", role: "viewer", expiresInMs: 60_000 }));
+    expect(link.token).toBeTruthy();
+    const open = await visit(`/${fileId}`, { "x-link-token": link.token });
+    expect(open.status).toBe(200);
+    expect((await open.json()).name).toBe("a.txt");
+    const content = await visit(`/${fileId}/content`, { "x-link-token": link.token });
+    expect(await content.text()).toBe("hello");
+    expect(content.headers.get("content-disposition")).toMatch(/^attachment/);
+    expect(content.headers.get("x-content-type-options")).toBe("nosniff");
+    expect((await (await visit(`/${folderId}/items`, { "x-link-token": link.token })).json()).map((n: { name: string }) => n.name)).toEqual(["by-bot.txt", "docs"]);
+    expect((await visit(`/${fileId}`)).status).toBe(404);
+    expect((await visit(`/${fileId}`, { "x-link-token": "wrong" })).status).toBe(404);
+    expect((await visit(`/${fileId}`, { "x-link-token": link.token, authorization: "Bearer nope" })).status).toBe(401);
+    expect(await status(call("DELETE", `/links?id=${link.id}`))).toBe(200);
+    expect((await visit(`/${fileId}`, { "x-link-token": link.token })).status).toBe(404);
+    const short = await json(await post("/links", { path: "/pub", role: "viewer", expiresInMs: 1_000 }));
+    await new Promise((r) => setTimeout(r, 1_300));
+    expect((await visit(`/${fileId}`, { "x-link-token": short.token })).status).toBe(404);
+    expect(await status(post("/links", { path: "/pub", role: "viewer", expiresInMs: -5 }))).toBe(400);
+  });
+  it("asks for a sign-in on a link that needs one, and lists shares without tokens", async () => {
+    const link = await json(await post("/links", { path: "/pub", role: "viewer", signedInOnly: true }));
+    expect((await visit(`/${fileId}`, { "x-link-token": link.token })).status).toBe(404);
+    expect((await visit(`/${fileId}`, { "x-link-token": link.token, authorization: `Bearer ${TOK_U2}` })).status).toBe(200);
+    const shown = await call("GET", "/shares?path=/pub");
+    const text = await shown.text();
+    expect(text).not.toContain(link.token);
+    expect(JSON.parse(text).links.length).toBeGreaterThan(1);
+  });
+  it("accepts an invite by verified email, and only once", async () => {
+    const invite = await json(await post("/invites", { path: "/pub", role: "viewer", email: "u2@example.com", expiresInMs: 60_000 }));
+    expect(invite.id).toBeTruthy();
+    expect(await status(post("/invites/accept", { id: invite.id }, TOK_BOT))).toBe(403);
+    expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(404);
+    expect(await status(post("/invites/accept", { id: invite.id }, TOK_U2))).toBe(200);
+    expect(await status(call("GET", `/stat?path=${fileId}`, { token: TOK_U2 }))).toBe(200);
+    expect(await status(post("/invites/accept", { id: invite.id }, TOK_U2))).toBe(403);
+    expect(await status(post("/invites", { path: "/pub", role: "viewer" }))).toBe(400);
   });
 });

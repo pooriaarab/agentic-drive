@@ -1,7 +1,7 @@
-import { Hono } from "hono";
-import { parseRegion } from "agentic-identity";
+import { Hono, type Context } from "hono";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
-import { ACTOR_KINDS, createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
+import { createSharing, createStoreAuth, parseRegion, type Role, type Store } from "agentic-identity";
+import { createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
@@ -9,12 +9,6 @@ import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
 export interface WorkerEnv {
   DB: D1Like;
   FILES: R2Like;
-  /**
-   * JSON: `{ "<token>": { "owner": "u1", "actor": "u1", "kind": "human" } }`. A token is at least 32 characters.
-   * Every grant needs an owner, an actor id, and an actor kind. A token with a missing or bad part gets 401.
-   * Without the secret, every request fails with 401.
-   */
-  DRIVE_API_TOKENS?: string;
   DRIVE_MAX_BYTES?: string;
   /** The origin of this Worker, such as `https://drive.example.com`. Signed download URLs start with it. */
   DRIVE_PUBLIC_URL?: string;
@@ -23,10 +17,10 @@ export interface WorkerEnv {
   DRIVE_REGION?: string;
 }
 
-const MIN_TOKEN_LENGTH = 32;
-type App = { Bindings: WorkerEnv; Variables: { drive: Drive; ctx: Ctx } };
+type App = { Bindings: WorkerEnv; Variables: { drive: Drive; store: Store; ctx: Ctx } };
 
 const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
+  CROSS_DRIVE: 409, INVALID_SHARE: 400, TOO_MANY_ITEMS: 409,
   TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409, BLOB_EXISTS: 500,
   NOT_FOUND: 404, NAME_TAKEN: 409, INVALID_NAME: 400, INVALID_PATH: 400, INVALID_REF: 400, NOT_A_FOLDER: 400, NOT_A_FILE: 400,
   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
@@ -35,40 +29,15 @@ const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
 const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 503) =>
   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } });
 
-function sameText(a: string, b: string): boolean {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  return diff === 0;
-}
-
-const isText = (v: unknown): v is string => typeof v === "string" && v !== "";
-
-/** The principal a grant names, or null when any part is missing or malformed. */
-function principalOf(grant: unknown): Ctx | null {
-  if (typeof grant !== "object" || grant === null) return null;
-  const { owner, actor, kind } = grant as Record<string, unknown>;
-  if (!isText(owner) || !isText(actor) || !(ACTOR_KINDS as readonly unknown[]).includes(kind)) return null;
-  return { owner, actor: { id: actor, kind: kind as ActorKind } };
-}
-
-/** The seam for sign-in. A later release swaps this for agentic-identity. */
-export function authenticate(request: Request, env: WorkerEnv): Ctx | null {
-  const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
-  if (!token || !env.DRIVE_API_TOKENS) return null;
-  let grants: Record<string, unknown>;
-  try {
-    grants = JSON.parse(env.DRIVE_API_TOKENS) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  if (typeof grants !== "object" || grants === null) return null;
-  let found: unknown;
-  for (const [candidate, grant] of Object.entries(grants)) {
-    if (sameText(candidate, token) && candidate.length >= MIN_TOKEN_LENGTH) found = grant;
-  }
-  return principalOf(found);
+/**
+ * The caller behind a bearer token, resolved by the store-backed Auth of agentic-identity: the credential
+ * names a principal, and the whole delegation chain must be live. Only a bearer token counts. A session
+ * cookie is refused, because no check of the request origin stands behind it here. Any problem gives null.
+ */
+export async function authenticate(request: Request, store: Store, now?: () => number): Promise<Ctx | null> {
+  if (!/^Bearer [A-Za-z0-9_-]{1,512}$/.test(request.headers.get("authorization") ?? "")) return null;
+  const principal = await createStoreAuth(store, now ? { now } : {}).authenticate(request);
+  return principal ? { owner: principal.chain[0]!.id, actor: { id: principal.principalId, kind: principal.kind as ActorKind }, principal } : null;
 }
 
 /** The database is ready once its table exists. The check runs once per binding. */
@@ -93,7 +62,7 @@ function blobsFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings
   return createR2Blobs(env.FILES, { region: regionOf(env), urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
 }
 
-async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<Drive> {
+async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<{ drive: Drive; store: Store }> {
   let ready = schemas.get(env.DB);
   if (!ready) {
     ready = env.DB.prepare(D1_SCHEMA).run().catch((error: unknown) => {
@@ -103,7 +72,8 @@ async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof se
     schemas.set(env.DB, ready);
   }
   await ready;
-  return createDrive({ store: createD1Store(env.DB, { region: regionOf(env) }), blobs: blobsFor(env, config) });
+  const store = createD1Store(env.DB, { region: regionOf(env) });
+  return { store, drive: createDrive({ store, blobs: blobsFor(env, config), sharing: createSharing(store) }) };
 }
 
 const number = (v: string | undefined, name: string) => {
@@ -125,10 +95,12 @@ export function createApp(): Hono<App> {
   api.use("*", async (c, next) => {
     const config = settings(c.env);
     if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
-    const ctx = authenticate(c.req.raw, c.env);
+    const { drive, store } = await driveFor(c.env, config);
+    const ctx = await authenticate(c.req.raw, store);
     if (!ctx) return fail("UNAUTHORIZED", "send a valid bearer token", 401);
     c.set("ctx", ctx);
-    c.set("drive", await driveFor(c.env, config));
+    c.set("drive", drive);
+    c.set("store", store);
     await next();
   });
   const q = (c: { req: { query(k: string): string | undefined } }, k: string) => c.req.query(k);
@@ -229,7 +201,89 @@ export function createApp(): Hono<App> {
       },
     });
   });
+  // Sharing. Identity decides who may share. A caller below owner gets 403, and one who cannot read the item gets 404.
+  const roleOf = (v: unknown) => v as Role;
+  const lifetime = (v: unknown, name: string) => {
+    if (v === undefined) return undefined;
+    if (typeof v !== "number") throw new DriveError("INVALID_SHARE", `${name} must be a number of milliseconds`);
+    return v;
+  };
+  api.get("/shares", async (c) => c.json(await c.var.drive.shares(c.var.ctx, need(q(c, "path"), "path"))));
+  api.post("/shares", async (c) => {
+    const b = await body(c);
+    await c.var.drive.shareWith(c.var.ctx, str(b.path, "path"), str(b.subjectId, "subjectId"), roleOf(b.role));
+    return c.json({ ok: true });
+  });
+  api.delete("/shares", async (c) => {
+    await c.var.drive.unshare(c.var.ctx, need(q(c, "path"), "path"), need(q(c, "subjectId"), "subjectId"));
+    return c.json({ ok: true });
+  });
+  api.post("/invites", async (c) => {
+    const b = await body(c);
+    const expiresInMs = lifetime(b.expiresInMs, "expiresInMs");
+    const invite = await c.var.drive.invite(c.var.ctx, str(b.path, "path"), {
+      role: roleOf(b.role), ...(b.email === undefined ? {} : { email: str(b.email, "email") }), ...(b.handle === undefined ? {} : { handle: str(b.handle, "handle") }),
+      ...(expiresInMs === undefined ? {} : { expiresInMs }),
+    });
+    return c.json(invite, 201);
+  });
+  // The email comes from a verified sign-in and the handle from the agent's own record, never from the request.
+  api.post("/invites/accept", async (c) => {
+    const id = str((await body(c)).id, "id");
+    const user = await c.var.store.get("users", c.var.ctx.actor.id);
+    const agent = await c.var.store.get("principals", c.var.ctx.actor.id);
+    await c.var.drive.acceptInvite(c.var.ctx, id, {
+      ...(user?.emailVerified === true && typeof user.email === "string" ? { email: user.email } : {}),
+      ...(typeof agent?.handle === "string" ? { handle: agent.handle } : {}),
+    });
+    return c.json({ ok: true });
+  });
+  api.post("/links", async (c) => {
+    const b = await body(c);
+    const expiresInMs = lifetime(b.expiresInMs, "expiresInMs");
+    const link = await c.var.drive.createLink(c.var.ctx, str(b.path, "path"), {
+      role: roleOf(b.role), signedInOnly: b.signedInOnly === true, ...(expiresInMs === undefined ? {} : { expiresAt: Date.now() + expiresInMs }),
+    });
+    return c.json(link, 201);
+  });
+  api.delete("/links", async (c) => {
+    await c.var.drive.revokeLink(c.var.ctx, need(q(c, "id"), "id"));
+    return c.json({ ok: true });
+  });
+  // Registered before the bearer-token check of `api`, so it does not run for these routes.
+  // A visitor reads by id with a link token in `x-link-token`. A bearer token, if sent, must be valid.
+  const shared = new Hono<App>();
+  const visit = async (c: Context<App>) => {
+    const config = settings(c.env);
+    if (!config) return { stop: fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503) };
+    const { drive, store } = await driveFor(c.env, config);
+    const ctx = await authenticate(c.req.raw, store);
+    if (!ctx && c.req.header("authorization")) return { stop: fail("UNAUTHORIZED", "send a valid bearer token", 401) };
+    return { drive, principal: ctx?.principal ?? null, token: c.req.header("x-link-token") };
+  };
+  shared.get("/:id", async (c) => {
+    const v = await visit(c);
+    return "stop" in v ? v.stop : c.json(publicNode(await v.drive.openShared(v.principal, c.req.param("id"), v.token)));
+  });
+  shared.get("/:id/items", async (c) => {
+    const v = await visit(c);
+    return "stop" in v ? v.stop : c.json((await v.drive.listShared(v.principal, c.req.param("id"), v.token)).map((n) => publicNode(n)));
+  });
+  shared.get("/:id/content", async (c) => {
+    const v = await visit(c);
+    if ("stop" in v) return v.stop;
+    const { node, data } = await v.drive.readShared(v.principal, c.req.param("id"), v.token);
+    return new Response(data as BodyInit, {
+      headers: {
+        "content-type": safeMime(node.mime), "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(node.name)}`,
+        "x-content-type-options": "nosniff", "cache-control": "private, no-store",
+      },
+    });
+  });
+  app.route("/api/v1/drive/shared", shared);
   app.route("/api/v1/drive", api);
+
+
   app.notFound(() => fail("NOT_FOUND", "no such route", 404));
   app.onError((error) => {
     if (error instanceof DriveError) return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), { status: STATUS[error.code], headers: { "content-type": "application/json" } });
