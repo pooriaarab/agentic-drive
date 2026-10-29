@@ -1,0 +1,2 @@
+# Copy to .dev.vars for signed download links. Use a random value of 32 bytes or more: openssl rand -hex 32
+DRIVE_URL_SECRET=replace-with-32-or-more-random-bytes

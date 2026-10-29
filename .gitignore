@@ -9,3 +9,4 @@ ui-dist/
 test-results/
 playwright-report/
 .wrangler/
+.dev.vars

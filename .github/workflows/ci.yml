@@ -27,5 +27,9 @@ jobs:
       - run: npm run build:ui
       - run: npm run typecheck
       - run: npm test
+      - name: dev smoke
+        run: npm run dev:smoke
+        env:
+          WRANGLER_SEND_METRICS: "false"
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
