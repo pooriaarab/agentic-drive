@@ -19,7 +19,7 @@ async function audit(page: Page, name: string) {
   await page.emulateMedia({ colorScheme: "light" });
 }
 
-const row = (page: Page, name: string) => page.locator(".agd-file-row").filter({ has: page.getByRole("link", { name, exact: true }) });
+const row = (page: Page, name: string) => page.locator(".drive-row").filter({ has: page.getByRole("link", { name, exact: true }) });
 async function pick(page: Page, name: string, action: string) {
   await page.getByRole("button", { name: `Actions for ${name}` }).click();
   await page.getByRole("menuitem", { name: action, exact: true }).click();
@@ -182,4 +182,40 @@ test("an error from the server shows a message and a retry", async ({ page }) =>
   await page.unroute("**/api/v1/drive/**");
   await page.getByRole("button", { name: "Try again" }).click();
   await expect(page.getByRole("region", { name: "Files" })).toBeVisible();
+});
+
+test("a person searches, sorts, and moves many items to the trash at once", async ({ page }) => {
+  const ada = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: ADA });
+  await ada.upload("/zeta.txt", "z", { mime: "text/plain" });
+  await ada.upload("/alpha.txt", "a", { mime: "text/plain" });
+  await page.goto("/");
+  await page.getByLabel("Access token").fill(ADA);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  const names = () => page.locator(".drive-row .drive-table__name a").allTextContents();
+
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search this folder" }).fill("zeta");
+  await expect(row(page, "zeta.txt")).toBeVisible();
+  await expect(row(page, "alpha.txt")).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Search this folder" }).fill("no-such-item");
+  await expect(page.getByText("Nothing matches")).toBeVisible();
+  await audit(page, "12-search-empty");
+  await page.keyboard.press("Escape");
+  await expect(row(page, "alpha.txt")).toBeVisible();
+
+  const files = async () => (await names()).filter((n) => n.endsWith(".txt"));
+  expect((await files()).indexOf("alpha.txt")).toBeLessThan((await files()).indexOf("zeta.txt"));
+  await page.getByRole("button", { name: "Name" }).click();
+  await expect(page.getByRole("columnheader", { name: /Name/ })).toHaveAttribute("aria-sort", "descending");
+  expect((await files()).indexOf("zeta.txt")).toBeLessThan((await files()).indexOf("alpha.txt"));
+
+  await page.getByLabel("Select zeta.txt").check();
+  await page.getByLabel("Select alpha.txt").check();
+  const bar = page.getByRole("region", { name: "Selected items" });
+  await expect(bar).toContainText("2 selected");
+  await audit(page, "13-bulk");
+  await bar.getByRole("button", { name: "Move to trash" }).click();
+  await expect(row(page, "zeta.txt")).toHaveCount(0);
+  await expect(row(page, "alpha.txt")).toHaveCount(0);
+  await expect(bar).toBeHidden();
 });

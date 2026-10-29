@@ -3,6 +3,7 @@ import {
   AppShell, Button, Dialog, DialogClose, EmptyState, FileIcon, FileList, FileRow, FolderIcon, IconButton, Input, Menu, MoreIcon, PlusIcon, PresenceChip,
   Select, ShareDialog, SidebarNav, Toolbar, ToolbarButton, useTheme, useToast, type LinkExpiry, type PresenceEntry, type ShareLink, type ShareRole,
 } from "agentic-design/react";
+import { BulkBar, ExpandableSearch, ItemTable, sortItems, type Sort, type SortKey } from "./browse.js";
 import { createClient, DriveApiError, type DriveClient, type Item, type Role } from "../src/client.js";
 
 const TOKEN_KEY = "agentic-drive-token";
@@ -141,6 +142,9 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
   const [dlg, setDlg] = useState<Dlg | null>(null);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<Sort>({ key: "name", dir: "asc" });
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const input = useRef<HTMLInputElement>(null);
   const [state, reload] = useLoad(async () => {
     const root = await client.stat("/");
@@ -175,13 +179,27 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
     setBusy(false);
   };
   const onDrop = (e: DragEvent) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files.length) void upload(e.dataTransfer.files); };
+  const onSort = (key: SortKey) => setSort((s) => ({ key, dir: s.key === key && s.dir === "asc" ? "desc" : "asc" }));
+  const trashSelected = async (ids: string[]) => {
+    setBusy(true);
+    const results = await Promise.allSettled(ids.map((id) => client.trash(id)));
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length) toast({ title: `${failed.length} of ${ids.length} items did not move`, description: errorText((failed[0] as PromiseRejectedResult).reason), tone: "danger" });
+    else toast({ title: `Moved ${ids.length} ${ids.length === 1 ? "item" : "items"} to trash`, tone: "success" });
+    setSelected(new Set());
+    setBusy(false);
+    reload();
+  };
   const setViewMode = (v: "list" | "grid") => { localStorage.setItem("agentic-drive-view", v); setView(v); };
 
   return (
     <section onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrag(false); }} onDrop={onDrop} className={drag ? "drive-drop drive-drop--over" : "drive-drop"} aria-label="Files">
       <Status state={state} retry={reload}>
         {state.status === "ok" && (() => {
-          const { folder, root, crumbs, items, tree } = state.data;
+          const { folder, root, crumbs, tree } = state.data;
+          const needle = query.trim().toLowerCase();
+          const items = sortItems(state.data.items.filter((i) => i.name.toLowerCase().includes(needle)), sort);
+          const picked = items.filter((i) => selected.has(i.id)).map((i) => i.id);
           const actions = (item: Item) => (
             <>
               <MachineLabel item={item} />
@@ -214,7 +232,10 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
                 </ol>
               </nav>
               <div className="drive-bar">
-                <h1>{folder.id === root.id ? "My files" : folder.name}</h1>
+                <div className="drive-title">
+                  <h1>{folder.id === root.id ? "My files" : folder.name}</h1>
+                  {folder.id !== root.id && <Button variant="secondary" size="sm" onClick={() => setDlg({ kind: "share", item: folder })}>Share</Button>}
+                </div>
                 <Toolbar label="Folder actions">
                   <ToolbarButton label="New folder" icon={<PlusIcon />} onClick={() => setDlg({ kind: "mkdir" })} />
                   <ToolbarButton label="Upload files" icon={<FileIcon />} onClick={() => input.current?.click()} disabled={busy} />
@@ -226,12 +247,13 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
               <div className="drive-split">
               <nav aria-label="Folders" className="drive-folders">{level(root.id)}</nav>
               <div>
-              {items.length === 0 ? (
+              <div className="drive-tools"><ExpandableSearch value={query} onChange={setQuery} /></div>
+              {state.data.items.length === 0 ? (
                 <EmptyState title="This folder is empty" description="Drop files here, or use Upload files." action={<Button onClick={() => input.current?.click()} disabled={busy}>Upload files</Button>} />
+              ) : items.length === 0 ? (
+                <EmptyState title="Nothing matches" description={`No item in this folder has “${query.trim()}” in its name.`} action={<Button onClick={() => setQuery("")}>Clear search</Button>} />
               ) : view === "list" ? (
-                <FileList label={`Items in ${folder.name || "My files"}`}>
-                  {items.map((i) => <FileRow key={i.id} name={i.name} href={href(i)} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={actions(i)} />)}
-                </FileList>
+                <ItemTable label={`Items in ${folder.name || "My files"}`} items={items} sort={sort} onSort={onSort} selected={selected} onSelect={setSelected} href={href} who={who} actions={actions} />
               ) : (
                 <ul className="drive-grid" aria-label={`Items in ${folder.name || "My files"}`}>
                   {items.map((i) => (
@@ -246,6 +268,7 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
               )}
               </div>
               </div>
+              <BulkBar count={picked.length} busy={busy} onTrash={() => void trashSelected(picked)} onClear={() => setSelected(new Set())} />
               {dlg?.kind === "mkdir" && <Prompt open title="New folder" label="Folder name" initial="" submit="Create" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.mkdir(folder.id === root.id ? `/${name}` : `${folder.id}/${name}`), `Created ${name}`)} />}
               {dlg?.kind === "rename" && <Prompt open title="Rename" label="New name" initial={dlg.item.name} submit="Rename" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.move(dlg.item.id, dlg.item.parentId, { name }), `Renamed to ${name}`)} />}
               {dlg?.kind === "move" && <MoveDialog client={client} item={dlg.item} onClose={() => setDlg(null)} onMove={(to) => act(() => client.move(dlg.item.id, to), `Moved ${dlg.item.name}`)} />}
@@ -355,6 +378,8 @@ function Sharing({ client, item, origin, onClose }: { client: DriveClient; item:
 function TrashView({ client }: { client: DriveClient }) {
   const toast = useToast();
   const [state, reload] = useLoad(() => client.listTrash());
+  const [sort, setSort] = useState<Sort>({ key: "name", dir: "asc" });
+  const onSort = (key: SortKey) => setSort((s) => ({ key, dir: s.key === key && s.dir === "asc" ? "desc" : "asc" }));
   const restore = async (i: Item) => {
     try { await client.restore(i.id, { onConflict: "rename" }); toast({ title: `Restored ${i.name}`, tone: "success" }); } catch (e) { toast({ title: "Could not restore", description: errorText(e), tone: "danger" }); }
     reload();
@@ -364,9 +389,7 @@ function TrashView({ client }: { client: DriveClient }) {
       <h1>Trash</h1>
       <Status state={state} retry={reload}>
         {state.status === "ok" && (state.data.length === 0 ? <EmptyState title="The trash is empty" description="Items you move to the trash show up here." /> : (
-          <FileList label="Items in the trash">
-            {[...state.data].sort(byName).map((i) => <FileRow key={i.id} name={i.name} href="#/trash" kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.trashedAt ?? i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<><MachineLabel item={i} /><Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button></>} />)}
-          </FileList>
+          <ItemTable label="Items in the trash" items={sortItems(state.data, sort)} sort={sort} onSort={onSort} href={() => "#/trash"} who={who} actions={(i) => <><MachineLabel item={i} /><Button size="sm" onClick={() => void restore(i)}>{`Restore ${i.name}`}</Button></>} />
         ))}
       </Status>
     </section>
@@ -413,12 +436,14 @@ function SharedView({ client, id, linkToken }: { client: DriveClient; id: string
       <Status state={state} retry={reload}>
         {state.status === "ok" && (
           <>
-            <h1>{state.data.item.name}</h1>
+            <div className="drive-bar">
+              <div className="drive-title"><h1>{state.data.item.name}</h1><MachineLabel item={state.data.item} /></div>
+              {state.data.item.kind !== "folder" && <Button onClick={() => void save()}>Download</Button>}
+            </div>
             <p className="drive-muted">Shared with you.</p>
-            <MachineLabel item={state.data.item} />
             {state.data.item.kind === "folder"
               ? (state.data.items.length === 0 ? <EmptyState title="This folder is empty" /> : <FileList label="Shared items">{state.data.items.map((i) => <FileRow key={i.id} name={i.name} href={`#/s/${i.id}${linkToken ? `/${linkToken}` : ""}`} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<MachineLabel item={i} />} />)}</FileList>)
-              : <Button onClick={() => void save()}>Download</Button>}
+              : null}
           </>
         )}
       </Status>
