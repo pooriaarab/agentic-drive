@@ -151,6 +151,16 @@ describe("exportAccount", () => {
     expect(JSON.parse(JSON.stringify(out))).toStrictEqual(out);
   });
 
+  it("refuses an in-person key with no drive scope on an empty drive that holds a share", async () => {
+    // Alice holds an editor share on Bob's folder, and has never written to her own drive: no root, no items.
+    await drive.mkdir(B, "/team");
+    await drive.shareWith(B, "/team", { kind: "human", id: "alice" }, "editor");
+    const docsOnly: Ctx = { owner: "alice", actor: { id: "alice", kind: "human" }, principal: { ...principal("alice"), scopes: ["docs:read"] as PrincipalContext["scopes"] } };
+    await expect(drive.exportData(docsOnly)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(drive.exportPerson(docsOnly)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(driveAccount.exportAccount(ALICE, { drive, ctx: docsOnly })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
   it("marks a file whose bytes are gone, so a lost file is not read as an empty one", async () => {
     const blobs = createMemoryBlobs();
     const own = createDrive({ store, blobs, sharing: createSharing(store) });

@@ -1,4 +1,4 @@
-import { EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, hasScope, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -621,7 +621,11 @@ export function createDrive(deps: DriveDeps) {
    */
   async function readOwnerRoot(ctx: Ctx) {
     if (sharing && ctx.principal !== undefined && (await store.get("resources", await rootResource(ctx.owner))) === null) {
-      if ((await rawOwnerNodes(ctx.owner, true)).length === 0) return;
+      if ((await rawOwnerNodes(ctx.owner, true)).length === 0) {
+        // No root and no items: sharing gives no answer for a root that is not made, so the drive read scope decides.
+        if (hasScope(ctx.principal.scopes, "drive:read")) return;
+        throw new DriveError("FORBIDDEN", "not allowed to read this drive");
+      }
       await prepare(ctx);
     }
     if (!(await can(ctx, "read", rootNode(ctx.owner, ctx.actor)))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
