@@ -6,6 +6,7 @@ Read the breaking changes before you upgrade.
 
 ### Breaking changes
 
+- **The design class prefix is now `agd-`.** The CSS classes, the custom properties, and the data attributes that used the old two-letter prefix change name. Ad blockers hide elements with the old prefix, so the prefix moved. There is no alias for the old names. Rename any class, custom property, or data attribute that you set or query so it starts with `agd-`. `agentic-design` moves from `^0.1.0` to `^0.4.0`, which uses the `agd-` prefix.
 - **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The local layout changes: the store is `store.json` in the data folder and blobs sit in `blobs/blobs/<hash>.blob`. `openLocal` now also returns `blobs`, and it throws on a folder with an old `db/store.jsonl` until `importLegacyLocal(dir, store, blobs)` (new, exported) has copied the old data. To get `store` and `blobs` for that call, open the folder with `openLocal(dir, { beforeImport: true })`. The CLI does the import on its first run, once, and leaves the old files in place. A local drive makes no download URL, because its blobs have no signing secret. Use `download` there.
 
 ### Added
