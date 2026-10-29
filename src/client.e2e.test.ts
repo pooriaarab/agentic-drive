@@ -18,25 +18,15 @@ let base = "";
 const tok = (name: string) => `${name}-`.padEnd(40, "k");
 const TOK_U1 = tok("u1");
 const TOK_U3 = tok("u3");
-const TOK_BOT = tok("bot");
 const TOK_U2 = tok("u2");
 const TOK_READ_BOT = tok("readbot");
-const TOK_REVOKED = tok("revoked");
-const TOK_GHOST = tok("ghost");
-const TOK_EXPIRED = tok("expired");
-const TOK_CUT = tok("cut");
 const URL_SECRET = "drive-url-secret-".padEnd(40, "s");
 // Each token is a credential of identity's store-backed sign-in: a doc keyed by the SHA-256 of the token.
 const credentials: [token: string, doc: Doc][] = [
   [TOK_U1, { principalId: "u1", kind: "api_key" }],
-  [TOK_BOT, { principalId: "bot", kind: "api_key" }],
   [TOK_READ_BOT, { principalId: "readbot", kind: "api_key" }],
   [TOK_U2, { principalId: "u2", kind: "api_key" }],
   [TOK_U3, { principalId: "u3", kind: "api_key" }],
-  [TOK_REVOKED, { principalId: "revoked", kind: "api_key" }],
-  [TOK_GHOST, { principalId: "nobody", kind: "api_key" }],
-  [TOK_EXPIRED, { principalId: "u1", kind: "api_key", expiresAt: 1 }],
-  [TOK_CUT, { principalId: "u1", kind: "api_key", revokedAt: 1 }],
 ];
 const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
 // The people and agents behind the tokens, in the shape the identity package keeps them.
@@ -44,9 +34,7 @@ const principals: Doc[] = [
   { id: "u1", kind: "human", scopes: ["drive:admin"] },
   { id: "u2", kind: "human", scopes: ["drive:admin"] },
   { id: "u3", kind: "human", scopes: ["drive:admin"] },
-  { id: "bot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:write"] },
   { id: "readbot", kind: "agent_of_human", parentId: "u1", scopes: ["drive:read"] },
-  { id: "revoked", kind: "human", scopes: ["drive:admin"], revokedAt: 1 },
 ];
 const seedSql = () =>
   `${D1_SCHEMA};\n${principals
@@ -240,6 +228,23 @@ describe("the client without a server", () => {
     calls.length = 0;
     await failure(client.list("/"));
     expect(calls).toEqual(["GET /api/v1/drive/items", "GET /api/v1/drive/items", "GET /api/v1/drive/items"]);
+  });
+  it("refuses an id or a link token that would change the route or the header", async () => {
+    const { calls, fetcher } = counting(200);
+    const client = createClient({ baseUrl: "https://drive.example.com", token: "abc", fetch: fetcher, retries: 2 });
+    for (const bad of ["..", ".", "a/b", "", "a b", "a?b", "../items"]) {
+      await expect(client.listShared(bad)).rejects.toThrow(TypeError);
+      await expect(client.openShared(bad)).rejects.toThrow(TypeError);
+      await expect(client.readShared(bad)).rejects.toThrow(TypeError);
+    }
+    await expect(client.openShared("abc", { linkToken: "bad\ntoken" })).rejects.toThrow(TypeError);
+    expect(calls).toEqual([]);
+  });
+  it("keeps an abort that comes while the error body is read", async () => {
+    const controller = new AbortController();
+    const client = createClient({ baseUrl: "https://drive.example.com", token: "abc", fetch: (async () => new Response(new ReadableStream({ start: (c) => { controller.abort(); c.error(new DOMException("aborted", "AbortError")); } }), { status: 404 })) as unknown as typeof fetch });
+    await expect(client.stat("/a", { signal: controller.signal })).rejects.toBeDefined();
+    expect(await client.stat("/a", { signal: controller.signal }).catch((e) => e)).not.toBeInstanceOf(DriveApiError);
   });
   it("refuses a bad base URL, token, or retry count, and a call that needs a token", async () => {
     expect(() => createClient({ baseUrl: "ftp://x" })).toThrow(TypeError);

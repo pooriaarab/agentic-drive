@@ -48,10 +48,12 @@ export interface Downloaded {
 }
 
 const BASE = "/api/v1/drive";
-const KNOWN_CODES: ReadonlySet<string> = new Set<ApiErrorCode>([
-  "NOT_FOUND", "NAME_TAKEN", "BLOB_EXISTS", "INVALID_NAME", "INVALID_PATH", "INVALID_REF", "NOT_A_FOLDER", "NOT_A_FILE", "MOVE_INTO_SELF", "TOO_DEEP", "PARENT_GONE", "TRASHED", "NOT_TRASHED",
-  "IS_ROOT", "FORBIDDEN", "BLOB_MISSING", "TOO_LARGE", "INVALID_EXPIRY", "BUSY", "CROSS_DRIVE", "INVALID_SHARE", "TOO_MANY_ITEMS", "UNAUTHORIZED", "NOT_CONFIGURED", "INVALID_LINK", "INTERNAL",
-]);
+const CODES: Record<ApiErrorCode, true> = {
+  NOT_FOUND: true, NAME_TAKEN: true, BLOB_EXISTS: true, INVALID_NAME: true, INVALID_PATH: true, INVALID_REF: true, NOT_A_FOLDER: true, NOT_A_FILE: true, MOVE_INTO_SELF: true, TOO_DEEP: true,
+  PARENT_GONE: true, TRASHED: true, NOT_TRASHED: true, IS_ROOT: true, FORBIDDEN: true, BLOB_MISSING: true, TOO_LARGE: true, INVALID_EXPIRY: true, BUSY: true, CROSS_DRIVE: true, INVALID_SHARE: true,
+  TOO_MANY_ITEMS: true, UNAUTHORIZED: true, NOT_CONFIGURED: true, INVALID_LINK: true, INTERNAL: true,
+};
+const KNOWN_CODES: ReadonlySet<string> = new Set(Object.keys(CODES));
 
 type Check<T> = (value: unknown) => value is T;
 const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -128,7 +130,7 @@ export function createClient(options: ClientOptions) {
         throw new DriveApiError("BAD_RESPONSE", response.status, "the server redirected. Set baseUrl to the final URL.");
       }
       if (response.ok) return response;
-      throw await errorOf(response);
+      throw await errorOf(response, init.signal);
     }
   }
 
@@ -148,7 +150,7 @@ export function createClient(options: ClientOptions) {
     });
   }
 
-  async function errorOf(response: Response): Promise<DriveApiError> {
+  async function errorOf(response: Response, signal?: AbortSignal): Promise<DriveApiError> {
     let code: ClientErrorCode = "BAD_RESPONSE";
     let message = `the server answered ${response.status}`;
     try {
@@ -156,8 +158,9 @@ export function createClient(options: ClientOptions) {
       if (typeof parsed.error?.code === "string" && KNOWN_CODES.has(parsed.error.code)) code = parsed.error.code as ClientErrorCode;
       else if (typeof parsed.error?.code === "string") message = `the server answered ${response.status} with an unknown code, ${JSON.stringify(parsed.error.code.slice(0, 40))}`;
       if (code !== "BAD_RESPONSE" && typeof parsed.error?.message === "string") message = parsed.error.message;
-    } catch {
-      // The body is not the JSON error of the API. Keep the status.
+    } catch (error) {
+      // An abort stays an abort. Any other body is not the JSON error of the API: keep the status.
+      if (signal?.aborted) throw error;
     }
     return new DriveApiError(code, response.status, message);
   }
@@ -198,8 +201,16 @@ export function createClient(options: ClientOptions) {
     return { data, contentType: response.headers.get("content-type") ?? "application/octet-stream", sha256 };
   }
 
-  const link = (token: string | undefined) => (token === undefined ? undefined : { "x-link-token": token });
-  const id = (value: string) => encodeURIComponent(value);
+  const link = (token: string | undefined) => {
+    if (token === undefined) return undefined;
+    if (!/^[A-Za-z0-9_-]{1,512}$/.test(token)) throw new TypeError("a link token has 1 to 512 letters, digits, - or _");
+    return { "x-link-token": token };
+  };
+  /** An id that is a path segment. A dot segment would climb out of `/shared`, and a slash would start a path. */
+  const id = (value: string) => {
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(value) || value === "." || value === "..") throw new TypeError("an item id has letters, digits, - and _");
+    return value;
+  };
 
   const isUrl = shape<{ url: string; expiresInSeconds: number }>((v) => typeof v.url === "string" && typeof v.expiresInSeconds === "number");
   const isShares = shape<{ grants: { subjectKind: SubjectKind; subjectId: string; role: Role }[]; links: { id: string; role: Role; signedInOnly: boolean; expiresAt: number | null; revoked: boolean }[]; invites: { id: string; role: Role; email: string | null; handle: string | null; expiresAt: number | null; accepted: boolean }[] }>(
@@ -256,9 +267,9 @@ export function createClient(options: ClientOptions) {
     revokeLink: (linkId: string, o: CallOptions = {}) => json("DELETE", `/links${query({ id: linkId })}`, o, isOk),
 
     /** The next three read a shared item by id. Pass a link token, a bearer token, or both. */
-    openShared: (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, isItem),
-    listShared: (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}/items`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, listOf(isItem)),
-    readShared: (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => bytes(`/shared/${id(itemId)}/content`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }),
+    openShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, isItem),
+    listShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => json("GET", `/shared/${id(itemId)}/items`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }, listOf(isItem)),
+    readShared: async (itemId: string, opts: { linkToken?: string } & CallOptions = {}) => bytes(`/shared/${id(itemId)}/content`, { auth: false, headers: link(opts.linkToken), signal: opts.signal }),
   };
 }
 
