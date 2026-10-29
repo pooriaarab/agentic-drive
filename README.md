@@ -119,6 +119,8 @@ Open `http://127.0.0.1:8787` and sign in with a bearer token. The tab keeps the 
 
 Test it with `npm run test:e2e`. The test starts `wrangler dev` on a seeded database, drives the UI in Chromium, and runs an axe WCAG 2.2 AA check on each view in both themes. Run `npx playwright install chromium` once first. The run also writes the screenshots in [docs/ui](docs/ui).
 
+Run `npm run build:ui` before `npm test` or `wrangler deploy`, because the Worker config names the `ui-dist` folder. The UI answers with a strict content security policy and refuses to be framed.
+
 The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
 ## Features

@@ -40,7 +40,17 @@ export function App() {
     addEventListener("hashchange", on);
     return () => removeEventListener("hashchange", on);
   }, []);
-  const client = useMemo(() => createClient({ baseUrl: location.origin, ...(token ? { token } : {}) }), [token]);
+  const client = useMemo(() => {
+    try {
+      return createClient({ baseUrl: location.origin, ...(token ? { token } : {}) });
+    } catch {
+      return createClient({ baseUrl: location.origin });
+    }
+  }, [token]);
+  // A stored token the client refuses is dropped, so the page shows the sign-in form.
+  useEffect(() => {
+    if (token && !/^[A-Za-z0-9_-]{1,512}$/.test(token)) { sessionStorage.removeItem(TOKEN_KEY); setToken(""); }
+  }, [token]);
   const signOut = () => { sessionStorage.removeItem(TOKEN_KEY); setToken(""); location.hash = "#/"; };
   const parts = hash.replace(/^#\/?/, "").split("/");
   if (parts[0] === "s" && parts[1]) return <Chrome signedIn={false} signOut={signOut}><SharedView key={hash} client={client} id={parts[1]} linkToken={parts[2]} /></Chrome>;
@@ -113,7 +123,12 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
     const root = await client.stat("/");
     const folder = loc === "/" ? root : await client.stat(loc);
     const crumbs: Item[] = [];
-    for (let n = folder; n.id !== root.id; n = await client.stat(n.parentId)) crumbs.unshift(n);
+    try {
+      for (let n = folder; n.id !== root.id; n = await client.stat(n.parentId)) crumbs.unshift(n);
+    } catch (e) {
+      // A person with a grant on a sub-folder cannot read its parents. Show the path from that folder.
+      if (!(e instanceof DriveApiError && (e.code === "NOT_FOUND" || e.code === "FORBIDDEN"))) throw e;
+    }
     const children = async (f: Item) => (await client.list(f.id === root.id ? "/" : f.id)).sort(byName);
     const items = await children(folder);
     const tree = new Map<string, Item[]>([[root.id, f(await children(root))]]);
@@ -127,7 +142,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
     reload();
   };
   const upload = async (files: FileList | File[]) => {
-    if (state.status !== "ok") return;
+    if (state.status !== "ok" || busy) return;
     const { folder, root } = state.data;
     setBusy(true);
     for (const file of Array.from(files)) {
@@ -139,7 +154,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
   const setViewMode = (v: "list" | "grid") => { localStorage.setItem("agentic-drive-view", v); setView(v); };
 
   return (
-    <section onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={onDrop} className={drag ? "drive-drop drive-drop--over" : "drive-drop"} aria-label="Files">
+    <section onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrag(false); }} onDrop={onDrop} className={drag ? "drive-drop drive-drop--over" : "drive-drop"} aria-label="Files">
       <Status state={state} retry={reload}>
         {state.status === "ok" && (() => {
           const { folder, root, crumbs, items, tree } = state.data;
@@ -188,7 +203,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
               <nav aria-label="Folders" className="drive-folders">{level(root.id)}</nav>
               <div>
               {items.length === 0 ? (
-                <EmptyState title="This folder is empty" description="Drop files here, or use Upload files." action={<Button onClick={() => input.current?.click()}>Upload files</Button>} />
+                <EmptyState title="This folder is empty" description="Drop files here, or use Upload files." action={<Button onClick={() => input.current?.click()} disabled={busy}>Upload files</Button>} />
               ) : view === "list" ? (
                 <FileList label={`Items in ${folder.name || "My files"}`}>
                   {items.map((i) => <FileRow key={i.id} name={i.name} href={href(i)} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={actions(i)} />)}
@@ -207,7 +222,7 @@ function Browser({ client, loc }: { client: DriveClient; loc: string }) {
               )}
               </div>
               </div>
-              <Prompt open={dlg?.kind === "mkdir"} title="New folder" label="Folder name" initial="" submit="Create" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.mkdir(folder.id === root.id ? `/${name}` : `${folder.id}/${name}`), `Created ${name}`)} />
+              {dlg?.kind === "mkdir" && <Prompt open title="New folder" label="Folder name" initial="" submit="Create" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.mkdir(folder.id === root.id ? `/${name}` : `${folder.id}/${name}`), `Created ${name}`)} />}
               {dlg?.kind === "rename" && <Prompt open title="Rename" label="New name" initial={dlg.item.name} submit="Rename" onClose={() => setDlg(null)} onSubmit={(name) => act(() => client.move(dlg.item.id, dlg.item.parentId, { name }), `Renamed to ${name}`)} />}
               {dlg?.kind === "move" && <MoveDialog client={client} item={dlg.item} onClose={() => setDlg(null)} onMove={(to) => act(() => client.move(dlg.item.id, to), `Moved ${dlg.item.name}`)} />}
               {dlg?.kind === "share" && <Sharing client={client} item={dlg.item} onClose={() => setDlg(null)} />}
@@ -234,7 +249,7 @@ function Prompt({ open, title, label, initial, submit, onClose, onSubmit }: { op
 function MoveDialog({ client, item, onClose, onMove }: { client: DriveClient; item: Item; onClose: () => void; onMove: (to: string) => void }) {
   const [folders, retry] = useLoad(async () => {
     const root = await client.stat("/");
-    const all = await client.search({ kind: "folder" });
+    const all = await client.search({ kind: "folder", limit: 1000 });
     // A folder cannot move into itself or below itself.
     const own = all.find((x) => x.id === item.id)?.path;
     return [{ id: "/", path: "/", name: "My files" }, ...all.filter((x) => x.id !== root.id && !(own && (x.path === own || x.path.startsWith(`${own}/`))))];
@@ -275,6 +290,7 @@ function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; o
     if (current.id) await client.revokeLink(current.id);
     const made = await client.createLink(item.id, { role: next.role as Role, signedInOnly: next.signedInOnly, ...(EXPIRY_MS[next.expiry] ? { expiresInMs: EXPIRY_MS[next.expiry] } : {}) });
     setLink({ ...next, id: made.id, token: made.token });
+    toast({ title: "New link made", description: current.id ? "The old link no longer works." : undefined, tone: "info" });
   });
   const shareLink: ShareLink = {
     enabled: !!current.id, role: current.role, expiry: current.expiry, signedInOnly: current.signedInOnly,
@@ -293,7 +309,7 @@ function Sharing({ client, item, onClose }: { client: DriveClient; item: Item; o
         void change({ role: next.role, expiry: next.expiry, signedInOnly: next.signedInOnly });
       }}
       snapshot={{ onCreate: () => toast({ title: "Snapshot links are not available in Drive yet", tone: "info" }) }}
-      onCopy={(url) => void navigator.clipboard?.writeText(url).then(() => toast({ title: "Link copied", tone: "success" }), () => toast({ title: "Could not copy", tone: "warning" }))}
+      onCopy={(url) => current.token && void navigator.clipboard?.writeText(url).then(() => toast({ title: "Link copied", tone: "success" }), () => toast({ title: "Could not copy", tone: "warning" }))}
     />
   );
 }
@@ -324,6 +340,7 @@ function Download({ client, id }: { client: DriveClient; id: string }) {
   const [state] = useLoad(async () => {
     const item = await client.stat(id);
     const { url } = await client.url(id);
+    if (new URL(url, location.origin).origin !== location.origin) throw new Error("The download link points to another site.");
     const a = document.createElement("a");
     a.href = url;
     a.download = item.name;
@@ -342,11 +359,12 @@ function SharedView({ client, id, linkToken }: { client: DriveClient; id: string
   });
   const save = async () => {
     if (state.status !== "ok") return;
-    const { data } = await client.readShared(id, { linkToken });
+    const { data, contentType } = await client.readShared(id, { linkToken });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([data as BlobPart]));
+    a.href = URL.createObjectURL(new Blob([data as BlobPart], { type: contentType }));
     a.download = state.data.item.name;
     a.click();
+    URL.revokeObjectURL(a.href);
   };
   return (
     <section aria-label="Shared item">
@@ -356,7 +374,7 @@ function SharedView({ client, id, linkToken }: { client: DriveClient; id: string
             <h1>{state.data.item.name}</h1>
             <p className="drive-muted">Shared with you.</p>
             {state.data.item.kind === "folder"
-              ? (state.data.items.length === 0 ? <EmptyState title="This folder is empty" /> : <FileList label="Shared items">{state.data.items.map((i) => <FileRow key={i.id} name={i.name} href={`#/s/${i.id}/${linkToken ?? ""}`} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} />)}</FileList>)
+              ? (state.data.items.length === 0 ? <EmptyState title="This folder is empty" /> : <FileList label="Shared items">{state.data.items.map((i) => <FileRow key={i.id} name={i.name} href={`#/s/${i.id}${linkToken ? `/${linkToken}` : ""}`} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} />)}</FileList>)
               : <Button onClick={() => void save()}>Download</Button>}
           </>
         )}

@@ -4,7 +4,8 @@ import { createClient } from "../src/client.js";
 
 const ADA = "ada-token-for-the-ui-tests";
 const HELPER = "helper-token-for-the-ui-tests";
-const shots = "docs/ui";
+// The review set in docs/ui is refreshed only with UPDATE_SHOTS=1. Other runs write to an ignored folder.
+const shots = process.env.UPDATE_SHOTS ? "docs/ui" : "test-results/shots";
 const schemes = ["light", "dark"] as const;
 
 /** Runs axe against WCAG 2.2 AA in both themes and saves a screenshot of each. */
@@ -82,7 +83,7 @@ test("a person manages files, and the changes persist", async ({ page }) => {
 });
 
 test("an item made by an agent carries a marker, in the list and in the grid", async ({ page }) => {
-  const agent = createClient({ baseUrl: "http://127.0.0.1:8788", token: HELPER });
+  const agent = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: HELPER });
   await agent.upload("/agent-notes.txt", "written by a helper", { mime: "text/plain" });
   await page.goto("/");
   await page.getByLabel("Access token").fill(ADA);
@@ -125,7 +126,7 @@ test("the share dialog shares by link and by invite, and the keyboard reaches it
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Invite a person or an agent").fill("grace@example.com");
   await dialog.getByRole("button", { name: "Invite", exact: true }).click();
-  await expect(page.getByText("Invite created")).toBeVisible();
+  await expect(page.locator(".ad-toast__title", { hasText: "Invite created" })).toBeVisible();
   await audit(page, "08-share");
   await dialog.getByRole("tab", { name: /link/i }).first().click();
   await dialog.getByLabel("Anyone with the link").click();
