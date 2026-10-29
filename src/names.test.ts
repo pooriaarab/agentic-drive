@@ -186,36 +186,55 @@ describe("a purge that races with other changes", () => {
     return out;
   };
 
-  it("keeps a folder and its files when the folder was restored after the purge read the tree", async () => {
+  it("keeps a folder, its files, and their bytes when the folder was restored before the purge marked it", async () => {
     const me = owner();
     const { store, hooks, d } = setup();
     await d.putFile(me, "/box/a.txt", bytes("1"), { parents: true });
     await d.trash(me, "/box");
     const box = (await d.listTrash(me))[0]!;
     hooks.afterQuery = async () => void (await d.restore(me, box.id));
-    await d.purge(me, box.id);
-    expect((await d.list(me, "/box")).map((n) => n.name)).toEqual(["a.txt"]);
+    await expect(d.purge(me, box.id)).rejects.toMatchObject({ code: "BUSY" });
+    expect(new TextDecoder().decode((await d.read(me, "/box/a.txt")).data)).toBe("1");
     expect(await dangling(store)).toEqual([]);
     expect(await names(store)).toHaveLength(2);
   });
-  it("leaves no claim that names a missing item when a restore lands during the byte delete", async () => {
+  it("refuses a restore once the purge has marked the item, so no item comes back without its bytes", async () => {
     const me = owner();
     const { store, hooks, d } = setup();
     await d.putFile(me, "/box/a.txt", bytes("1"), { parents: true });
     await d.trash(me, "/box");
     const box = (await d.listTrash(me))[0]!;
-    hooks.onBlobDelete = async () => void (await d.restore(me, box.id));
-    await d.purge(me, box.id);
-    expect((await d.stat(me, box.id)).name).toBe("box");
+    let refused: unknown;
+    hooks.onBlobDelete = async () => void (await d.restore(me, box.id).catch((error) => (refused = error)));
+    expect(await d.purge(me, box.id)).toEqual({ removed: 2 });
+    expect(refused).toMatchObject({ code: "NOT_FOUND" });
+    await expect(d.stat(me, box.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(await dangling(store)).toEqual([]);
-    await expect(d.putFile(me, "/box", bytes("2"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
+    expect(await names(store)).toEqual([]);
+  });
+  it("hides a marked item from every read, and a purge that failed can run again", async () => {
+    const me = owner();
+    const { store, hooks, d } = setup();
+    await d.putFile(me, "/box/a.txt", bytes("1"), { parents: true });
+    await d.putFile(me, "/box/b.txt", bytes("2"), { parents: true });
+    await d.trash(me, "/box");
+    const box = (await d.listTrash(me))[0]!;
+    hooks.onBlobDelete = async () => {
+      throw new Error("storage 503");
+    };
+    await expect(d.purge(me, box.id)).rejects.toThrow("storage 503");
+    await expect(d.restore(me, box.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await d.listTrash(me)).toEqual([]);
+    expect(await d.purge(me, box.id)).toEqual({ removed: 3 });
+    expect(await store.query("drive_nodes", { limit: 10 })).toMatchObject({ items: [] });
+    expect(await names(store)).toEqual([]);
   });
   it("does not delete the claim of another item when a move leaves a name", async () => {
     const me = owner();
     const { store, d } = setup();
     await d.mkdir(me, "/dest");
     const a = await d.putFile(me, "/a.txt", bytes("1"));
-    const [claim] = await names(store);
+    const claim = (await names(store)).find((e) => e.data.nodeId === a.id);
     const taker = { ...claim!.data, nodeId: "someone-else" };
     await store.put("drive_names", claim!.id, taker);
     await d.move(me, a.id, "/dest");

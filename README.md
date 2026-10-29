@@ -83,7 +83,6 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 ## Limits
 
 - This release moves drive onto the shared ports. It keeps no old data: the Worker reads the `store_docs` table (not `docs`), and the CLI reads `store.jsonl` (not `store.json`). There is no import yet, and no claim backfill. Drive is version 0.0.0.
-
 - Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.
 - A signed URL serves an attachment without a file name. The shared port cannot sign a file name yet. That comes with agentic-identity 0.2.0.
 - Local file blobs return a `file:` URL that nothing serves or checks.

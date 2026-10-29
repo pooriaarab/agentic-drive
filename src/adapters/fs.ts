@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { createMemoryStore, parseRegion, type AdapterOptions, type Blobs, type Doc, type Store, type StoreOps } from "agentic-identity";
 
@@ -19,23 +19,28 @@ export function createFileStore(dir: string, options: AdapterOptions & { shared?
   const inner = createMemoryStore(options);
   const ready = (async () => {
     if (!existsSync(file)) return;
-    const lines = readFileSync(file, "utf8").split("\n");
-    let good = 0;
+    const text = readFileSync(file, "utf8");
+    const lines = text.split("\n");
+    // The last piece is empty when the file ends with a newline. Otherwise a crash cut the last append.
+    const tail = lines.pop() as string;
+    const replay = async (line: string) => {
+      for (const [collection, id, doc] of JSON.parse(line) as Change[]) await (doc ? inner.put(collection, id, doc) : inner.delete(collection, id));
+    };
     for (const [i, line] of lines.entries()) {
-      if (line === "") {
-        good += 1;
-        continue;
-      }
-      let changes: Change[];
+      if (line === "") continue;
       try {
-        changes = JSON.parse(line) as Change[];
+        await replay(line);
       } catch {
-        if (i < lines.length - 1) throw new Error(`the journal ${file} has a bad line ${i + 1}`);
-        truncateSync(file, good === 0 ? 0 : Buffer.byteLength(lines.slice(0, good).join("\n")) + 1);
-        return;
+        throw new Error(`the journal ${file} has a bad line ${i + 1}`);
       }
-      for (const [collection, id, doc] of changes) await (doc ? inner.put(collection, id, doc) : inner.delete(collection, id));
-      good += 1;
+    }
+    if (tail === "") return;
+    try {
+      await replay(tail);
+      // The cut landed right before the newline. End the line, so the next append starts a new one.
+      appendFileSync(file, "\n");
+    } catch {
+      truncateSync(file, Buffer.byteLength(text) - Buffer.byteLength(tail));
     }
   })();
   let failed: unknown;
@@ -44,7 +49,13 @@ export function createFileStore(dir: string, options: AdapterOptions & { shared?
     try {
       const fd = openSync(file, "a");
       try {
-        writeSync(fd, `${JSON.stringify(changes)}\n`);
+        const line = Buffer.from(`${JSON.stringify(changes)}\n`);
+        // A write can stop short without an error, for example on a nearly full disk.
+        for (let done = 0; done < line.length; ) {
+          const wrote = writeSync(fd, line, done);
+          if (wrote <= 0) throw new Error("the journal write stopped short");
+          done += wrote;
+        }
         fsyncSync(fd);
       } finally {
         closeSync(fd);

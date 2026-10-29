@@ -3,6 +3,7 @@
 //  2. A transaction that reran writes twice into the journal.
 //  3. A crash cut the last journal line, and the store cannot open.
 //  4. A bad line in the middle is skipped, so the data is quietly wrong.
+//  6. A crash cut the journal exactly before the newline, and the next write is glued onto the last line.
 //  5. An append fails, and the store goes on reading a state that a restart would lose.
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,5 +86,14 @@ describe("file store journal", () => {
     mkdirSync(join(dir, "other", "store.jsonl"));
     await expect(broken.put("docs", "x", { v: 1 })).rejects.toThrow();
     await expect(broken.get("docs", "x")).rejects.toThrow(/closed/);
+  });
+  it("starts a new line after a last line that lost only its newline", async () => {
+    const dir = fresh();
+    writeFileSync(join(dir, "store.jsonl"), '[["docs","a",{"v":1}]]');
+    const one = createFileStore(dir);
+    await one.put("docs", "b", { v: 2 });
+    const two = createFileStore(dir);
+    expect(await two.get("docs", "a")).toEqual({ v: 1 });
+    expect(await two.get("docs", "b")).toEqual({ v: 2 });
   });
 });

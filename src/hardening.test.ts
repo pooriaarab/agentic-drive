@@ -56,10 +56,12 @@ describe("purge deletes blobs before rows", () => {
 
 describe("deleteAll deletes blobs first and misses nothing", () => {
   it("keeps every row when a blob delete fails, then removes all on retry", async () => {
-    const { drive, inner, state } = setup((call) => call === 2);
+    const { drive, store, inner, state } = setup((call) => call === 2);
     for (let i = 0; i < 4; i++) await drive.putFile(me, `/f${i}.txt`, b("x"));
     await expect(drive.deleteAll(me)).rejects.toThrow("storage 503");
-    expect(await drive.list(me, "/")).toHaveLength(4);
+    // The items are marked for erase and hidden, and every row stays so the retry can finish.
+    expect(await drive.list(me, "/")).toHaveLength(0);
+    expect((await store.query("drive_nodes", { limit: 100 })).items).toHaveLength(4);
     state.failing = false;
     expect(await drive.deleteAll(me)).toEqual({ removed: 4 });
     expect(await blobKeys(drive, inner)).toEqual([]);

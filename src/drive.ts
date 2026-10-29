@@ -34,6 +34,8 @@ export type Node = {
   updatedBy: Actor;
   trashed: boolean;
   trashedAt: number | null;
+  /** Set while a purge deletes the item. Nothing can see or change it then. */
+  purging: boolean;
 };
 
 export type ErrorCode =
@@ -151,13 +153,13 @@ export function createDrive(deps: DriveDeps) {
 
   const rootNode = (ctx: Ctx): Node => ({
     id: ROOT_ID, owner: ctx.owner, parentId: "", kind: "folder", name: "", nameKey: "", size: 0, mime: null, hash: null,
-    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: ctx.actor, updatedBy: ctx.actor, trashed: false, trashedAt: null,
+    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: ctx.actor, updatedBy: ctx.actor, trashed: false, trashedAt: null, purging: false,
   });
   const who = (ctx: Ctx): Actor => ({ id: ctx.actor.id, kind: ctx.actor.kind });
 
-  async function fetch(ops: StoreOps, ctx: Ctx, id: string): Promise<Node | null> {
+  async function fetch(ops: StoreOps, ctx: Ctx, id: string, purgeAgain = false): Promise<Node | null> {
     const node = id === ROOT_ID ? rootNode(ctx) : await ops.get<Node>(NODES, id);
-    return node && (await can(ctx, "read", node)) ? node : null;
+    return node && (purgeAgain || node.purging !== true) && (await can(ctx, "read", node)) ? node : null;
   }
   async function need(ctx: Ctx, action: Action, node: Node) {
     if (!(await can(ctx, action, node))) throw new DriveError("FORBIDDEN", `not allowed to ${action} ${node.id}`);
@@ -178,7 +180,7 @@ export function createDrive(deps: DriveDeps) {
   async function claimed(ops: StoreOps, owner: string, parentId: string, key: string) {
     const claim = await ops.get<Claim>(NAMES, await claimId(owner, parentId, key));
     const found = claim ? await ops.get<Node>(NODES, claim.nodeId) : null;
-    const node = found && !found.trashed && found.parentId === parentId && found.nameKey === key ? found : null;
+    const node = found && !found.trashed && found.purging !== true && found.parentId === parentId && found.nameKey === key ? found : null;
     return { taken: claim !== null, node };
   }
   const liveChild = async (ops: StoreOps, ctx: Ctx, parentId: string, key: string) => (await claimed(ops, ctx.owner, parentId, key)).node;
@@ -258,7 +260,7 @@ export function createDrive(deps: DriveDeps) {
     const t = now();
     const node: Node = {
       id: newId(), owner: ctx.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
-      ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null,
+      ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null, purging: false,
       ...fields,
     };
     w.put(NODES, node.id, node);
@@ -360,38 +362,50 @@ export function createDrive(deps: DriveDeps) {
   }
 
   /**
-   * Removes the nodes that still look as they did when they were read. A node that was restored,
-   * moved, or changed in the meantime stays, with its bytes and its name. A chunk deletes its blobs
-   * first (a delete is idempotent), then its rows, children before parents. A failure at any step
-   * leaves rows that still name what is left, so the same call can run again.
+   * Deletes nodes for good, and returns how many it deleted. Step 1 marks each node that still looks as
+   * it did when it was read, top item first. A marked node is invisible and cannot be restored, moved,
+   * or changed, so nothing can bring it back while its bytes go. A node that changed before its mark
+   * stays untouched, with its bytes and its name. If the top item changed, nothing is deleted.
+   * Step 2 deletes the blobs of the marked nodes, then their rows (children first) and their claims.
+   * A failure leaves marked rows that still name what is left, and `purge` can run again on them.
    */
-  async function removeNodes(nodes: Node[], top?: Node) {
+  async function removeNodes(nodes: Node[], top?: Node): Promise<number> {
     const unchanged = (now: Node | null, seen: Node) =>
       now !== null && now.trashed === seen.trashed && now.parentId === seen.parentId && now.updatedAt === seen.updatedAt;
-    const rows = [...nodes].reverse();
+    const marked: Node[] = [];
+    for (let i = 0; i < nodes.length; i += 100) {
+      const found = await transact(async (tx) => {
+        const out: Node[] = [];
+        for (const node of nodes.slice(i, i + 100)) {
+          const current = await tx.get<Node>(NODES, node.id);
+          if (unchanged(current, node)) out.push(current as Node);
+        }
+        // The top item is first. If it changed, mark nothing.
+        if (top && i === 0 && out[0]?.id !== top.id) return [];
+        for (const node of out) await tx.put(NODES, node.id, { ...node, purging: true });
+        return out;
+      });
+      if (top && i === 0 && found.length === 0) throw new DriveError("BUSY", `${top.name} changed during the purge. Nothing was deleted.`);
+      marked.push(...found);
+    }
+    const rows = marked.reverse();
     for (let i = 0; i < rows.length; i += 100) {
       const chunk = rows.slice(i, i + 100);
-      const keep = async (tx: StoreOps) => {
-        const out: { node: Node; claim: string | null; held: Claim | null }[] = [];
-        // A restored top item keeps its whole tree.
-        if (top && !unchanged(await tx.get<Node>(NODES, top.id), top)) return out;
+      for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
+      await transact(async (tx) => {
+        const held: { node: Node; claim: string | null; owns: boolean }[] = [];
         for (const node of chunk) {
-          if (!unchanged(await tx.get<Node>(NODES, node.id), node)) continue;
           // A trashed item gave up its name when it was trashed, and another item may hold it now.
           const claim = node.trashed ? null : await claimId(node.owner, node.parentId, node.nameKey);
-          out.push({ node, claim, held: claim ? await tx.get<Claim>(NAMES, claim) : null });
+          held.push({ node, claim, owns: claim !== null && (await tx.get<Claim>(NAMES, claim))?.nodeId === node.id });
         }
-        return out;
-      };
-      for (const { node } of await transact(keep)) if (node.blobKey) await blobs.delete(node.blobKey);
-      await transact(async (tx) => {
-        const found = await keep(tx);
-        for (const { node, claim, held } of found) {
+        for (const { node, claim, owns } of held) {
           await tx.delete(NODES, node.id);
-          if (claim && held?.nodeId === node.id) await tx.delete(NAMES, claim);
+          if (claim && owns) await tx.delete(NAMES, claim);
         }
       });
     }
+    return marked.length;
   }
 
   const api = {
@@ -404,7 +418,7 @@ export function createDrive(deps: DriveDeps) {
       const folder = await resolve(store, ctx, loc);
       if (folder.kind !== "folder") throw new DriveError("NOT_A_FOLDER", `${folder.name} is not a folder`);
       return (await children(store, folder.owner, folder.id))
-        .filter((n) => !n.trashed)
+        .filter((n) => !n.trashed && n.purging !== true)
         .sort((a, b) => (a.nameKey < b.nameKey ? -1 : a.nameKey > b.nameKey ? 1 : a.name < b.name ? -1 : 1));
     },
 
@@ -521,7 +535,7 @@ export function createDrive(deps: DriveDeps) {
     async listTrash(ctx: Ctx): Promise<Node[]> {
       const page = await store.query<Node>(NODES, { where: { owner: ctx.owner, trashed: true }, limit: 1000 });
       const out: Node[] = [];
-      for (const { data } of page.items) if (await can(ctx, "read", data)) out.push(data);
+      for (const { data } of page.items) if (data.purging !== true && (await can(ctx, "read", data))) out.push(data);
       return out.sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
     },
 
@@ -559,7 +573,7 @@ export function createDrive(deps: DriveDeps) {
       const hits: { node: Node; path: string }[] = [];
       for (const node of all) {
         const path = pathIn(byId, node, true);
-        if (path === null) continue;
+        if (path === null || node.purging) continue;
         if (needle !== undefined && !node.nameKey.includes(needle)) continue;
         if (q.kind && node.kind !== q.kind) continue;
         if (q.mime && !(q.mime.endsWith("/*") ? node.mime?.startsWith(q.mime.slice(0, -1)) : node.mime === q.mime)) continue;
@@ -593,14 +607,13 @@ export function createDrive(deps: DriveDeps) {
       for (let pass = 0; pass < 5; pass++) {
         const all = await ownerNodes(ctx);
         if (all.length === 0) return { removed };
-        await removeNodes(all);
-        removed += all.length;
+        removed += await removeNodes(all);
       }
       throw new DriveError("BUSY", "the drive kept changing while it was deleted. Run it again.");
     },
     /** Deletes a trashed item for good, with everything under it and all their bytes. */
     async purge(ctx: Ctx, id: string): Promise<{ removed: number }> {
-      const top = await fetch(store, ctx, id);
+      const top = await fetch(store, ctx, id, true);
       if (!top || top.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
       if (!top.trashed) throw new DriveError("NOT_TRASHED", `${top.name} is not in the trash`);
       await need(ctx, "delete", top);
@@ -611,8 +624,7 @@ export function createDrive(deps: DriveDeps) {
         nodes.push(node);
         if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
       }
-      await removeNodes(nodes, top);
-      return { removed: nodes.length };
+      return { removed: await removeNodes(nodes, top) };
     },
 
   };
