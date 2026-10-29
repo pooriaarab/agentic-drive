@@ -18,11 +18,20 @@ beforeAll(() => {
 function fixture() {
   const work = mkdtempSync(join(tmpdir(), "drive-e2e-"));
   const data = join(work, "data");
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
-    const r = spawnSync("node", [cli, "--dir", data, ...args], { cwd: work, encoding: "utf8", env: { ...process.env, ...extraEnv } });
+  // No AGENTIC_DRIVE_TOKEN is inherited: a test must pass its own key.
+  const { AGENTIC_DRIVE_TOKEN: _drop, ...base } = process.env;
+  const raw = (args: string[], extraEnv: Record<string, string> = {}) => {
+    const r = spawnSync("node", [cli, "--dir", data, ...args], { cwd: work, encoding: "utf8", env: { ...base, ...extraEnv } });
     return { code: r.status, out: r.stdout, err: r.stderr, json: () => JSON.parse(r.stdout) as never as any };
   };
-  return { work, data, run };
+  // Make a person (or an agent of a person) and a key for it, through the CLI.
+  const principal = (id: string, of?: string, scopes: string[] = []) => {
+    raw(["principal", "add", id, ...(of ? ["--of", of] : []), ...scopes.flatMap((s) => ["--scope", s])]);
+    return raw(["key", "issue", id]).json().token as string;
+  };
+  const me = principal("u1");
+  const run = (args: string[], extraEnv: Record<string, string> = {}) => raw(args, { AGENTIC_DRIVE_TOKEN: me, ...extraEnv });
+  return { work, data, run, raw, principal, me };
 }
 
 describe("CLI", () => {
@@ -93,20 +102,99 @@ describe("CLI", () => {
     expect(run(["purge", "x"], {}).code).toBe(1);
   });
   it("keeps owners apart and labels agent work", () => {
-    const { run } = fixture();
-    run(["mkdir", "/mine"], { AGENTIC_DRIVE_OWNER: "u1" });
-    const bot = run(["mkdir", "/by-bot"], { AGENTIC_DRIVE_OWNER: "u1", AGENTIC_DRIVE_ACTOR: "bot", AGENTIC_DRIVE_KIND: "agent_of_human" });
-    expect(bot.json().createdBy).toEqual({ id: "bot", kind: "agent_of_human" });
-    expect(run(["ls"], { AGENTIC_DRIVE_OWNER: "u2" }).json()).toEqual([]);
-    expect(run(["ls"], { AGENTIC_DRIVE_OWNER: "u1" }).json()).toHaveLength(2);
-    expect(run(["delete-all", "--yes"], { AGENTIC_DRIVE_OWNER: "u1", AGENTIC_DRIVE_ACTOR: "bot" }).code).toBe(1);
+    const { run, principal } = fixture();
+    const bot = principal("bot", "u1");
+    const u2 = principal("u2");
+    run(["mkdir", "/mine"]);
+    const made = run(["mkdir", "/by-bot"], { AGENTIC_DRIVE_TOKEN: bot });
+    expect(made.json().createdBy).toEqual({ id: "bot", kind: "agent_of_human" });
+    expect(run(["ls"], { AGENTIC_DRIVE_TOKEN: u2 }).json()).toEqual([]);
+    expect(run(["ls"]).json()).toHaveLength(2);
+    expect(run(["ls"], { AGENTIC_DRIVE_TOKEN: bot }).json()).toHaveLength(2);
+    expect(run(["delete-all", "--yes"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(1);
+  });
+  it("takes the token from the flag too", () => {
+    const { raw, me } = fixture();
+    expect(raw(["--token", me, "mkdir", "/f"]).json()).toMatchObject({ name: "f", createdBy: { id: "u1", kind: "human" } });
+  });
+  it("refuses to run with no principal", () => {
+    const { raw } = fixture();
+    for (const args of [["ls"], ["mkdir", "/x"], ["export", "x.zip"], ["delete-all", "--yes"]]) {
+      const r = raw(args);
+      expect(r.code, args[0]).toBe(3);
+      expect(JSON.parse(r.err)).toMatchObject({ error: { code: "UNAUTHENTICATED", message: expect.stringContaining("AGENTIC_DRIVE_TOKEN") } });
+      expect(r.out).toBe("");
+    }
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: "" }).code).toBe(3);
+    expect(raw(["--help"]).code).toBe(0);
+  });
+  it("accepts a valid agent key and records the agent", () => {
+    const { raw, principal } = fixture();
+    const bot = principal("bot", "u1", ["drive:write"]);
+    const r = raw(["mkdir", "/by-agent"], { AGENTIC_DRIVE_TOKEN: bot });
+    expect(r.code).toBe(0);
+    expect(r.json()).toMatchObject({ owner: "u1", createdBy: { id: "bot", kind: "agent_of_human" } });
+  });
+  it("refuses a revoked key, an unknown key, and a key of a revoked chain", () => {
+    const { raw, principal } = fixture();
+    const bot = principal("bot", "u1");
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(0);
+    expect(raw(["key", "revoke", bot]).json()).toEqual({ revoked: true });
+    const revoked = raw(["ls"], { AGENTIC_DRIVE_TOKEN: bot });
+    expect(revoked.code).toBe(3);
+    expect(JSON.parse(revoked.err).error).toMatchObject({ code: "UNAUTHENTICATED", message: expect.stringContaining("revoked") });
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: "not-a-key" }).code).toBe(3);
+    expect(raw(["ls", "--token", "bad key"]).code).toBe(3);
+    // A bad value must not leak the key into the error.
+    const two = raw(["ls"], { AGENTIC_DRIVE_TOKEN: `${bot}\n${bot}` });
+    expect(two.code).toBe(3);
+    expect(two.err).not.toContain(bot);
+    // A mistyped key does not revoke the real one, and says so.
+    const typo = raw(["key", "revoke", `${bot}x`]);
+    expect(typo.code).toBe(1);
+    expect(JSON.parse(typo.err).error.code).toBe("NOT_FOUND");
+  });
+  it("refuses the key of a revoked chain", () => {
+    const { raw, principal } = fixture();
+    const bot = principal("bot", "u1");
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(0);
+    // Revoke the person: the key of the agent below must stop working too.
+    expect(raw(["principal", "revoke", "u1"]).json()).toEqual({ id: "u1", revoked: true });
+    expect(raw(["ls"], { AGENTIC_DRIVE_TOKEN: bot }).code).toBe(3);
+  });
+  it("reports an unknown command before it asks for a key, and makes no data folder", () => {
+    const { work } = fixture();
+    const fresh = join(work, "fresh");
+    const run = (args: string[]) => spawnSync("node", [cli, "--dir", fresh, ...args], { cwd: work, encoding: "utf8", env: { ...process.env, AGENTIC_DRIVE_TOKEN: "" } });
+    expect(run(["bogus"]).status).toBe(2);
+    expect(run(["ls"]).status).toBe(3);
+    expect(existsSync(fresh)).toBe(false);
+  });
+  it("documents the token in --help", () => {
+    const { raw } = fixture();
+    const help = raw(["--help"]).out;
+    expect(help).toContain("--token");
+    expect(help).toContain("AGENTIC_DRIVE_TOKEN");
+    expect(help).toContain("exits with 3");
+  });
+  it("rejects bad principal and key commands", () => {
+    const { raw, principal } = fixture();
+    expect(raw(["principal", "add"]).code).toBe(2);
+    expect(raw(["principal", "add", "u1"]).code).toBe(1);
+    expect(raw(["principal", "add", "x", "--of", "ghost"]).code).toBe(1);
+    expect(raw(["principal", "add", "y", "--scope", "nope"]).code).toBe(1);
+    expect(raw(["key", "issue", "ghost"]).code).toBe(1);
+    const bot = principal("bot", "u1");
+    expect(raw(["principal", "add", "sub", "--of", "bot"]).code).toBe(1);
+    expect(bot).toBeTruthy();
   });
 });
 
 describe("MCP over stdio", () => {
-  async function connect(env: Record<string, string> = {}) {
-    const { work, data } = fixture();
+  async function connect(agent = false) {
+    const { work, data, principal, me } = fixture();
     mkdirSync(data, { recursive: true });
+    const env = { AGENTIC_DRIVE_TOKEN: agent ? principal("bot", "u1") : me };
     const client = new Client({ name: "e2e", version: "0" });
     await client.connect(new StdioClientTransport({ command: "node", args: [cli, "--dir", data, "mcp"], cwd: work, env: { ...(process.env as Record<string, string>), ...env } }));
     const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -117,7 +205,7 @@ describe("MCP over stdio", () => {
   }
 
   it("lists the tools and runs the life of a file", async () => {
-    const { client, call, work, data } = await connect({ AGENTIC_DRIVE_ACTOR: "bot", AGENTIC_DRIVE_KIND: "agent_of_human", AGENTIC_DRIVE_OWNER: "u1" });
+    const { client, call, work, data } = await connect(true);
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
       expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export", "drive_home", "drive_register_document", "drive_forget_document"]));
@@ -148,6 +236,13 @@ describe("MCP over stdio", () => {
     } finally {
       await client.close();
     }
+  });
+  it("exits 3 with no key", async () => {
+    const { work, data } = fixture();
+    const { AGENTIC_DRIVE_TOKEN: _drop, ...base } = process.env;
+    const r = spawnSync("node", [cli, "--dir", data, "mcp"], { cwd: work, encoding: "utf8", env: base, input: "" });
+    expect(r.status).toBe(3);
+    expect(JSON.parse(r.stderr)).toMatchObject({ error: { code: "UNAUTHENTICATED" } });
   });
   it("returns tool errors with a code, and rejects bad input", async () => {
     const { client, call } = await connect();

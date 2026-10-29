@@ -1,11 +1,13 @@
 import { Hono, type Context } from "hono";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
-import { createSharing, createStoreAuth, parseRegion, type Role, type Store } from "agentic-identity";
+import { createSharing, parseRegion, type Role, type Store } from "agentic-identity";
 import { createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
+import { authenticate } from "./auth.js";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
 
+export { authenticate };
 export { backfillAuthorIds, backfillResources, type BackfillOptions, type BackfillResult } from "./migrate.js";
 
 export interface WorkerEnv {
@@ -30,17 +32,6 @@ const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
 
 const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 503) =>
   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } });
-
-/**
- * The caller behind a bearer token, resolved by the store-backed Auth of agentic-identity: the credential
- * names a principal, and the whole delegation chain must be live. Only a bearer token counts. A session
- * cookie is refused, because no check of the request origin stands behind it here. Any problem gives null.
- */
-export async function authenticate(request: Request, store: Store, now?: () => number): Promise<Ctx | null> {
-  if (!/^Bearer [A-Za-z0-9_-]{1,512}$/.test(request.headers.get("authorization") ?? "")) return null;
-  const principal = await createStoreAuth(store, now ? { now } : {}).authenticate(request);
-  return principal ? { owner: principal.chain[0]!.id, actor: { id: principal.principalId, kind: principal.kind as ActorKind }, principal } : null;
-}
 
 /** The database is ready once its table exists. The check runs once per binding. */
 const schemas = new WeakMap<object, Promise<unknown>>();

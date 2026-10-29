@@ -7,5 +7,5 @@ export type { UploadOptions } from "./upload.js";
 export { buildExport } from "./export.js";
 export { readZip, writeZip } from "./zip.js";
 export type { SearchQuery } from "./drive.js";
-export { openLocal, publicNode } from "./local.js";
+export { AuthError, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 export { backfillAuthorIds, backfillResources, type BackfillOptions, type BackfillResult } from "./migrate.js";

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **The CLI acts as a real principal.** The `--owner`, `--actor`, and `--actor-kind` flags and the `AGENTIC_DRIVE_OWNER`, `_ACTOR`, and `_KIND` variables are gone. Pass an API key with `--token` or `AGENTIC_DRIVE_TOKEN`. agentic-identity resolves the key. With no key, or a revoked or unknown key, the CLI and `mcp` exit with code 3. The default owner `me` is gone.
+- **`openLocal(dir)` takes a folder and returns `{ drive, store }`.** Use `resolveToken(store, token)` to get the `ctx`.
+
+### Added
+
+- **`principal add`, `principal revoke`, `key issue`, and `key revoke`** make local principals and keys.
+
 ## 0.3.0
 
 Read the breaking changes before you upgrade. The migration steps follow them.

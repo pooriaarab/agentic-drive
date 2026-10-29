@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { DriveError, type ActorKind, type OnConflict } from "./drive.js";
 import { buildExport } from "./export.js";
-import { openLocal, publicNode } from "./local.js";
+import { AuthError, NO_TOKEN, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
@@ -37,21 +37,31 @@ Commands:
   register <ref> <name>        Put an app document in the drive. Flag: --parent <folder>
   forget <ref>                 Move the references to an app document to the trash.
   delete-all --yes             Erase you for good: your drive, and what you shared or held.
+  principal add <id>           Make a person, or an agent with --of <person>. Flag: --scope <s> (repeat). No key needed.
+  principal revoke <id>        Stop a principal, and every agent below it. No key needed.
+  key issue <principal>        Print a new API key for a principal. It shows once. Flag: --label. No key needed.
+  key revoke <key>             Stop a key from working. No key needed.
   mcp                          Start the MCP server on stdio.
 
 Flags:
   --dir <path>        Data folder. Env AGENTIC_DRIVE_DIR. Default ./.agentic-drive
-  --owner <id>        Drive owner. Env AGENTIC_DRIVE_OWNER. Default "me"
-  --actor <id>        Who acts. Env AGENTIC_DRIVE_ACTOR. Default the owner
-  --actor-kind <k>    Actor kind. Env AGENTIC_DRIVE_KIND. Default human
+  --token <key>       Who you are: an API key. Env AGENTIC_DRIVE_TOKEN. Needed by every command
+                      except help, version, principal, and key. Prefer the env var: a flag shows in ps.
+                      The key names a principal, found through agentic-identity. The drive belongs to
+                      the person at the top of that principal's chain. An agent key marks items as
+                      made by a machine. If the key is missing or not valid, the command exits with 3.
   --on-conflict <m>   fail, rename, or replace
   -p, --parents       Create missing parent folders
+
+Exit codes: 0 done, 1 error, 2 bad usage, 3 no principal or an invalid key.
 `;
+
+const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "forget", "delete-all", "mcp", "principal", "key"];
 
 export class UsageError extends Error {}
 
 const options = {
-  dir: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, "actor-kind": { type: "string" },
+  dir: { type: "string" }, token: { type: "string" }, of: { type: "string" }, scope: { type: "string", multiple: true }, label: { type: "string" },
   "on-conflict": { type: "string" }, parents: { type: "boolean", short: "p" }, mime: { type: "string" },
   "max-bytes": { type: "string" }, kind: { type: "string" }, name: { type: "string" }, parent: { type: "string" },
   "min-size": { type: "string" }, "max-size": { type: "string" }, "created-by-kind": { type: "string" },
@@ -76,12 +86,21 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     };
     const env = io.env;
     const dir = resolve(values.dir ?? env.AGENTIC_DRIVE_DIR ?? ".agentic-drive");
-    const { drive, ctx } = openLocal({
-      dir,
-      owner: values.owner ?? env.AGENTIC_DRIVE_OWNER ?? "me",
-      actor: values.actor ?? env.AGENTIC_DRIVE_ACTOR,
-      kind: (values["actor-kind"] ?? env.AGENTIC_DRIVE_KIND) as ActorKind | undefined,
-    });
+    if (!COMMANDS.includes(command)) throw new UsageError(`unknown command "${command}"`);
+    const admin = command === "principal" || command === "key";
+    const token = values.token ?? env.AGENTIC_DRIVE_TOKEN;
+    if (!admin && !token) throw new AuthError(NO_TOKEN);
+    const { drive, store } = openLocal(dir);
+    if (admin || command === "key") {
+      const [sub, target] = args;
+      const out = (value: unknown) => io.out(JSON.stringify(value));
+      if (command === "principal" && sub === "add" && target) return out(await addPrincipal(store, target, { parent: values.of, scopes: values.scope })), 0;
+      if (command === "principal" && sub === "revoke" && target) return await revokePrincipal(store, target), out({ id: target, revoked: true }), 0;
+      if (command === "key" && sub === "issue" && target) return out({ principal: target, token: await issueKey(store, target, values.label) }), 0;
+      if (command === "key" && sub === "revoke" && target) return await revokeKey(store, target), out({ revoked: true }), 0;
+      throw new UsageError("usage: agentic-drive principal add <id> [--of <person>] [--scope <s>] | principal revoke <id> | key issue <principal> | key revoke <key>");
+    }
+    const ctx = await resolveToken(store, token);
     const onConflict = values["on-conflict"] as OnConflict | undefined;
     if (onConflict && !["fail", "rename", "replace"].includes(onConflict)) throw new UsageError("--on-conflict needs fail, rename, or replace");
     const print = (value: unknown) => io.out(JSON.stringify(value));
@@ -180,6 +199,10 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     if (error instanceof UsageError || (error instanceof TypeError && "code" in error && String(error.code).startsWith("ERR_PARSE_ARGS"))) {
       io.err(JSON.stringify({ error: { code: "USAGE", message: (error as Error).message } }));
       return 2;
+    }
+    if (error instanceof AuthError) {
+      io.err(JSON.stringify({ error: { code: error.code, message: error.message } }));
+      return 3;
     }
     if (error instanceof DriveError) {
       io.err(JSON.stringify({ error: { code: error.code, message: error.message } }));
