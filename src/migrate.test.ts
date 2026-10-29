@@ -67,11 +67,44 @@ describe("backfillResources", () => {
     expect((await drive.stat(alice, "/gone.txt")).name).toBe("gone.txt");
   });
 
-  it("changes nothing on a second run, and leaves a doc that sharing has changed", async () => {
+  it("changes nothing on a second run", async () => {
     const { store, file } = await oldDrive();
     await backfillResources(store);
     const before = await store.get("resources", file.id);
     expect(await backfillResources(store)).toEqual({ fixed: 0 });
     expect(await store.get("resources", file.id)).toEqual(before);
+  });
+
+  it("leaves a doc that already exists, even one that differs from the item", async () => {
+    const { store, file } = await oldDrive();
+    const existing = { id: file.id, type: "drive", parentId: "some-other-resource" };
+    await store.put("resources", file.id, existing);
+    expect(await backfillResources(store)).toEqual({ fixed: 3 });
+    expect(await store.get("resources", file.id)).toEqual(existing);
+  });
+
+  it("runs a page at a time, and resumes from the cursor it returns", async () => {
+    const store = createMemoryStore();
+    const plain = createDrive({ store, blobs: createMemoryBlobs(), now: () => 1_000_000 });
+    const owner = { owner: "alice", actor: { id: "alice", kind: "human" } } as const;
+    for (let i = 0; i < 25; i++) await plain.putFile(owner, `/f${i}.txt`, bytes("x"));
+    let fixed = 0;
+    let cursor: string | undefined;
+    let calls = 0;
+    do {
+      const step = await backfillResources(store, { cursor, maxPages: 1 });
+      fixed += step.fixed;
+      cursor = step.nextCursor;
+      calls++;
+    } while (cursor !== undefined);
+    expect(fixed).toBe(25);
+    expect(calls).toBe(3);
+  });
+
+  it("stops on a damaged item, and writes no doc with a guessed parent", async () => {
+    const store = createMemoryStore();
+    await store.put("drive_nodes", "broken", { id: "broken", parentId: "root", kind: "file" });
+    await expect(backfillResources(store)).rejects.toThrow(/has no owner or parent/);
+    expect(await store.get("resources", "broken")).toBeNull();
   });
 });
