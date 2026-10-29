@@ -337,7 +337,7 @@ describe("sharing over HTTP", () => {
     expect(await status(post("/shares", { path: folderId, subjectId: "u2", subjectKind: "human", role: "owner" }, as))).toBe(403);
     expect(await status(call("GET", `/shares?path=${folderId}`, { token: as }))).toBe(403);
     expect(await status(post("/links", { path: folderId, role: "viewer" }, as))).toBe(403);
-    expect(await status(post("/invites", { path: folderId, role: "viewer", handle: "x" }, as))).toBe(403);
+    expect(await status(post("/invites", { path: folderId, role: "viewer", handle: "xy" }, as))).toBe(403);
     expect(await status(call("DELETE", `/shares?path=${folderId}&subjectId=u1&subjectKind=human`, { token: as }))).toBe(403);
     expect((await call("GET", "/search?name=a.txt", { token: as })).status).toBe(200);
     expect(await json(await call("GET", "/search?name=a.txt", { token: as }))).toEqual([]);

@@ -1,4 +1,5 @@
 import { createStoreAuth, type Store } from "agentic-identity";
+import { requirePrincipal } from "agentic-identity/http";
 import type { ActorKind, Ctx } from "./drive.js";
 
 /**
@@ -7,7 +8,8 @@ import type { ActorKind, Ctx } from "./drive.js";
  * cookie is refused, because no check of the request origin stands behind it here. Any problem gives null.
  */
 export async function authenticate(request: Request, store: Store, now?: () => number): Promise<Ctx | null> {
-  if (!/^Bearer [A-Za-z0-9_-]{1,512}$/.test(request.headers.get("authorization") ?? "")) return null;
-  const principal = await createStoreAuth(store, now ? { now } : {}).authenticate(request);
-  return principal ? { owner: principal.chain[0]!.id, actor: { id: principal.principalId, kind: principal.kind as ActorKind }, principal } : null;
+  if (!request.headers.has("authorization")) return null;
+  const principal = await requirePrincipal(request, createStoreAuth(store, now ? { now } : {}));
+  if (principal instanceof Response) return null;
+  return { owner: principal.chain[0]!.id, actor: { id: principal.principalId, kind: principal.kind as ActorKind }, principal };
 }
