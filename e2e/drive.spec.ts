@@ -160,6 +160,7 @@ test("the share dialog shares by link and by invite, and the keyboard reaches it
   await page.goto(shared);
   await page.reload();
   await expect(page.getByRole("heading", { name: "agent-notes.txt" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Shared item" }).getByText("Created by agent", { exact: true })).toBeVisible();
   await audit(page, "10-shared");
 });
 
