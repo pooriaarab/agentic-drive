@@ -240,5 +240,5 @@ test("the activity page labels a change that an agent made to an item of a perso
   await expect(entries.nth(0)).toContainText("AI agent");
   await expect(entries.nth(0)).toContainText("renamed it");
   await expect(entries.nth(1)).not.toContainText("AI agent");
-  await audit(page, "12-activity");
+  await audit(page, "14-activity");
 });
