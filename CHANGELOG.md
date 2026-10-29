@@ -5,6 +5,7 @@
 ### Added
 
 - **`createApp` takes an injected store, blobs, and auth.** `createApp({ store, blobs, auth })` from `agentic-drive/worker` lets a host serve the drive routes with its own `Store`, `Blobs`, and sign-in callback. Each part may be a function of the Worker env. With no options, the Worker works as before. A Worker with no `DB` or `FILES` binding and no injected store or blobs now answers 503 `NOT_CONFIGURED`. The package also exports the `AppOptions` type.
+- **Mountable UI at `agentic-drive/ui`.** `mount(element, { baseUrl, getToken })` renders the drive UI in any page and returns `{ update, unmount }`. `getToken` runs before each request. The styles are in `agentic-drive/ui.css`. The embed keeps its folder in memory, so it does not change the page address. `react` and `react-dom` 19 are optional peer dependencies, and `agentic-design` is now a dependency.
 
 ## 0.5.0
 

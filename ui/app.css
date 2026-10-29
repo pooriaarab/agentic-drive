@@ -25,3 +25,5 @@
 .drive-card__name { overflow-wrap: anywhere; font-weight: var(--ad-font-weight-medium); color: var(--ad-color-text); }
 .drive-card__meta { font-size: var(--ad-font-size-sm); color: var(--ad-color-text-muted); }
 .drive-card__actions { display: flex; align-items: center; justify-content: space-between; gap: var(--ad-space-2); }
+.drive-root { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: var(--ad-space-6); color: var(--ad-color-text); }
+@media (max-width: 48rem) { .drive-root { grid-template-columns: 1fr; } }

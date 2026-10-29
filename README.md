@@ -184,6 +184,26 @@ Run `npm run build:ui` before `npm run test:e2e` or `wrangler deploy`, because t
 
 Set `DRIVE_PUBLIC_URL` to the origin that serves the UI. A download link on another origin is refused.
 
+### Mount the UI in your app
+
+`agentic-drive/ui` renders the same UI inside your own page. It needs no framework in your app. You give it an element, the address of a drive server, and a function that returns the bearer token. `mount` returns a handle.
+
+```ts
+import "agentic-design/styles.css";   // tokens, fonts, and base styles for body, headings, and links
+import "agentic-drive/ui.css";        // the drive styles
+import { mount } from "agentic-drive/ui";
+
+const drive = mount(document.getElementById("drive")!, {
+  baseUrl: "https://drive.example.com",
+  getToken: () => session.token,      // runs before every request, so it can refresh
+});
+
+drive.update({ baseUrl, getToken });  // use another server or callback
+drive.unmount();                      // remove the UI
+```
+
+`getToken` returns 1 to 512 letters, digits, `-` or `_`, or `undefined` to send no `authorization` header. A bad `baseUrl` or a `getToken` that is not a function makes `mount` throw a `TypeError`. The server still checks every request against the token. The embed shows files and trash with upload, rename, move, share, and the "Created by agent" label. It has no sign-in form, because your app owns sign-in. It does not change the page address, and it has no theme switch. `agentic-design/styles.css` sets base styles for the whole page, and it follows the dark mode of the system unless your page sets `data-theme`. Add `agentic-design` to your own dependencies, because your page imports its files. The Worker sends no CORS headers, so the server must be on the origin of your page. Set `baseUrl` to the same address as `DRIVE_PUBLIC_URL`, or the UI refuses its download links. `unmount` and `update` abort the requests that run and stop an upload that has more files to send. The UI keeps the list or grid choice in `localStorage` under `agentic-drive-view`, and it has its own heading for each view. Dialogs, menus, and messages render in `document.body`, outside your element. A click with Ctrl, Cmd, Shift, or the middle button on a folder link does not open the folder. The class names start with `drive-`. `DriveBrowser` is the same UI as a React component. It closes its requests when it unmounts. Wrap it in `TooltipProvider` and `ToastProvider` from `agentic-design/react`. `react` and `react-dom` (version 19 or later) are optional peer dependencies. Install them in your project when you use `agentic-drive/ui`. The web UI that the Worker serves uses the same views.
+
 ### Serve the UI from the package
 
 The npm package ships the built UI in `ui-dist`. The package does not ship a `wrangler.jsonc`, so a project that deploys its own Worker adds the assets block to its config. Its Worker re-exports the package Worker. In a workspace, the package can sit in the root `node_modules`. Then point `assets.directory` at that folder, such as `../../node_modules/agentic-drive/ui-dist`:
