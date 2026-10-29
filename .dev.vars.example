@@ -1,2 +1,3 @@
-# Copy to .dev.vars for signed download links. Use a random value of 32 bytes or more: openssl rand -hex 32
-DRIVE_URL_SECRET=replace-with-32-or-more-random-bytes
+# Copy to .dev.vars and set a random value of 32 bytes or more: openssl rand -hex 32
+# Until you set it, every API call answers 503.
+DRIVE_URL_SECRET=
