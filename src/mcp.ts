@@ -3,13 +3,18 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { inviteIdentity } from "./auth.js";
 import { ACTOR_KINDS, DriveError, type Ctx, type Drive } from "./drive.js";
+import type { Store } from "agentic-identity";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
 const conflict = z.enum(["fail", "rename", "replace"]).optional();
+const role = z.enum(["owner", "editor", "commenter", "viewer"]);
+const subjectKind = z.enum(["human", "agent"]);
+const lifetime = z.number().int().positive().optional().describe("How long it lasts, in milliseconds.");
 const loc = z.string().describe('A path, such as "/x" or "<folder id>/x", or an item id.');
 
 const ok = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
@@ -21,7 +26,7 @@ function failure(error: unknown) {
 /** A plain `.zip` file name. It has no folder part, so it cannot name a path outside the export folder. */
 const EXPORT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.zip$/;
 
-export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string): McpServer {
+export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string, store: Store): McpServer {
   const server = new McpServer({ name: "agentic-drive", version: VERSION });
   const tool = <S extends z.ZodRawShape>(
     name: string,
@@ -92,6 +97,44 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string): McpS
     async ({ ref, name, folder }) => publicNode(await drive.registerDocument(ctx, { ref, name, folder })),
   );
   tool("drive_forget_document", "Move every reference to an app document to the trash.", { ref: z.string() }, async ({ ref }) => drive.forgetDocument(ctx, ref));
+  tool("drive_shares", "Show who can reach an item, and by which links and invites. Only an owner may look. Link tokens are never shown.", { path: loc }, async ({ path }) => drive.shares(ctx, path), { readOnlyHint: true });
+  tool(
+    "drive_share",
+    "Give a person or an agent a role on an item. A folder role passes down.",
+    { path: loc, subjectKind, subjectId: z.string(), role },
+    async ({ path, subjectKind, subjectId, role }) => (await drive.shareWith(ctx, path, { kind: subjectKind, id: subjectId }, role), { ok: true }),
+  );
+  tool(
+    "drive_unshare",
+    "Take a role away from a person or an agent on an item.",
+    { path: loc, subjectKind, subjectId: z.string() },
+    async ({ path, subjectKind, subjectId }) => (await drive.unshare(ctx, path, { kind: subjectKind, id: subjectId }), { ok: true }),
+    { destructiveHint: true },
+  );
+  tool(
+    "drive_invite",
+    "Invite by `email` (a person) or `handle` (an agent). It sends no message. The id comes back.",
+    { path: loc, role, email: z.string().optional(), handle: z.string().optional(), expiresInMs: lifetime },
+    async ({ path, role, email, handle, expiresInMs }) => drive.invite(ctx, path, { role, ...(email === undefined ? {} : { email }), ...(handle === undefined ? {} : { handle }), ...(expiresInMs === undefined ? {} : { expiresInMs }) }),
+  );
+  tool("drive_accept_invite", "Accept an invite that names you by verified email or by agent handle.", { id: z.string() }, async ({ id }) => (await drive.acceptInvite(ctx, id, await inviteIdentity(store, ctx.actor.id)), { ok: true }));
+  tool(
+    "drive_create_link",
+    "Make a share link for an item. The token comes back once.",
+    { path: loc, role, expiresInMs: lifetime, signedInOnly: z.boolean().optional() },
+    async ({ path, role, expiresInMs, signedInOnly }) => drive.createLink(ctx, path, { role, signedInOnly: signedInOnly === true, ...(expiresInMs === undefined ? {} : { expiresAt: Date.now() + expiresInMs }) }),
+  );
+  tool("drive_revoke_link", "Stop a share link.", { id: z.string() }, async ({ id }) => (await drive.revokeLink(ctx, id), { ok: true }), { destructiveHint: true });
+  tool(
+    "drive_delete_account",
+    "Erase the caller for good: the drive, and what they shared or held. Only a person can. Pass confirm: \"yes\".",
+    { confirm: z.string() },
+    async ({ confirm }) => {
+      if (confirm !== "yes") throw new DriveError("INVALID_PATH", "pass confirm: \"yes\" to erase you for good: your drive, and what you shared or held");
+      return drive.erasePerson(ctx);
+    },
+    { destructiveHint: true },
+  );
   tool(
     "drive_export",
     "Write everything the owner has to a new zip file in the export folder. Give a plain file name that ends in .zip. It never overwrites a file.",
@@ -114,6 +157,6 @@ export function createMcpServer(drive: Drive, ctx: Ctx, exportDir: string): McpS
   return server;
 }
 
-export async function startMcp(deps: { drive: Drive; ctx: Ctx; exportDir: string }): Promise<void> {
-  await createMcpServer(deps.drive, deps.ctx, deps.exportDir).connect(new StdioServerTransport());
+export async function startMcp(deps: { drive: Drive; ctx: Ctx; exportDir: string; store: Store }): Promise<void> {
+  await createMcpServer(deps.drive, deps.ctx, deps.exportDir, deps.store).connect(new StdioServerTransport());
 }

@@ -2,10 +2,12 @@
 import { createReadStream, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { Role } from "agentic-identity";
 import { parseArgs } from "node:util";
+import { inviteIdentity } from "./auth.js";
 import { DriveError, type ActorKind, type OnConflict } from "./drive.js";
 import { buildExport } from "./export.js";
-import { AuthError, NO_TOKEN, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
+import { AuthError, NO_TOKEN, addPrincipal, ensureSharing, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
 
@@ -36,6 +38,13 @@ Commands:
   home [--app <name>]          List files and app documents, newest change first.
   register <ref> <name>        Put an app document in the drive. Flag: --parent <folder>
   forget <ref>                 Move the references to an app document to the trash.
+  shares <path|id>             Show who can reach an item, and by which links and invites. Owner only.
+  share <path|id> <subject>    Give a role to a person or agent. Flags: --role <r> --subject-kind <human|agent>
+  unshare <path|id> <subject>  Take a role away. Flag: --subject-kind <human|agent>
+  invite <path|id>             Invite by --email (a person) or --handle (an agent). Flags: --role <r> --expires-in-ms <n>. Sends no message.
+  accept-invite <id>           Accept an invite that names your verified email or agent handle.
+  link-create <path|id>        Make a share link. The token shows once. Flags: --role <r> --expires-in-ms <n> --signed-in-only
+  link-revoke <id>             Stop a share link.
   delete-all --yes             Erase you for good: your drive, and what you shared or held.
   principal add <id>           Make a person, or an agent with --of <person>. Flag: --scope <s> (repeat). No key needed.
   principal revoke <id>        Stop a principal, and every agent below it. No key needed.
@@ -50,13 +59,14 @@ Flags:
                       The key names a principal, found through agentic-identity. The drive belongs to
                       the person at the top of that principal's chain. An agent key marks items as
                       made by a machine. If the key is missing or not valid, the command exits with 3.
+  --role <r>          owner, editor, commenter, or viewer (share, invite, link-create)
   --on-conflict <m>   fail, rename, or replace
   -p, --parents       Create missing parent folders
 
 Exit codes: 0 done, 1 error, 2 bad usage, 3 no principal or an invalid key.
 `;
 
-const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "forget", "delete-all", "mcp", "principal", "key"];
+const COMMANDS = ["ls", "stat", "mkdir", "upload", "download", "mv", "rm", "trash", "restore", "purge", "search", "export", "home", "register", "forget", "shares", "share", "unshare", "invite", "accept-invite", "link-create", "link-revoke", "delete-all", "mcp", "principal", "key"];
 
 export class UsageError extends Error {}
 
@@ -65,6 +75,7 @@ const options = {
   "on-conflict": { type: "string" }, parents: { type: "boolean", short: "p" }, mime: { type: "string" },
   "max-bytes": { type: "string" }, kind: { type: "string" }, name: { type: "string" }, parent: { type: "string" },
   "min-size": { type: "string" }, "max-size": { type: "string" }, "created-by-kind": { type: "string" },
+  role: { type: "string" }, "subject-kind": { type: "string" }, email: { type: "string" }, handle: { type: "string" }, "expires-in-ms": { type: "string" }, "signed-in-only": { type: "boolean" },
   limit: { type: "string" }, app: { type: "string" }, yes: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "V" },
 } as const;
 
@@ -73,6 +84,14 @@ function num(value: string | undefined, flag: string): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) throw new UsageError(`--${flag} needs a number of 0 or more`);
   return n;
+}
+
+const ROLES = ["owner", "editor", "commenter", "viewer"];
+const SUBJECT_KINDS = ["human", "agent"];
+
+function pick(value: string | undefined, allowed: string[], flag: string): string {
+  if (value === undefined || !allowed.includes(value)) throw new UsageError(`--${flag} needs ${allowed.join(", ")}`);
+  return value;
 }
 
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
@@ -100,6 +119,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       if (command === "key" && sub === "revoke" && target) return await revokeKey(store, target), out({ revoked: true }), 0;
       throw new UsageError("usage: agentic-drive principal add <id> [--of <person>] [--scope <s>] | principal revoke <id> | key issue <principal> | key revoke <key>");
     }
+    await ensureSharing(store);
     const ctx = await resolveToken(store, token);
     const onConflict = values["on-conflict"] as OnConflict | undefined;
     if (onConflict && !["fail", "rename", "replace"].includes(onConflict)) throw new UsageError("--on-conflict needs fail, rename, or replace");
@@ -182,13 +202,55 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         need(1, "forget <ref>");
         print(await drive.forgetDocument(ctx, args[0]!));
         break;
+      case "shares":
+        need(1, "shares <path|id>");
+        print(await drive.shares(ctx, args[0]!));
+        break;
+      case "share":
+        need(2, "share <path|id> <subject> --role <r> --subject-kind <human|agent>");
+        await drive.shareWith(ctx, args[0]!, { kind: pick(values["subject-kind"], SUBJECT_KINDS, "subject-kind") as "human" | "agent", id: args[1]! }, pick(values.role, ROLES, "role") as Role);
+        print({ ok: true });
+        break;
+      case "unshare":
+        need(2, "unshare <path|id> <subject> --subject-kind <human|agent>");
+        await drive.unshare(ctx, args[0]!, { kind: pick(values["subject-kind"], SUBJECT_KINDS, "subject-kind") as "human" | "agent", id: args[1]! });
+        print({ ok: true });
+        break;
+      case "invite": {
+        need(1, "invite <path|id> --role <r> (--email <e> | --handle <h>)");
+        const expiresInMs = num(values["expires-in-ms"], "expires-in-ms");
+        print(await drive.invite(ctx, args[0]!, {
+          role: pick(values.role, ROLES, "role") as Role, ...(values.email === undefined ? {} : { email: values.email }),
+          ...(values.handle === undefined ? {} : { handle: values.handle }), ...(expiresInMs === undefined ? {} : { expiresInMs }),
+        }));
+        break;
+      }
+      case "accept-invite":
+        need(1, "accept-invite <id>");
+        await drive.acceptInvite(ctx, args[0]!, await inviteIdentity(store, ctx.actor.id));
+        print({ ok: true });
+        break;
+      case "link-create": {
+        need(1, "link-create <path|id> --role <r>");
+        const expiresInMs = num(values["expires-in-ms"], "expires-in-ms");
+        print(await drive.createLink(ctx, args[0]!, {
+          role: pick(values.role, ROLES, "role") as Role, signedInOnly: values["signed-in-only"] === true,
+          ...(expiresInMs === undefined ? {} : { expiresAt: Date.now() + expiresInMs }),
+        }));
+        break;
+      }
+      case "link-revoke":
+        need(1, "link-revoke <id>");
+        await drive.revokeLink(ctx, args[0]!);
+        print({ ok: true });
+        break;
       case "delete-all":
         if (!values.yes) throw new UsageError("delete-all erases you for good. Add --yes to confirm.");
         print(await drive.erasePerson(ctx));
         break;
       case "mcp": {
         const { startMcp } = await import("./mcp.js");
-        await startMcp({ drive, ctx, exportDir: join(dir, "exports") });
+        await startMcp({ drive, ctx, exportDir: join(dir, "exports"), store });
         return 0;
       }
       default:

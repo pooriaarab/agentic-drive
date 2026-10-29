@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
 import { createSharing, parseRegion, type Blobs, type Role, type Store } from "agentic-identity";
 import { createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
-import { authenticate } from "./auth.js";
+import { authenticate, inviteIdentity } from "./auth.js";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
@@ -278,12 +278,7 @@ export function createApp<Env extends object = WorkerEnv>(options: AppOptions<En
   // The email comes from a verified sign-in and the handle from the agent's own record, never from the request.
   api.post("/invites/accept", async (c) => {
     const id = str((await body(c)).id, "id");
-    const user = await c.var.store.get("users", c.var.ctx.actor.id);
-    const agent = await c.var.store.get("principals", c.var.ctx.actor.id);
-    await c.var.drive.acceptInvite(c.var.ctx, id, {
-      ...(user?.emailVerified === true && typeof user.email === "string" ? { email: user.email } : {}),
-      ...(typeof agent?.handle === "string" ? { handle: agent.handle } : {}),
-    });
+    await c.var.drive.acceptInvite(c.var.ctx, id, await inviteIdentity(c.var.store, c.var.ctx.actor.id));
     return c.json({ ok: true });
   });
   api.post("/links", async (c) => {

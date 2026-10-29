@@ -49,6 +49,44 @@ describe("CLI", () => {
     expect(run(["register", "not-a-ref", "x"]).code).toBe(1);
   });
 
+  it("shares by grant, invite, and link, and lists, revokes, and rejects bad input", () => {
+    const { run, raw, principal } = fixture();
+    const u2 = principal("u2");
+    const asU2 = { AGENTIC_DRIVE_TOKEN: u2 };
+    const folder = run(["mkdir", "/shared"]).json();
+    expect(raw(["ls", "/"], asU2).json()).toEqual([]);
+    expect(run(["share", "/shared", "u2", "--role", "viewer", "--subject-kind", "human"]).json()).toEqual({ ok: true });
+    expect(run(["shares", "/shared"]).json().grants).toEqual(expect.arrayContaining([{ subjectKind: "human", subjectId: "u2", role: "viewer" }]));
+    expect(raw(["stat", folder.id], asU2).json().name).toBe("shared");
+    expect(raw(["shares", folder.id], asU2).code).toBe(1);
+    expect(run(["unshare", "/shared", "u2", "--subject-kind", "human"]).json()).toEqual({ ok: true });
+    expect(raw(["stat", folder.id], asU2).code).toBe(1);
+
+    const invite = run(["invite", folder.id, "--role", "editor", "--handle", "bot-handle", "--expires-in-ms", "60000"]).json();
+    expect(invite.id).toBeTruthy();
+    expect(run(["shares", folder.id]).json().invites).toMatchObject([{ id: invite.id, role: "editor", handle: "bot-handle", accepted: false }]);
+    expect(raw(["accept-invite", invite.id], asU2).code).toBe(1);
+
+    const link = run(["link-create", folder.id, "--role", "viewer", "--signed-in-only", "--expires-in-ms", "60000"]).json();
+    expect(link.token).toBeTruthy();
+    const listed = run(["shares", folder.id]);
+    expect(listed.json().links).toMatchObject([{ id: link.id, role: "viewer", signedInOnly: true, revoked: false }]);
+    expect(listed.out).not.toContain(link.token);
+    expect(run(["link-revoke", link.id]).json()).toEqual({ ok: true });
+    expect(run(["shares", folder.id]).json().links[0].revoked).toBe(true);
+
+    expect(run(["share", folder.id, "u2", "--subject-kind", "human"]).code).toBe(2);
+    expect(run(["share", folder.id, "u2", "--role", "boss", "--subject-kind", "human"]).code).toBe(2);
+    expect(run(["share", folder.id, "u2", "--role", "viewer"]).code).toBe(2);
+    expect(run(["link-create", folder.id, "--role", "viewer", "--expires-in-ms", "-5"]).code).toBe(2);
+    expect(run(["shares"]).code).toBe(2);
+  }, 60_000);
+
+  it("documents the sharing commands in --help", () => {
+    const { out } = fixture().raw(["--help"]);
+    for (const word of ["shares", "share ", "unshare", "invite ", "accept-invite", "link-create", "link-revoke", "--role"]) expect(out).toContain(word);
+  });
+
   it("marks an item an agent created as machine made, from creation on", () => {
     const { run, raw, principal } = fixture();
     const agent = principal("bot1", "u1");
@@ -243,6 +281,46 @@ describe("MCP over stdio", () => {
       }
       expect((await call("drive_export", { name: "x.zip" })).isError).toBe(true);
       expect(existsSync(join(work, "x.zip"))).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+  it("shares, invites, links, and erases the account over MCP", async () => {
+    const { client, call, data } = await connect();
+    try {
+      const names = (await client.listTools()).tools.map((t) => t.name);
+      expect(names).toEqual(expect.arrayContaining(["drive_shares", "drive_share", "drive_unshare", "drive_invite", "drive_accept_invite", "drive_create_link", "drive_revoke_link", "drive_delete_account"]));
+      const folder = (await call("drive_mkdir", { path: "/team" })).body;
+      await call("drive_upload", { path: "/team/a.txt", text: "x" });
+      expect((await call("drive_share", { path: "/team", subjectKind: "human", subjectId: "u9", role: "viewer" })).body).toEqual({ ok: true });
+      expect((await call("drive_shares", { path: folder.id })).body.grants).toEqual(expect.arrayContaining([{ subjectKind: "human", subjectId: "u9", role: "viewer" }]));
+      expect((await call("drive_unshare", { path: "/team", subjectKind: "human", subjectId: "u9" })).body).toEqual({ ok: true });
+      expect((await call("drive_shares", { path: folder.id })).body.grants.some((g: { subjectId: string }) => g.subjectId === "u9")).toBe(false);
+      const invite = (await call("drive_invite", { path: folder.id, role: "editor", email: "a@example.com", expiresInMs: 60000 })).body;
+      expect((await call("drive_shares", { path: folder.id })).body.invites).toMatchObject([{ id: invite.id, email: "a@example.com", accepted: false }]);
+      expect((await call("drive_accept_invite", { id: invite.id })).isError).toBe(true);
+      const link = (await call("drive_create_link", { path: folder.id, role: "viewer", signedInOnly: true })).body;
+      expect(link.token).toBeTruthy();
+      const shown = await call("drive_shares", { path: folder.id });
+      expect(JSON.stringify(shown.body)).not.toContain(link.token);
+      expect((await call("drive_revoke_link", { id: link.id })).body).toEqual({ ok: true });
+      expect((await call("drive_shares", { path: folder.id })).body.links[0].revoked).toBe(true);
+      const bad = (await client.callTool({ name: "drive_share", arguments: { path: "/team", subjectKind: "human", subjectId: "u9", role: "boss" } })) as { isError?: boolean };
+      expect(bad.isError).toBe(true);
+
+      expect((await call("drive_delete_account", { confirm: "no" })).body.error.code).toBe("INVALID_PATH");
+      expect((await call("drive_ls", { path: "/team" })).body).toHaveLength(1);
+      expect((await call("drive_delete_account", { confirm: "yes" })).body).toMatchObject({ removed: expect.any(Number), grants: expect.any(Number), invites: expect.any(Number), anonymized: expect.any(Number) });
+      expect((await call("drive_ls", { path: "/team" })).body.error.code).toBe("NOT_FOUND");
+      expect(existsSync(data)).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+  it("refuses an agent that tries to erase the account", async () => {
+    const { client, call } = await connect(true);
+    try {
+      expect((await call("drive_delete_account", { confirm: "yes" })).isError).toBe(true);
     } finally {
       await client.close();
     }

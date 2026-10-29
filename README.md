@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: 0.6.1, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK and the HTTP API.
+> Status: 0.6.1, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
 > A small web UI works. See [UI](#ui).
 
 ## Live demo
@@ -305,7 +305,7 @@ export default { fetch: app.fetch };
 - The D1 store checks every document a transaction read. If another Worker changed one, the transaction runs again, and after 50 tries it fails with a `BUSY` error.
 - The D1 store keeps one generic table. A busy deployment needs an expression index on `owner` and `parentId`.
 - `region: "eu"` on the D1 and R2 adapters is a promise made at deploy time. The D1 adapter refuses a query that a non-EU region served. The code cannot check where the bucket lives.
-- Sharing is on in the Worker and in the SDK (`createDrive({ sharing })`). The CLI and the MCP server work on a local drive with one owner, so they do not share yet.
+- Sharing is on in the Worker and in the SDK (`createDrive({ sharing })`). The CLI and the MCP server turn it on too. The CLI has `shares`, `share`, `unshare`, `invite`, `accept-invite`, `link-create`, and `link-revoke`. The MCP server has `drive_shares`, `drive_share`, `drive_unshare`, `drive_invite`, `drive_accept_invite`, `drive_create_link`, `drive_revoke_link`, and `drive_delete_account` (pass `confirm: "yes"`). On the first run after the upgrade, the CLI gives older local items their `resources` docs, once.
 - Drive writes the `resources` doc of each item itself, in the same transaction, because identity has no call that does it in a transaction. A drive with `sharing` off keeps no such docs. Turn sharing on at the start, or run `backfillResources` after you turn it on.
 - An invite sends no message. The caller passes the invite id on.
 - Sharing follows a path of 16 resources, the drive root included, so an item sits at most 15 folders deep. A deeper path, move, or restore fails with `TOO_DEEP`. A move or a restore of a folder spends up to 200 queries on its subfolders (never on files), once, outside the transaction, to count its height. A move up or sideways, a rename, and a file need no count. A bigger folder fails with `TOO_MANY_ITEMS`: move its parts one by one. An edit inside the folder while it moves can leave items past the cap. Nobody can then reach them, and moving the folder back up repairs it.
