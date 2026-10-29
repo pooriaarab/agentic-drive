@@ -34,6 +34,7 @@
 //  33. A purge or an erase leaves the audit entries of the erased item, because identity was not asked to erase the resource.
 //  34. A grant for an agent is read as a grant for a person with the same id, or an unknown kind is taken for a person.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
+import { backend } from "./test-backend.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, subjectKindOf, type Ctx, type Drive } from "./drive.js";
 
@@ -55,7 +56,7 @@ let drive: Drive;
 let sharing: ReturnType<typeof createSharing>;
 beforeEach(() => {
   clock = 1_000_000;
-  store = createMemoryStore();
+  store = backend.store();
   sharing = createSharing(store, { now: () => clock });
   drive = createDrive({ store, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
 });

@@ -13,7 +13,13 @@ export type Actor = { id: string; kind: ActorKind };
  * `owner` is the drive's owner, and the root of the caller's chain. `actor` is who acts for them.
  * `principal` is the resolved caller. Drive needs it to check roles when `sharing` is set.
  */
-export type Ctx = { owner: string; actor: Actor; principal?: PrincipalContext };
+export type Ctx = {
+  owner: string;
+  actor: Actor;
+  principal?: PrincipalContext;
+  /** Inside a transaction only: the access answers the drive fetched before it. Callers never set it. */
+  decided?: Map<string, boolean>;
+};
 /** `delete` is for the owner only: purge and erase. Trash needs `write`. */
 export type Action = "read" | "write" | "delete";
 export type Sharing = ReturnType<typeof createSharing>;
@@ -140,6 +146,15 @@ function splitPath(path: string) {
   return parts.map(parseName);
 }
 
+/** Thrown inside a transaction that needs an access answer it does not have. */
+class Ask extends Error {
+  constructor(readonly key: string, readonly ctx: Ctx, readonly action: Action, readonly node: Node) {
+    super("access answer needed");
+  }
+}
+/** One transaction asks about a few nodes. More means something is wrong. */
+const MAX_ASKS = 100;
+
 type Claim = { nodeId: string; owner: string; parentId: string };
 type Write = { collection: string; id: string; doc: Doc | null };
 
@@ -205,11 +220,24 @@ export function createDrive(deps: DriveDeps) {
     console.error(`orphan blob ${key}: ${error instanceof Error ? error.name : "delete failed"}`));
   const sharing = deps.sharing;
   const resourceOf = async (node: Node) => (node.id === ROOT_ID ? rootResource(node.owner) : node.id);
-  const can: Can =
+  const askCan: Can =
     deps.can ??
     (sharing
       ? async (ctx, action, node) => ctx.principal !== undefined && (await sharing.can(ctx.principal, ACTION_TO_IDENTITY[action], await resourceOf(node))).allowed
       : (ctx, _action, node) => node.owner === ctx.owner);
+  /**
+   * Access is never asked from inside a transaction: sharing reads and writes the store on its own, which
+   * would wait for the transaction that called it. A transaction reads the answers it has. For one it lacks,
+   * it stops with `Ask`, and `transactAs` asks outside, then runs the transaction again.
+   */
+  const can: Can = (ctx, action, node) => {
+    if (!ctx.decided) return askCan(ctx, action, node);
+    const key = JSON.stringify([action, node.id, node.owner, ctx.owner, ctx.actor, ctx.principal ?? null]);
+    const known = ctx.decided.get(key);
+    if (known !== undefined) return known;
+    const { decided: _decided, ...plain } = ctx;
+    throw new Ask(key, plain, action, node);
+  };
 
   const rootNode = (owner: string, by: Actor): Node => ({
     id: ROOT_ID, owner, parentId: "", kind: "folder", name: "", nameKey: "", size: 0, mime: null, hash: null,
@@ -533,6 +561,20 @@ export function createDrive(deps: DriveDeps) {
     }
   }
 
+  /** A transaction for a caller. It reads access answers that it fetched outside, one retry per missing answer. */
+  async function transactAs<R>(ctx: Ctx, fn: (tx: StoreOps, ctx: Ctx) => Promise<R>): Promise<R> {
+    const decided = new Map<string, boolean>();
+    for (;;) {
+      try {
+        return await transact((tx) => fn(tx, { ...ctx, decided }));
+      } catch (error) {
+        if (!(error instanceof Ask)) throw error;
+        if (decided.size >= MAX_ASKS) throw new DriveError("BUSY", "the drive needed too many access checks. Try again.");
+        decided.set(error.key, await askCan(error.ctx, error.action, error.node));
+      }
+    }
+  }
+
   /** Only the owner in person, never an agent for them, may do what cannot be undone. */
   function assertInPerson(ctx: Ctx, what: string) {
     if (!isInPerson(ctx) || ctx.actor.kind !== "human") throw new DriveError("FORBIDDEN", `only the owner in person can ${what}`);
@@ -732,7 +774,7 @@ export function createDrive(deps: DriveDeps) {
     },
 
     async mkdir(ctx: Ctx, path: string, opts: { parents?: boolean } = {}): Promise<Node> {
-      return transact(async (tx) => {
+      return transactAs(ctx, async (tx, ctx) => {
         const w = batch();
         const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
         const existing = w.fresh.has(parent.id) ? null : await liveChild(tx, parent, parseName(name).key);
@@ -758,7 +800,7 @@ export function createDrive(deps: DriveDeps) {
       if (!stored) throw new DriveError("BLOB_EXISTS", "a blob with this key already exists");
       let committed: { node: Node; replacedBlob: string | null };
       try {
-        committed = await transact(async (tx) => {
+        committed = await transactAs(ctx, async (tx, ctx) => {
           const w = batch();
           const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
           const result = await insert(tx, w, ctx, parent, name, { kind: "file", size: data.byteLength, mime, hash, blobKey }, opts.onConflict ?? "fail");
@@ -777,7 +819,7 @@ export function createDrive(deps: DriveDeps) {
     /** A reference points at a document in another app, such as `docs:<id>`. */
     async putRef(ctx: Ctx, path: string, ref: string, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
-      return transact(async (tx) => {
+      return transactAs(ctx, async (tx, ctx) => {
         const w = batch();
         const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
         const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "replace" ? "fail" : opts.onConflict ?? "fail");
@@ -817,7 +859,7 @@ export function createDrive(deps: DriveDeps) {
       // The height of a moved folder is read once, outside the transaction, so the transaction stays short.
       const probe = sharing ? await resolve(store, ctx, src) : null;
       const height = probe ? await heightFor(ctx, probe, destLoc) : 0;
-      return transact(async (tx) => {
+      return transactAs(ctx, async (tx, ctx) => {
         const w = batch();
         const moved = await relocate(tx, w, ctx, await resolve(tx, ctx, src), destLoc, { ...opts, height });
         await w.apply(tx);
@@ -826,7 +868,7 @@ export function createDrive(deps: DriveDeps) {
     },
 
     async rename(ctx: Ctx, loc: string, name: string): Promise<Node> {
-      return transact(async (tx) => {
+      return transactAs(ctx, async (tx, ctx) => {
         const w = batch();
         const node = await resolve(tx, ctx, loc);
         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot change the root");
@@ -840,7 +882,7 @@ export function createDrive(deps: DriveDeps) {
 
     /** Hides an item and, for a folder, everything under it. Nothing else changes. */
     async trash(ctx: Ctx, loc: string): Promise<Node> {
-      return transact(async (tx) => {
+      return transactAs(ctx, async (tx, ctx) => {
         const node = await resolve(tx, ctx, loc);
         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot trash the root");
         await need(ctx, "write", node);
@@ -873,7 +915,7 @@ export function createDrive(deps: DriveDeps) {
         const target = await rawNode(store, opts.parentId, ctx.owner, ctx.actor);
         if (probe?.trashed && target && (await can(ctx, "read", target))) height = await heightFor(ctx, probe, target);
       }
-      return transact(async (tx) => {
+      return transactAs(ctx, async (tx, ctx) => {
         const node = await fetch(tx, ctx, id);
         if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
         if (!node.trashed) throw new DriveError("NOT_TRASHED", `${node.name} is not in the trash`);

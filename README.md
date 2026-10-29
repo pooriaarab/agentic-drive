@@ -33,9 +33,10 @@ npm install agentic-drive
 ## Quick start
 
 ```ts
-import { createDrive, createFileStore, createFileBlobs } from "agentic-drive";
+import { createDrive } from "agentic-drive";
+import { createFileBlobs, createFileStore } from "agentic-identity/file";
 
-const drive = createDrive({ store: createFileStore("./data/db"), blobs: createFileBlobs("./data/blobs") });
+const drive = createDrive({ store: createFileStore({ path: "./data/db" }), blobs: createFileBlobs({ dir: "./data/blobs" }) });
 const me = { owner: "u1", actor: { id: "u1", kind: "human" as const } };
 
 await drive.mkdir(me, "/reports/2026", { parents: true });
@@ -289,9 +290,9 @@ export default { fetch: app.fetch };
 - There are no retention settings yet, and no per-workspace export. An export covers one person.
 - `registerDocument` makes one item per document in a drive. Two calls at the same moment can make two.
 
-- Drive reads the `store_docs` table in D1 and `store.jsonl` in the CLI folder. It does not read older layouts. There is no import and no claim backfill.
+- Drive reads the `store_docs` table in D1. The CLI keeps its data in the file store of `agentic-identity/file`. On first run it copies data from an old `store.jsonl` journal and hashed blob files in the same folder, once, and leaves the old files in place. Drive reads no other older layout, and there is no claim backfill.
 - Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB (`DEFAULT_MAX_BYTES`).
-- Local file blobs return a `file:` URL that nothing serves or checks.
+- The CLI folder has no signing secret, so its blobs make no download URL. The Worker signs its own.
 - Drive writes each new blob only when its key is free (`ifNoneMatch`). A write that finds the key taken fails with `BLOB_EXISTS`.
 - Only `upload()` enforces the size cap. A caller of `putFile()` must check size first.
 - A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.

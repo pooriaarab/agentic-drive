@@ -14,6 +14,13 @@ Read the breaking changes before you upgrade.
 - **Sharing in the MCP server.** New tools: `drive_shares`, `drive_share`, `drive_unshare`, `drive_invite`, `drive_accept_invite`, `drive_create_link`, and `drive_revoke_link`.
 - **`drive_delete_account` in the MCP server.** It erases the caller like `DELETE /account` and `delete-all`. It needs `confirm: "yes"`.
 
+## Unreleased
+
+### Changed
+
+- **Transactions no longer nest store calls.** Access answers come from outside the transaction, so each transaction reads before it writes and runs on the file store of `agentic-identity/file`. A test runs the sharing and person suites on it.
+- **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The first CLI run copies old `store.jsonl` data and blobs.
+
 ## 0.6.1
 
 ### Changed

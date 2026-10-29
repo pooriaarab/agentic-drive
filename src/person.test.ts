@@ -21,6 +21,7 @@
 //  14. A document is registered twice because its first item is hidden, or because the folder is in another drive,
 //      or because more than 100 copies of its reference sit in the trash.
 import { createMemoryBlobs, createMemoryStore, createSharing, type Blobs, type PrincipalContext } from "agentic-identity";
+import { backend } from "./test-backend.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, type Ctx, type Drive } from "./drive.js";
 import { buildExport } from "./export.js";
@@ -42,7 +43,7 @@ let drive: Drive;
 let blobs: Blobs;
 let breakBlobDeletes = false;
 beforeEach(() => {
-  store = createMemoryStore();
+  store = backend.store();
   sharing = createSharing(store);
   const real = createMemoryBlobs();
   breakBlobDeletes = false;

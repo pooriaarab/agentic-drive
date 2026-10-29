@@ -88,14 +88,11 @@ describe("CLI", () => {
     const { run, raw, data, me } = fixture();
     const folder = run(["mkdir", "/old"]).json();
     // Simulate pre-sharing data: drop the resources docs and the marker from the store file.
-    const file = join(data, "db", "store.jsonl");
-    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-    const kept = lines
-      .map((l) => (JSON.parse(l) as [string, string, unknown][]).filter(([collection]) => !["resources", "grants", "audit", "drive_meta"].includes(collection)))
-      .filter((ops) => ops.length > 0)
-      .map((ops) => JSON.stringify(ops));
-    expect(readFileSync(file, "utf8")).toContain("resources");
-    writeFileSync(file, kept.join("\n") + "\n");
+    const file = join(data, "store.json");
+    const saved = JSON.parse(readFileSync(file, "utf8")) as { collections: Record<string, unknown> };
+    expect(saved.collections.resources).toBeDefined();
+    for (const name of ["resources", "grants", "audit", "drive_meta"]) delete saved.collections[name];
+    writeFileSync(file, JSON.stringify(saved));
     expect(raw(["ls", "/"], { AGENTIC_DRIVE_TOKEN: "bad" }).code).toBe(3);
     expect(readFileSync(file, "utf8")).not.toContain("drive_meta");
     const after = run(["shares", folder.id]);
