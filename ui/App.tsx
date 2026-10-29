@@ -400,7 +400,8 @@ function SharedView({ client, id, linkToken }: { client: DriveClient; id: string
         {state.status === "ok" && (
           <>
             <h1>{state.data.item.name}</h1>
-            <p className="drive-muted">Shared with you. <MachineLabel item={state.data.item} /></p>
+            <p className="drive-muted">Shared with you.</p>
+            <MachineLabel item={state.data.item} />
             {state.data.item.kind === "folder"
               ? (state.data.items.length === 0 ? <EmptyState title="This folder is empty" /> : <FileList label="Shared items">{state.data.items.map((i) => <FileRow key={i.id} name={i.name} href={`#/s/${i.id}${linkToken ? `/${linkToken}` : ""}`} kind={i.kind === "folder" ? "folder" : "file"} modified={new Date(i.updatedAt)} editedBy={who(i.updatedBy, i.owner)} actions={<MachineLabel item={i} />} />)}</FileList>)
               : <Button onClick={() => void save()}>Download</Button>}

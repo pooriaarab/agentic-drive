@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Machine-made label from creation on.** The web UI shows "Created by agent" on every item that an agent made, not only after a person edits it. Each item in the HTTP, CLI, and MCP output has a `machineMade` field next to `createdBy.kind`.
+- **Machine-made label from creation on.** The web UI shows "Created by agent" on every item that an agent made, not only after a person edits it. Each item in the HTTP, CLI, and MCP output has a `machineMade` field next to `createdBy.kind`. The client now rejects an item with no `machineMade`, so deploy the Worker and the client together.
 
 ## 0.4.0
 

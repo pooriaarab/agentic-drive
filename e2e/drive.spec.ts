@@ -112,6 +112,12 @@ test("an item made by an agent carries a marker, in the list and in the grid", a
   await expect(page.getByRole("list", { name: /Items in/ }).getByText("Agent", { exact: true })).toBeVisible();
   await expect(page.getByRole("list", { name: /Items in/ }).getByText("Created by agent", { exact: true })).toBeVisible();
   await audit(page, "07-grid");
+
+  await pick(page, "agent-notes.txt", "Move to trash");
+  await page.getByRole("link", { name: "Trash" }).click();
+  await expect(row(page, "agent-notes.txt").getByText("Created by agent", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Restore agent-notes.txt" }).click();
+  await expect(page.getByText("The trash is empty")).toBeVisible();
 });
 
 test("drag and drop uploads a file", async ({ page }) => {
