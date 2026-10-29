@@ -23,6 +23,15 @@ Read the breaking changes before you upgrade or deploy.
 
 - `npm run ci:local` and CI also build the UI and run `npm run test:e2e`. The E2E test needs Chromium.
 - The package adds no runtime dependency. The UI build and test tools are dev dependencies.
+- The MCP registry entry names `AGENTIC_DRIVE_TOKEN` as a required secret, and `AGENTIC_DRIVE_DIR` as optional.
+
+### Migration
+
+Local data from 0.3.0 belongs to the owner `me`, or to the id you passed to `--owner`. The data folder does not change. Without the key of that owner, the CLI shows an empty drive. Make the principal and a key, then use the key:
+
+1. Run `npx agentic-drive principal add me`, with your old owner id if it was not `me`.
+2. Run `export AGENTIC_DRIVE_TOKEN=$(npx agentic-drive key issue me | jq -r .token)`.
+3. Put the same key in each MCP client config as `AGENTIC_DRIVE_TOKEN`.
 
 ## 0.3.0
 

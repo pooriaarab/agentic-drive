@@ -14,6 +14,10 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "agentic-drive",
       "version": "0.4.0",
+      "environmentVariables": [
+        { "name": "AGENTIC_DRIVE_TOKEN", "description": "An API key. Make one with `principal add <id>` and `key issue <id>`.", "isRequired": true, "isSecret": true },
+        { "name": "AGENTIC_DRIVE_DIR", "description": "The data folder. Default ./.agentic-drive.", "isRequired": false, "isSecret": false }
+      ],
       "transport": { "type": "stdio" },
       "runtimeHint": "npx",
       "packageArguments": [
