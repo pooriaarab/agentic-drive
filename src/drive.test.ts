@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createFileBlobs, createFileStore } from "./adapters/fs.js";
+import { createFileBlobs, createFileStore } from "agentic-identity/file";
 import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
 import { createDrive, DriveError, type Ctx, type Drive } from "./drive.js";
 import type { Blobs, Store } from "agentic-identity";
@@ -17,7 +17,7 @@ const adapters: [string, () => { store: Store; blobs: Blobs }][] = [
   ["memory", () => ({ store: createMemoryStore(), blobs: createMemoryBlobs() })],
   ["file", () => {
     const dir = mkdtempSync(join(tmpdir(), "drive-"));
-    return { store: createFileStore(join(dir, "s")), blobs: createFileBlobs(join(dir, "b")) };
+    return { store: createFileStore({ path: join(dir, "s") }), blobs: createFileBlobs({ dir: join(dir, "b") }) };
   }],
 ];
 
@@ -238,7 +238,7 @@ describe.each(adapters)("drive on %s adapters", (_name, make) => {
 
 it("keeps data across a reopened file store", async () => {
   const dir = mkdtempSync(join(tmpdir(), "drive-"));
-  const open = () => createDrive({ store: createFileStore(join(dir, "s")), blobs: createFileBlobs(join(dir, "b")) });
+  const open = () => createDrive({ store: createFileStore({ path: join(dir, "s") }), blobs: createFileBlobs({ dir: join(dir, "b") }) });
   await open().putFile(human, "/keep.txt", bytes("kept"));
   expect(new TextDecoder().decode((await open().read(human, "/keep.txt")).data)).toBe("kept");
 });

@@ -1,11 +1,11 @@
 export { VERSION } from "./version.js";
 export { ACTOR_KINDS, createDrive, DriveError, parseName, parseSubject, ROOT_ID, subjectKindOf } from "./drive.js";
 export type { Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, Node, OnConflict } from "./drive.js";
-export { createFileBlobs, createFileStore } from "./adapters/fs.js";
 export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";
 export type { UploadOptions } from "./upload.js";
 export { buildExport } from "./export.js";
 export { readZip, writeZip } from "./zip.js";
 export type { SearchQuery } from "./drive.js";
+export { importLegacyLocal } from "./legacy.js";
 export { AuthError, addPrincipal, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 export { backfillAuthorIds, backfillResources, type BackfillOptions, type BackfillResult } from "./migrate.js";

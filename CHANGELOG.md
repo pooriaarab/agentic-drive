@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **The CLI uses `agentic-identity/file`.** The old `createFileStore` and `createFileBlobs` exports are gone: import them from `agentic-identity/file`. The local layout changes: the store is `store.json` in the data folder and blobs sit in `blobs/blobs/<hash>.blob`. `openLocal` now also returns `blobs`, and it throws on a folder with an old `db/store.jsonl` until `importLegacyLocal(dir, store, blobs)` (new, exported) has copied the old data. The CLI does this on its first run, once, and leaves the old files in place.
+
+### Changed
+
+- **Transactions no longer nest store calls.** Access answers come from outside the transaction, so each transaction reads before it writes and runs on the file store of `agentic-identity/file`. A test runs the sharing and person suites on it.
+
 ## 0.7.0
 
 Read the breaking changes before you upgrade.

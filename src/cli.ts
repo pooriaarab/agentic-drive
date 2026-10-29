@@ -7,6 +7,7 @@ import { ROLES, SUBJECT_KINDS, type Role } from "agentic-identity";
 import { inviteIdentity } from "./auth.js";
 import { DriveError, type ActorKind, type OnConflict } from "./drive.js";
 import { buildExport } from "./export.js";
+import { importLegacyLocal } from "./legacy.js";
 import { AuthError, NO_TOKEN, addPrincipal, ensureSharing, issueKey, openLocal, publicNode, resolveToken, revokeKey, revokePrincipal } from "./local.js";
 import { upload } from "./upload.js";
 import { VERSION } from "./version.js";
@@ -117,7 +118,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     const admin = command === "principal" || command === "key";
     const token = values.token ?? env.AGENTIC_DRIVE_TOKEN;
     if (!admin && !token) throw new AuthError(NO_TOKEN);
-    const { drive, store } = openLocal(dir);
+    const { drive, store, blobs } = openLocal(dir, { beforeImport: true });
+    await importLegacyLocal(dir, store, blobs);
     if (admin || command === "key") {
       const [sub, target] = args;
       const out = (value: unknown) => io.out(JSON.stringify(value));

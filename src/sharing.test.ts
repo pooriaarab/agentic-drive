@@ -34,6 +34,7 @@
 //  33. A purge or an erase leaves the audit entries of the erased item, because identity was not asked to erase the resource.
 //  34. A grant for an agent is read as a grant for a person with the same id, or an unknown kind is taken for a person.
 import { createMemoryBlobs, createMemoryStore, createSharing, type PrincipalContext } from "agentic-identity";
+import { backend } from "./test-backend.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, subjectKindOf, type Ctx, type Drive } from "./drive.js";
 
@@ -55,7 +56,7 @@ let drive: Drive;
 let sharing: ReturnType<typeof createSharing>;
 beforeEach(() => {
   clock = 1_000_000;
-  store = createMemoryStore();
+  store = backend.store();
   sharing = createSharing(store, { now: () => clock });
   drive = createDrive({ store, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
 });
@@ -563,5 +564,74 @@ describe("identity erase and kinds", () => {
   it("maps the root kinds of a chain and throws on any other kind", () => {
     expect(["human", "agent"].map(subjectKindOf)).toEqual(["human", "agent"]);
     for (const bad of [undefined, "", "robot", "Human", "user_token", "agent_of_human", "agent_of_agent"]) expect(() => subjectKindOf(bad)).toThrow(/cannot hold a role/);
+  });
+});
+
+describe("transactions and access checks", () => {
+  it("never asks for access while a transaction is open", async () => {
+    let open = 0;
+    let nested = 0;
+    const watched = { ...store, transaction: (fn: Parameters<typeof store.transaction>[0]) => (open++, store.transaction(fn).finally(() => open--)) } as typeof store;
+    const spy = { ...sharing, can: (...args: Parameters<typeof sharing.can>) => (open > 0 && nested++, sharing.can(...args)) };
+    const guarded = createDrive({ store: watched, blobs: createMemoryBlobs(), sharing: spy, now: () => ++clock });
+    await guarded.putFile(A, "/x/y.txt", bytes("1"), { parents: true });
+    await guarded.rename(A, "/x/y.txt", "z.txt");
+    await guarded.trash(A, "/x/z.txt");
+    expect(nested).toBe(0);
+  });
+  it("asks again when a folder above the item moves between the check and the rerun", async () => {
+    const { file } = await team("editor");
+    await drive.mkdir(A, "/private");
+    const docs = await drive.stat(A, "/team/docs");
+    let moved = false;
+    const racing = { ...sharing, can: async (...args: Parameters<typeof sharing.can>) => {
+      const decision = await sharing.can(...args);
+      if (!moved && args[1] === "write") {
+        moved = true;
+        await drive.move(A, docs.id, "/private");
+      }
+      return decision;
+    } };
+    const bobs = createDrive({ store, blobs: createMemoryBlobs(), sharing: racing, now: () => ++clock });
+    await expect(bobs.rename(B, file.id, "b.txt")).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) });
+    expect((await drive.stat(A, file.id)).name).toBe("a.txt");
+  });
+  it("ends in BUSY when the node changes at every check", async () => {
+    await drive.putFile(A, "/f.txt", bytes("1"));
+    const file = await drive.stat(A, "/f.txt");
+    const churn = createDrive({
+      store, blobs: createMemoryBlobs(), now: () => ++clock,
+      can: async (_ctx, _action, node) => {
+        const current = await store.get<{ updatedAt: number }>("drive_nodes", node.id);
+        if (current) await store.put("drive_nodes", node.id, { ...current, updatedAt: current.updatedAt + 1 });
+        return true;
+      },
+    });
+    await fails(churn.rename(A, file.id, "g.txt"), "BUSY");
+  });
+  it("asks again after the store runs a transaction again", async () => {
+    const asks = async (conflicts: number) => {
+      let calls = 0;
+      let left = conflicts;
+      const spy = { ...sharing, can: (...args: Parameters<typeof sharing.can>) => (calls++, sharing.can(...args)) };
+      // A store that rolls back a transaction after its body ran, then runs the body again, as a store does on a conflict.
+      const retrying = { ...store, transaction: async (fn: Parameters<typeof store.transaction>[0]) => {
+        for (;;) {
+          try {
+            return await store.transaction(async (tx) => {
+              const result = await fn(tx);
+              if (left-- > 0) throw new Error("rerun");
+              return result;
+            });
+          } catch (error) {
+            if (!(error instanceof Error && error.message === "rerun")) throw error;
+          }
+        }
+      } } as typeof store;
+      const d = createDrive({ store: retrying, blobs: createMemoryBlobs(), sharing: spy, now: () => ++clock });
+      await d.putFile(A, `/c${conflicts}.txt`, bytes("1"));
+      return calls;
+    };
+    expect(await asks(1)).toBeGreaterThan(await asks(0));
   });
 });
