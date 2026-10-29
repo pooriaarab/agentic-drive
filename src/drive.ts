@@ -943,7 +943,10 @@ export function createDrive(deps: DriveDeps) {
       return all
         .filter((n) => n.trashed)
         .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0))
-        .map((node) => ({ node, path: pathIn(byId, node, false) as string }));
+        .flatMap((node) => {
+          const path = pathIn(byId, node, false);
+          return path === null ? [] : [{ node, path }];
+        });
     },
 
     /** Puts a trashed item back. It needs a live parent folder. */

@@ -1,6 +1,7 @@
 // A typed client for the HTTP API of the Worker. It uses only `fetch`, so it runs in browsers, Workers, and Node 22.
 import type { ActorKind, ErrorCode, Node, SearchQuery } from "./drive.js";
 
+/** `ErrorCode` is the codes of the drive. A failed call carries a `ClientErrorCode`, which adds the codes of the Worker and the network. */
 export type { ErrorCode, Node };
 
 export type Role = "viewer" | "commenter" | "editor" | "owner";
