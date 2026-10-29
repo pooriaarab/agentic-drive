@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
-import { createSharing, parseRegion, type Role, type Store } from "agentic-identity";
+import { createSharing, parseRegion, type Blobs, type Role, type Store } from "agentic-identity";
 import { createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
 import { authenticate } from "./auth.js";
 import { buildExport } from "./export.js";
@@ -19,6 +19,19 @@ export interface WorkerEnv {
   /** At least 32 bytes. Signs download URLs. Without it, every request gets 503. */
   DRIVE_URL_SECRET?: string;
   DRIVE_REGION?: string;
+}
+
+/**
+ * What a host injects into `createApp`. Each part is optional, and the default is the D1 store, the R2 blobs,
+ * and the bearer-token check of agentic-identity. A part may be a function of the Worker env, which runs on every request.
+ */
+export interface AppOptions<Env = WorkerEnv> {
+  /** The store that holds items, shares, and credentials. With it, no `DB` binding is read and the table is not created. */
+  store?: Store | ((env: Env) => Store | Promise<Store>);
+  /** The blob store. With it, no `FILES` binding is read. It signs download URLs, so it must serve them from this Worker's `/api/v1/drive/blob`. */
+  blobs?: Blobs | ((env: Env) => Blobs | Promise<Blobs>);
+  /** Resolves the caller. Return null for no valid caller (the answer is 401). With it, bearer tokens are not read from the store. */
+  auth?: (request: Request, store: Store, env: Env) => Ctx | null | Promise<Ctx | null>;
 }
 
 type App = { Bindings: WorkerEnv; Variables: { drive: Drive; store: Store; ctx: Ctx } };
@@ -55,7 +68,7 @@ function blobsFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings
   return createR2Blobs(env.FILES, { region: regionOf(env), urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
 }
 
-async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<{ drive: Drive; store: Store }> {
+async function defaultStore(env: WorkerEnv): Promise<Store> {
   let ready = schemas.get(env.DB);
   if (!ready) {
     ready = env.DB.prepare(D1_SCHEMA).run().catch((error: unknown) => {
@@ -65,8 +78,7 @@ async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof se
     schemas.set(env.DB, ready);
   }
   await ready;
-  const store = createD1Store(env.DB, { region: regionOf(env) });
-  return { store, drive: createDrive({ store, blobs: blobsFor(env, config), sharing: createSharing(store) }) };
+  return createD1Store(env.DB, { region: regionOf(env) });
 }
 
 const number = (v: string | undefined, name: string) => {
@@ -80,16 +92,30 @@ const number = (v: string | undefined, name: string) => {
 const claimedType = (header: string | undefined) =>
   header === undefined || /^(application\/x-www-form-urlencoded|application\/octet-stream|multipart\/form-data)\b/i.test(header) ? undefined : header;
 
-export function createApp(): Hono<App> {
+export function createApp<Env = WorkerEnv>(options: AppOptions<Env> = {}): Hono<App> {
+  const injected = options as AppOptions<WorkerEnv>;
+  const missing = (env: WorkerEnv) =>
+    (injected.store || env.DB) && (injected.blobs || env.FILES) ? null : fail("NOT_CONFIGURED", "bind DB (D1) and FILES (R2), or inject a store and blobs", 503);
+  const notSet = (env: WorkerEnv) => (injected.blobs ? null : settings(env) ? null : fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503));
+  /** Resolves the parts of one request. The error is a Response when the Worker is not configured. */
+  const resolve = async (env: WorkerEnv): Promise<{ stop: Response } | { drive: Drive; store: Store; blobs: Blobs }> => {
+    const stop = missing(env) ?? notSet(env);
+    if (stop) return { stop };
+    const config = settings(env);
+    const store = injected.store ? await (typeof injected.store === "function" ? injected.store(env) : injected.store) : await defaultStore(env);
+    const blobs = injected.blobs ? await (typeof injected.blobs === "function" ? injected.blobs(env) : injected.blobs) : blobsFor(env, config!);
+    return { store, blobs, drive: createDrive({ store, blobs, sharing: createSharing(store) }) };
+  };
+  const who = (request: Request, store: Store, env: WorkerEnv) => (injected.auth ? injected.auth(request, store, env) : authenticate(request, store));
   const app = new Hono<App>();
   app.get("/health", (c) => c.json({ ok: true }));
 
   const api = new Hono<App>();
   api.use("*", async (c, next) => {
-    const config = settings(c.env);
-    if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
-    const { drive, store } = await driveFor(c.env, config);
-    const ctx = await authenticate(c.req.raw, store);
+    const r = await resolve(c.env);
+    if ("stop" in r) return r.stop;
+    const { drive, store } = r;
+    const ctx = await who(c.req.raw, store, c.env);
     if (!ctx) return fail("UNAUTHORIZED", "send a valid bearer token", 401);
     c.set("ctx", ctx);
     c.set("drive", drive);
@@ -190,9 +216,11 @@ export function createApp(): Hono<App> {
   app.get("/api/v1/drive/blob", async (c) => {
     const config = settings(c.env);
     if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
+    const r = await resolve(c.env);
+    if ("stop" in r) return r.stop;
     const signed = await verifySignedBlobUrl(c.req.url, { secret: config.urlSecret });
     if (!signed || signed.method !== "GET") return fail("INVALID_LINK", "this link is not valid, or it has expired", 403);
-    const blob = await blobsFor(c.env, config).get(signed.key);
+    const blob = await r.blobs.get(signed.key);
     if (!blob) return fail("NOT_FOUND", "the bytes are gone", 404);
     return new Response(blob.data as BodyInit, {
       headers: {
@@ -256,10 +284,10 @@ export function createApp(): Hono<App> {
   // A visitor reads by id with a link token in `x-link-token`. A bearer token, if sent, must be valid.
   const shared = new Hono<App>();
   const visit = async (c: Context<App>) => {
-    const config = settings(c.env);
-    if (!config) return { stop: fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503) };
-    const { drive, store } = await driveFor(c.env, config);
-    const ctx = await authenticate(c.req.raw, store);
+    const r = await resolve(c.env);
+    if ("stop" in r) return r;
+    const { drive, store } = r;
+    const ctx = await who(c.req.raw, store, c.env);
     if (!ctx && c.req.header("authorization")) return { stop: fail("UNAUTHORIZED", "send a valid bearer token", 401) };
     return { drive, principal: ctx?.principal ?? null, token: c.req.header("x-link-token") };
   };

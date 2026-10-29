@@ -219,6 +219,30 @@ The [seed script](https://github.com/pooriaarab/agentic-drive/blob/main/e2e/serv
 
 The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
+### Inject a store, blobs, and sign-in
+
+A host that has its own Worker can serve the drive routes from it. `createApp` from `agentic-drive/worker` takes the parts to use. Each part is optional. A part may be a function of the Worker env, which runs on each request.
+
+```ts
+import { createApp } from "agentic-drive/worker";
+
+const app = createApp({
+  store: (env) => myStore(env),   // a Store of agentic-identity
+  blobs: (env) => myBlobs(env),   // a Blobs of agentic-identity
+  // Return a Ctx for the caller, or null for a 401.
+  auth: async (request, store, env) => {
+    const principal = await mySignIn(request, env);
+    return principal && { owner: principal.chain[0].id, actor: { id: principal.principalId, kind: principal.kind }, principal };
+  },
+});
+export default { fetch: app.fetch };
+```
+
+- With `store`, the Worker reads no `DB` binding. It does not create the table either, so the host owns the schema.
+- With `blobs`, the Worker reads no `FILES` binding and needs no `DRIVE_PUBLIC_URL`. The blobs must sign download URLs that point to `/api/v1/drive/blob` on this Worker. That route still checks the signature with `DRIVE_URL_SECRET`.
+- With `auth`, the Worker does not read bearer tokens from the store. The callback decides who the caller is. Make sure `principal.chain` and `principal.scopes` are real, because the drive checks them.
+- With no options, `createApp()` works as before: D1, R2, and bearer tokens from the store. `export { default } from "agentic-drive/worker"` is the same.
+
 ## Features
 
 - Folders, files, and typed references to documents in other apps (`docs:<id>`).
