@@ -1,4 +1,5 @@
 import type { Doc, Store } from "agentic-identity";
+import { ROOT_ID, rootResource } from "./drive.js";
 
 /**
  * Items made before drive kept `createdById` and `updatedById` have no such fields, so an export or an erase
@@ -26,6 +27,32 @@ export async function backfillAuthorIds(store: Store): Promise<{ fixed: number }
         count++;
       }
       return count;
+    });
+    if (!page.nextCursor) return { fixed };
+    cursor = page.nextCursor;
+  }
+}
+
+/**
+ * Items made before sharing was on have no `resources` doc. With sharing on, their owner gets NOT_FOUND. This
+ * writes the doc of each such item, with the parent a new item gets: its folder, or the drive root. An item that
+ * has a doc is left alone, so a second run changes nothing. It returns how many docs it wrote. Run it on the
+ * store before the Worker with sharing serves the drive, and after `backfillAuthorIds`.
+ */
+export async function backfillResources(store: Store): Promise<{ fixed: number }> {
+  let fixed = 0;
+  for (let cursor: string | undefined; ; ) {
+    const page = await store.query("drive_nodes", { limit: 25, cursor });
+    fixed += await store.transaction(async (tx) => {
+      const missing: { id: string; parentId: string }[] = [];
+      for (const item of page.items) {
+        const data = await tx.get("drive_nodes", item.id);
+        if (!data || (await tx.get("resources", item.id))) continue;
+        const parentId = data.parentId === ROOT_ID ? await rootResource(String(data.owner)) : String(data.parentId);
+        missing.push({ id: item.id, parentId });
+      }
+      for (const { id, parentId } of missing) await tx.put("resources", id, { id, type: "drive", parentId });
+      return missing.length;
     });
     if (!page.nextCursor) return { fixed };
     cursor = page.nextCursor;
