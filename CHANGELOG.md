@@ -1,17 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+Read the breaking changes before you upgrade.
+
+### Breaking changes
+
+- **The local drive has sharing on.** `openLocal` now passes `createSharing(store)`, as the Worker does. Items made before 0.7.0 have no `resources` docs. The CLI and the `mcp` command add them once, on the first drive command that has a valid key. The `principal` and `key` commands do not do it. A project that calls `openLocal` itself must run `backfillResources(store)`, exported from the package root, once on its existing data folder. If an item has no owner or parent, the backfill stops, and drive commands fail until you fix that item.
 
 ### Added
 
 - **Sharing in the CLI.** New commands: `shares`, `share`, `unshare`, `invite`, `accept-invite`, `link-create`, and `link-revoke`. They act like the HTTP routes and show in `--help`.
 - **Sharing in the MCP server.** New tools: `drive_shares`, `drive_share`, `drive_unshare`, `drive_invite`, `drive_accept_invite`, `drive_create_link`, and `drive_revoke_link`.
 - **`drive_delete_account` in the MCP server.** It erases the caller like `DELETE /account` and `delete-all`. It needs `confirm: "yes"`.
-
-### Changed
-
-- **The local drive has sharing on.** `openLocal` passes `createSharing(store)`. The CLI runs `ensureSharing` once, which backfills `resources` docs for older local items.
-- `inviteIdentity` in `src/auth.ts` reads the verified email and the agent handle for an invite. The Worker, the CLI, and the MCP server share it.
 
 ## 0.6.1
 
