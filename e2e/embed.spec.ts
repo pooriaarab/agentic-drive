@@ -44,7 +44,7 @@ test("the package UI mounts in a host page and works against the server", async 
   await openHost(page);
   await page.evaluate((token) => (window as unknown as { start(t: string): void }).start(token), ADA);
   const drive = page.locator("#drive");
-  const files = drive.locator(".agd-file-row");
+  const files = drive.locator(".drive-row");
   await expect(files.getByRole("link", { name: "embed-docs", exact: true })).toBeVisible();
   await expect(drive.getByText("Created by agent", { exact: true }).first()).toBeVisible();
 

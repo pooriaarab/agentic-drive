@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+### Changed
+
+- **The web UI has a calm list view.** Files show in a table with sortable Name and Modified columns, a search that opens from a button, and a Share button next to the title of a folder. Select rows with the check boxes to see a bar at the bottom of the page that moves them all to the trash. A search with no match has its own empty state. The design classes in the list view are now `drive-*` classes of the app, not `agd-file-*` classes.
+
 ## 0.8.0
 
 Read the breaking changes before you upgrade.
