@@ -157,6 +157,13 @@ describe("sign-in", () => {
 });
 
 describe("files", () => {
+  it("marks an item as machine made when an agent created it", async () => {
+    const agent = await json(await call("POST", "/folders", { token: TOK_BOT, json: { path: "/made-by-bot" } }));
+    expect(agent.machineMade).toBe(true);
+    const person = await json(await call("POST", "/folders", { json: { path: "/made-by-person" } }));
+    expect(person.machineMade).toBe(false);
+  });
+
   it("stores bytes, reports metadata, and serves the same bytes back safely", async () => {
     expect((await call("POST", "/folders", { json: { path: "/docs/2026", parents: true } })).status).toBe(201);
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9]);

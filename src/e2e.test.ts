@@ -221,7 +221,7 @@ describe("MCP over stdio", () => {
       expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export", "drive_home", "drive_register_document", "drive_forget_document"]));
       await call("drive_mkdir", { path: "/notes", parents: true });
       const up = await call("drive_upload", { path: "/notes/a.txt", text: "héllo" });
-      expect(up.body).toMatchObject({ mime: "text/plain", createdBy: { id: "bot", kind: "agent_of_human" } });
+      expect(up.body).toMatchObject({ mime: "text/plain", createdBy: { id: "bot", kind: "agent_of_human" }, machineMade: true });
       expect((await call("drive_download", { path: "/notes/a.txt" })).body.text).toBe("héllo");
       const bin = await call("drive_upload", { path: "/notes/b.bin", contentBase64: Buffer.from([0, 255, 1]).toString("base64") });
       expect((await call("drive_download", { path: bin.body.id })).body.contentBase64).toBe("AP8B");

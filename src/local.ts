@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { isScope, issueCredential, revokeCredential, type Doc, type Store } from "agentic-identity";
+import { isMachineMade, isScope, issueCredential, revokeCredential, type Doc, type Store } from "agentic-identity";
 import { createFileBlobs, createFileStore } from "./adapters/fs.js";
 import { DriveError, createDrive, type Ctx, type Drive, type Node } from "./drive.js";
 import { authenticate } from "./auth.js";
@@ -65,9 +65,9 @@ export async function revokeKey(store: Store, token: string): Promise<void> {
   await revokeCredential(store, token, Date.now());
 }
 
-/** A node as the CLI and MCP print it: no storage keys. `machineMade` is true when an agent principal created it. */
+/** A node as the CLI and MCP print it: no storage keys. `machineMade` is true when the creator is not a human principal. */
 export function publicNode(node: Node, path?: string) {
   const { nameKey: _nameKey, blobKey: _blobKey, purging: _purging, ...rest } = node;
-  const shown = { ...rest, machineMade: node.createdBy.kind !== "human" };
+  const shown = { ...rest, machineMade: isMachineMade(node.createdBy.kind) };
   return path === undefined ? shown : { path, ...shown };
 }
