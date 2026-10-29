@@ -7,8 +7,8 @@
 
 Store, sort, and share files and folders.
 
-> Status: early (0.1.0). The library, CLI, MCP server, and HTTP API work.
-> Sharing and the web UI are not built yet.
+> Status: early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK and the HTTP API.
+> The web UI is not built yet.
 
 ## Install
 
@@ -59,7 +59,7 @@ curl -H "authorization: Bearer <token>" "$URL/api/v1/drive/items?path=/"
 
 Routes: `GET /items`, `GET /stat`, `POST /folders`, `PUT /files`, `GET /files`, `GET /url`,
 `POST /move`, `POST /trash`, `GET /trash`, `POST /restore`, `POST /purge`, `GET /search`,
-`GET /export`, `DELETE /account?confirm=yes`.
+`GET /export`, `DELETE /account?confirm=yes`, `GET /home`, `POST /documents`, `DELETE /documents?ref=`.
 Sign in with a bearer token from agentic-identity. The token is a credential in the `credentials` collection of
 the same D1 database, and it names a principal in `principals`. The Worker resolves the whole delegation chain on
 every request. A missing, expired, or revoked credential, or a revoked or expired principal (or one above it), gets 401.
@@ -88,11 +88,16 @@ The Worker declares region `eu` and refuses a D1 query that a non-EU region serv
 - `upload()` reads a stream with a size cap, finds the type from the first bytes, and stores a SHA-256 hash.
 - `downloadUrl()` returns a signed URL. The URL signs an attachment header with the file name and the stored type. The Worker verifies it and serves the bytes with those headers, so the link holder cannot change how the bytes are served. A link lasts 15 minutes by default and 1 hour at most. Trashing a file does not revoke a link already issued.
 - `search()` finds live items by name, type, kind, size, and who made them.
-- `buildExport()` writes everything one owner has to a zip with a `manifest.json`. Trashed items are flagged. Entries are named by item id. A file whose bytes are gone is marked `missing`.
-- `deleteAll()` deletes all items and bytes of one owner for good. Only the owner can call it.
+- App documents: an app calls `registerDocument({ ref: "docs:<id>", name, folder })` to put a document in the drive, and `forgetDocument(ref)` when it deletes the document. `home({ app })` lists files and every app's documents together, newest change first, with a count per app. `search({ app })` filters the same way. The CLI has `home`, `register`, and `forget`. The MCP server has `drive_home`, `drive_register_document`, and `drive_forget_document`.
+- `buildExport()` writes everything one person has to a zip with a `manifest.json` (format version 2). It names the person by id and kind. It lists the person's own items (trashed ones are flagged, and a file whose bytes are gone is marked `missing`), and also what they made or changed in other drives, the shares they hold, the invites they sent, and the audit entries of what they did. Invitee emails and link tokens are not in it. Entries are named by item id.
+- `erasePerson()` erases a person for good, and only the person in person can call it (the CLI `delete-all` and `DELETE /account` call it). It deletes their drive with all its shares, the shares they hold, and the invites they sent. What they made in other drives stays, because it belongs to those drives: their id becomes `erased`, and the kind stays, so machine-made work keeps its label. The audit trail stays: it holds ids and kinds only. A failed call can run again. `deleteAll()` is the drive part alone.
 - A `can()` hook decides who may read, write, or delete. Without `sharing`, the default allows the owner only.
 
 ## Limits
+
+- Erase does not delete what identity keeps about the person: their principal, credentials, and sign-in record. Identity erases those. An invite that names only an email, sent by someone else, stays until it expires.
+- There are no retention settings yet, and no per-workspace export. An export covers one person.
+- `registerDocument` makes one item per document in a drive. Two calls at the same moment can make two.
 
 - Drive reads the `store_docs` table in D1 and `store.jsonl` in the CLI folder. It does not read older layouts. There is no import and no claim backfill.
 - Uploads buffer the stream in memory up to the cap. The default cap is 25 MiB.

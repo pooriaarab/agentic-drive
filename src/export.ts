@@ -2,8 +2,9 @@ import type { Ctx, Drive } from "./drive.js";
 import { writeZip, type ZipEntry } from "./zip.js";
 
 /**
- * Everything one owner has, as a zip. `manifest.json` lists each item with its
- * metadata and, for a file, the entry that holds its bytes. Trashed items are included and flagged.
+ * Everything one owner has, as a zip. `manifest.json` names the person (id and kind), lists each item with its
+ * metadata and, for a file, the entry that holds its bytes, and adds what the person made in other drives, the
+ * shares they hold, the invites they sent, and the audit entries of what they did. Trashed items are included and flagged.
  * Entries are named by item id, never by file name. A file whose bytes are gone is marked `missing`.
  */
 export async function buildExport(drive: Drive, ctx: Ctx, now: () => number = Date.now): Promise<Uint8Array> {
@@ -17,6 +18,7 @@ export async function buildExport(drive: Drive, ctx: Ctx, now: () => number = Da
       updatedBy: node.updatedBy, trashed: node.trashed, trashedAt: node.trashedAt, file, ...(missing ? { missing: true } : {}),
     };
   });
-  const manifest = { format: "agentic-drive-export", version: 1, exportedAt: now(), owner: ctx.owner, items };
+  const person = await drive.exportPerson(ctx);
+  const manifest = { format: "agentic-drive-export", version: 2, exportedAt: now(), owner: ctx.owner, subject: person.subject, items, authored: person.authored, shares: person.shares, audit: person.audit };
   return writeZip([{ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) }, ...entries], now());
 }

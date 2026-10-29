@@ -37,6 +37,9 @@ export type Node = {
   updatedAt: number;
   createdBy: Actor;
   updatedBy: Actor;
+  /** The ids of `createdBy` and `updatedBy`, at the top level so a store can find what a person made. */
+  createdById: string;
+  updatedById: string;
   trashed: boolean;
   trashedAt: number | null;
   /** Set while a purge deletes the item. Nothing can see or change it then. */
@@ -64,6 +67,8 @@ export interface SearchQuery {
   maxSize?: number;
   /** Items first made by this kind of actor, such as `agent_of_human`. */
   createdByKind?: ActorKind;
+  /** Only references to documents of this app, such as `docs`. */
+  app?: string;
   /** At most this many results. Defaults to 100. */
   limit?: number;
 }
@@ -165,6 +170,10 @@ const ACTION_TO_IDENTITY = { read: "read", write: "write", delete: "admin" } as 
 const MAX_ITEM_DEPTH = MAX_FOLDER_DEPTH - 1;
 /** Stands for a link visitor. A visitor never reads a drive root, so no caller sees it. */
 const VISITOR: Actor = { id: "", kind: "human" };
+/** The app that owns the document a reference points at: `docs` for `docs:abc`. Files have none. */
+const appOf = (node: Node): string | null => (node.kind === "ref" && node.ref ? (node.ref.split(":")[0] as string) : null);
+/** Stands in for the id of an erased person on items that other people own. */
+const ERASED = "erased";
 const SHARE_ERROR = /^(invalid|give an|expiresAt|expiresInMs|resource exists|the last owner)/;
 
 export function createDrive(deps: DriveDeps) {
@@ -184,9 +193,10 @@ export function createDrive(deps: DriveDeps) {
 
   const rootNode = (owner: string, by: Actor): Node => ({
     id: ROOT_ID, owner, parentId: "", kind: "folder", name: "", nameKey: "", size: 0, mime: null, hash: null,
-    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: by, updatedBy: by, trashed: false, trashedAt: null, purging: false,
+    ref: null, blobKey: null, createdAt: 0, updatedAt: 0, createdBy: by, updatedBy: by, createdById: by.id, updatedById: by.id, trashed: false, trashedAt: null, purging: false,
   });
   const who = (ctx: Ctx): Actor => ({ id: ctx.actor.id, kind: ctx.actor.kind });
+  const stamp = (ctx: Ctx) => ({ updatedBy: who(ctx), updatedById: ctx.actor.id });
   /** What a node is, to sharing: the item itself, and its folder (or the drive root) above it. */
   const resourceDoc = async (node: Node, parent: Node): Promise<Resource> => ({ id: node.id, type: "drive", parentId: await resourceOf(parent) });
 
@@ -372,7 +382,7 @@ export function createDrive(deps: DriveDeps) {
     const slot = empty ? null : await claimed(ops, parent.owner, parent.id, key);
     if (slot?.taken) {
       if (onConflict === "replace" && slot.node?.kind === "file" && fields.kind === "file") {
-        const node: Node = { ...slot.node, ...fields, updatedAt: now(), updatedBy: who(ctx) } as Node;
+        const node: Node = { ...slot.node, ...fields, updatedAt: now(), ...stamp(ctx) } as Node;
         w.put(NODES, node.id, node);
         return { node, replacedBlob: slot.node.blobKey };
       }
@@ -389,7 +399,7 @@ export function createDrive(deps: DriveDeps) {
     const t = now();
     const node: Node = {
       id, owner: parent.owner, parentId: parent.id, kind: "file", name, nameKey: key, size: 0, mime: null, hash: null,
-      ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), trashed: false, trashedAt: null, purging: false,
+      ref: null, blobKey: null, createdAt: t, updatedAt: t, createdBy: who(ctx), updatedBy: who(ctx), createdById: ctx.actor.id, updatedById: ctx.actor.id, trashed: false, trashedAt: null, purging: false,
       ...fields,
     };
     w.put(NODES, node.id, node);
@@ -433,7 +443,7 @@ export function createDrive(deps: DriveDeps) {
       name = await freeName(ops, dest.owner, dest.id, name);
       key = parseName(name).key;
     }
-    const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), updatedBy: who(ctx) };
+    const moved: Node = { ...node, parentId: dest.id, name, nameKey: key, updatedAt: now(), ...stamp(ctx) };
     w.put(NODES, moved.id, moved);
     const [from, to] = [await claimId(node.owner, node.parentId, node.nameKey), await claimId(dest.owner, dest.id, key)];
     if (from !== to) {
@@ -496,6 +506,24 @@ export function createDrive(deps: DriveDeps) {
     } catch (error) {
       if (error instanceof Error && /transaction kept conflicting/.test(error.message)) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
       throw error;
+    }
+  }
+
+  /** Only the owner in person, never an agent for them, may do what cannot be undone. */
+  function assertInPerson(ctx: Ctx, what: string) {
+    const inPerson = ctx.principal === undefined || (ctx.principal.kind === "human" && ctx.principal.chain.length === 1);
+    if (!inPerson || ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", `only the owner in person can ${what}`);
+  }
+  /** The person behind a call: the root of the chain. The kind is null when only an actor is known, and the actor is not the owner. */
+  const subjectOf = (ctx: Ctx) => ({ id: ctx.owner, kind: ctx.principal?.chain[0]?.kind ?? (ctx.actor.id === ctx.owner ? ctx.actor.kind : null) });
+  /** Every doc of a collection that matches one field, page by page. */
+  async function allWhere(ops: StoreOps, collection: string, field: string, value: string, orderBy?: { field: string }) {
+    const out: { id: string; data: Doc }[] = [];
+    for (let cursor: string | undefined; ; ) {
+      const page = await ops.query(collection, { where: { [field]: value }, ...(orderBy ? { orderBy } : {}), limit: 100, cursor });
+      out.push(...page.items);
+      if (!page.nextCursor) return out;
+      cursor = page.nextCursor;
     }
   }
 
@@ -727,7 +755,7 @@ export function createDrive(deps: DriveDeps) {
         const claim = await claimId(node.owner, node.parentId, node.nameKey);
         const held = await tx.get<Claim>(NAMES, claim);
         const t = now();
-        const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, updatedBy: who(ctx) };
+        const trashed: Node = { ...node, trashed: true, trashedAt: t, updatedAt: t, ...stamp(ctx) };
         await tx.put(NODES, node.id, trashed);
         // Trashing frees the name. Release only a claim that this item holds.
         if (held?.nodeId === node.id) await tx.delete(NAMES, claim);
@@ -777,7 +805,7 @@ export function createDrive(deps: DriveDeps) {
           name = await freeName(tx, parent.owner, parent.id, name);
           key = parseName(name).key;
         }
-        const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), updatedBy: who(ctx) };
+        const restored: Node = { ...node, parentId: parent.id, name, nameKey: key, trashed: false, trashedAt: null, updatedAt: now(), ...stamp(ctx) };
         await tx.put(NODES, restored.id, restored);
         await tx.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: restored.id, owner: parent.owner, parentId: parent.id });
         if (sharing && parent.id !== node.parentId) await tx.put("resources", restored.id, await resourceDoc(restored, parent));
@@ -802,6 +830,7 @@ export function createDrive(deps: DriveDeps) {
         if (q.minSize !== undefined && node.size < q.minSize) continue;
         if (q.maxSize !== undefined && node.size > q.maxSize) continue;
         if (q.createdByKind && node.createdBy.kind !== q.createdByKind) continue;
+        if (q.app !== undefined && appOf(node) !== q.app) continue;
         hits.push({ node, path });
       }
       return hits.sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, limit);
@@ -821,8 +850,7 @@ export function createDrive(deps: DriveDeps) {
 
     /** Deletes every item and blob of the owner for good. Only the owner may do this, never an agent for them. A failed call can run again. */
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
-      const inPerson = ctx.principal === undefined || (ctx.principal.kind === "human" && ctx.principal.chain.length === 1);
-      if (!inPerson || ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
+      assertInPerson(ctx, "delete the whole drive");
       await need(ctx, "delete", rootNode(ctx.owner, ctx.actor));
       let removed = 0;
       // A file created during a pass shows up in the next one.
@@ -856,6 +884,129 @@ export function createDrive(deps: DriveDeps) {
         if (node.kind === "folder") queue.push(...(await children(store, node.owner, node.id)));
       }
       return { removed: await removeNodes(nodes, top) };
+    },
+
+    /**
+     * What the home view shows: every file and every reference to an app's document, newest change first.
+     * `apps` counts references per app, and `files` counts plain files, before `app` and `limit` apply.
+     */
+    async home(ctx: Ctx, q: { app?: string; limit?: number } = {}) {
+      const limit = q.limit ?? 100;
+      if (!Number.isInteger(limit) || limit < 1) throw new RangeError("limit must be an integer of 1 or more");
+      const all = await ownerNodes(ctx);
+      const byId = new Map(all.map((n) => [n.id, n]));
+      const apps: Record<string, number> = {};
+      let files = 0;
+      const items: { node: Node; path: string; app: string | null }[] = [];
+      for (const node of all) {
+        const path = pathIn(byId, node, true);
+        if (path === null || node.kind === "folder") continue;
+        const app = appOf(node);
+        if (app === null) files++;
+        else apps[app] = (apps[app] ?? 0) + 1;
+        if (q.app === undefined || app === q.app) items.push({ node, path, app });
+      }
+      items.sort((x, y) => y.node.updatedAt - x.node.updatedAt || (x.path < y.path ? -1 : 1));
+      return { items: items.slice(0, limit), apps, files };
+    },
+
+    /**
+     * An app puts one of its documents in this drive, as a reference such as `docs:<id>`. A document that is
+     * already in the drive comes back as it is, so an app can register again. The reference sits in `folder`
+     * (a path or a folder id, "/" by default) under `name`, and gets a free name when that one is taken.
+     */
+    async registerDocument(ctx: Ctx, input: { ref: string; name: string; folder?: string }): Promise<Node> {
+      if (!REF.test(input.ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(input.ref)}`);
+      parseName(input.name);
+      await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
+      const held = (await store.query<Node>(NODES, { where: { owner: ctx.owner, ref: input.ref }, limit: 100 })).items.map((item) => item.data);
+      const existing = held.find((n) => n.kind === "ref" && !n.trashed && n.purging !== true);
+      if (existing) return existing;
+      const dir = input.folder ?? "/";
+      return api.putRef(ctx, dir.endsWith("/") ? `${dir}${input.name}` : `${dir}/${input.name}`, input.ref, { parents: true, onConflict: "rename" });
+    },
+
+    /** An app deleted a document. Its references in this drive go to the trash. Returns how many. */
+    async forgetDocument(ctx: Ctx, ref: string): Promise<{ trashed: number }> {
+      if (!REF.test(ref)) throw new DriveError("INVALID_REF", `a reference looks like "docs:<id>", got ${JSON.stringify(ref)}`);
+      await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
+      let trashed = 0;
+      for (const { data } of (await store.query<Node>(NODES, { where: { owner: ctx.owner, ref }, limit: 100 })).items) {
+        if (data.kind !== "ref" || data.trashed || data.purging === true) continue;
+        try {
+          await api.trash(ctx, data.id);
+          trashed++;
+        } catch (error) {
+          // A reference inside a folder that is already in the trash is hidden already.
+          if (!(error instanceof DriveError && error.code === "TRASHED")) throw error;
+        }
+      }
+      return { trashed };
+    },
+
+    /**
+     * What drive holds about the person behind a call, besides their own drive (`exportData` has that): items
+     * they made or changed in other drives, the shares they hold, the invites they sent, and the audit
+     * entries of what they did. Invitee emails and link tokens are not in it.
+     */
+    async exportPerson(ctx: Ctx) {
+      await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
+      const subject = subjectOf(ctx);
+      const made = new Map<string, Node>();
+      for (const field of ["createdById", "updatedById"]) for (const { data } of await allWhere(store, NODES, field, subject.id)) made.set(data.id as string, data as Node);
+      const authored = [...made.values()]
+        .filter((n) => n.owner !== subject.id && n.purging !== true)
+        .map((n) => ({ id: n.id, owner: n.owner, kind: n.kind, name: n.name, createdAt: n.createdAt, updatedAt: n.updatedAt, createdBy: n.createdBy, updatedBy: n.updatedBy }))
+        .sort((x, y) => (x.id < y.id ? -1 : 1));
+      const held = (await allWhere(store, "grants", "subjectId", subject.id)).map((g) => ({ resourceId: g.data.resourceId, role: g.data.role }));
+      const invites = (await allWhere(store, "invites", "createdBy", subject.id)).map((i) => ({
+        id: i.data.id, resourceId: i.data.resourceId, role: i.data.role, expiresAt: i.data.expiresAt ?? null, accepted: i.data.acceptedAt !== undefined,
+      }));
+      const audit = (await allWhere(store, "audit", "principalId", subject.id, { field: "at" })).map((e) => ({
+        at: e.data.at, action: e.data.action, resourceId: e.data.resourceId ?? null, outcome: e.data.outcome, principalKind: e.data.principalKind, machineMade: e.data.machineMade,
+      }));
+      return { subject, authored, shares: { held, invitesCreated: invites }, audit };
+    },
+
+    /**
+     * Erases a person for good. Only the person in person may. Their drive and its shares go, and so do the
+     * shares they hold and the invites they sent. What they made in other drives stays, because it belongs to
+     * those drives: their id becomes "erased", and the kind stays, so machine-made work keeps its label.
+     * The audit trail stays: it holds ids and kinds only, and no content. A failed call can run again.
+     */
+    async erasePerson(ctx: Ctx): Promise<{ removed: number; grants: number; invites: number; anonymized: number }> {
+      assertInPerson(ctx, "erase a person");
+      const { id } = subjectOf(ctx);
+      const { removed } = await api.deleteAll(ctx);
+      const sweep = async (docs: { id: string }[], collection: string) => {
+        for (let i = 0; i < docs.length; i += 100) {
+          await transact(async (tx) => {
+            for (const doc of docs.slice(i, i + 100)) await tx.delete(collection, doc.id);
+          });
+        }
+        return docs.length;
+      };
+      const grants = await sweep(await allWhere(store, "grants", "subjectId", id), "grants");
+      const invites = await sweep(await allWhere(store, "invites", "createdBy", id), "invites");
+      const made = new Map<string, Node>();
+      for (const field of ["createdById", "updatedById"]) for (const { data } of await allWhere(store, NODES, field, id)) made.set(data.id as string, data as Node);
+      const todo = [...made.values()];
+      for (let i = 0; i < todo.length; i += CHUNK) {
+        await transact(async (tx) => {
+          const current: Node[] = [];
+          for (const node of todo.slice(i, i + CHUNK)) {
+            const found = await tx.get<Node>(NODES, node.id);
+            if (found) current.push(found);
+          }
+          for (const node of current) {
+            const next: Node = { ...node };
+            if (node.createdById === id) Object.assign(next, { createdBy: { id: ERASED, kind: node.createdBy.kind }, createdById: ERASED });
+            if (node.updatedById === id) Object.assign(next, { updatedBy: { id: ERASED, kind: node.updatedBy.kind }, updatedById: ERASED });
+            await tx.put(NODES, node.id, next);
+          }
+        });
+      }
+      return { removed, grants, invites, anonymized: todo.length };
     },
 
     /** Gives a person or an agent a role on an item and everything under it. Only an owner may. */

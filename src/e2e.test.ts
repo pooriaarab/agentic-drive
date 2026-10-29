@@ -26,6 +26,20 @@ function fixture() {
 }
 
 describe("CLI", () => {
+  it("registers app documents, lists them in the home view, and forgets one", () => {
+    const { run } = fixture();
+    expect(run(["register", "docs:d1", "Plan"]).json()).toMatchObject({ kind: "ref", ref: "docs:d1", name: "Plan" });
+    expect(run(["register", "sheets:s1", "Budget", "--parent", "/Finance"]).json()).toMatchObject({ ref: "sheets:s1", name: "Budget" });
+    expect(run(["register", "docs:d1", "Other"]).json().name).toBe("Plan");
+    const home = run(["home"]).json();
+    expect(home.apps).toEqual({ docs: 1, sheets: 1 });
+    expect(home.items.map((i: { app: string }) => i.app).sort()).toEqual(["docs", "sheets"]);
+    expect(run(["home", "--app", "sheets"]).json().items.map((i: { name: string }) => i.name)).toEqual(["Budget"]);
+    expect(run(["forget", "docs:d1"]).json()).toEqual({ trashed: 1 });
+    expect(run(["home"]).json().apps).toEqual({ sheets: 1 });
+    expect(run(["register", "not-a-ref", "x"]).code).toBe(1);
+  });
+
   it("runs the whole life of a file", () => {
     const { work, run } = fixture();
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -59,7 +73,7 @@ describe("CLI", () => {
     const refused = run(["delete-all"]);
     expect(refused.code).toBe(2);
     expect(run(["ls"]).json()).toHaveLength(1);
-    expect(run(["delete-all", "--yes"]).json()).toEqual({ removed: 1 });
+    expect(run(["delete-all", "--yes"]).json()).toEqual({ removed: 1, grants: 0, invites: 0, anonymized: 0 });
     expect(run(["ls"]).json()).toEqual([]);
   });
   it("fails with a code and a nonzero exit", () => {
@@ -106,7 +120,7 @@ describe("MCP over stdio", () => {
     const { client, call, work, data } = await connect({ AGENTIC_DRIVE_ACTOR: "bot", AGENTIC_DRIVE_KIND: "agent_of_human", AGENTIC_DRIVE_OWNER: "u1" });
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export"]));
+      expect(names).toEqual(expect.arrayContaining(["drive_ls", "drive_mkdir", "drive_upload", "drive_download", "drive_mv", "drive_rm", "drive_restore", "drive_search", "drive_export", "drive_home", "drive_register_document", "drive_forget_document"]));
       await call("drive_mkdir", { path: "/notes", parents: true });
       const up = await call("drive_upload", { path: "/notes/a.txt", text: "héllo" });
       expect(up.body).toMatchObject({ mime: "text/plain", createdBy: { id: "bot", kind: "agent_of_human" } });
@@ -118,6 +132,11 @@ describe("MCP over stdio", () => {
       const rm = await call("drive_rm", { path: "/z.txt" });
       expect((await call("drive_ls")).body.map((n: { name: string }) => n.name)).toEqual(["notes"]);
       expect((await call("drive_restore", { id: rm.body.id })).body.name).toBe("z.txt");
+      const reg = await call("drive_register_document", { ref: "docs:d9", name: "Notes doc", folder: "/notes" });
+      expect(reg.body).toMatchObject({ kind: "ref", ref: "docs:d9", createdBy: { id: "bot", kind: "agent_of_human" } });
+      expect((await call("drive_home", { app: "docs" })).body).toMatchObject({ apps: { docs: 1 }, files: 2, items: [{ name: "Notes doc", app: "docs", path: "/notes/Notes doc" }] });
+      expect((await call("drive_forget_document", { ref: "docs:d9" })).body).toEqual({ trashed: 1 });
+      expect((await call("drive_register_document", { ref: "bad", name: "x" })).isError).toBe(true);
       const made = await call("drive_export", { name: "x.zip" });
       expect(readZip(new Uint8Array(readFileSync(join(data, "exports", "x.zip")))).has("manifest.json")).toBe(true);
       expect(made.body.saved).toBe(join(data, "exports", "x.zip"));

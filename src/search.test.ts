@@ -54,7 +54,7 @@ describe("export", () => {
     await drive.trash(me, "/docs/notes.txt");
     const zip = readZip(await buildExport(drive, me, () => 1_700_000_000_000));
     const manifest = JSON.parse(new TextDecoder().decode(zip.get("manifest.json")!));
-    expect(manifest).toMatchObject({ format: "agentic-drive-export", version: 1, owner: "u1" });
+    expect(manifest).toMatchObject({ format: "agentic-drive-export", version: 2, owner: "u1" });
     const byPath = Object.fromEntries(manifest.items.map((i: { path: string }) => [i.path, i]));
     expect(byPath["/docs/notes.txt"]).toMatchObject({ trashed: true, createdBy: { kind: "agent_of_human" } });
     expect(byPath["/docs/plan"]).toMatchObject({ kind: "ref", ref: "docs:abc", file: null });

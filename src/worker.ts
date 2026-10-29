@@ -173,16 +173,25 @@ export function createApp(): Hono<App> {
   api.get("/search", async (c) => {
     const query: SearchQuery = {
       name: q(c, "name"), mime: q(c, "mime"), kind: q(c, "kind") as SearchQuery["kind"], minSize: number(q(c, "minSize"), "minSize"),
-      maxSize: number(q(c, "maxSize"), "maxSize"), createdByKind: q(c, "createdByKind") as ActorKind | undefined, limit: number(q(c, "limit"), "limit"),
+      maxSize: number(q(c, "maxSize"), "maxSize"), createdByKind: q(c, "createdByKind") as ActorKind | undefined, app: q(c, "app"), limit: number(q(c, "limit"), "limit"),
     };
     return c.json((await c.var.drive.search(c.var.ctx, query)).map((r) => publicNode(r.node, r.path)));
   });
   api.get("/export", async (c) =>
     new Response((await buildExport(c.var.drive, c.var.ctx)) as BodyInit, { headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="drive-export.zip"' } }));
   api.delete("/account", async (c) => {
-    if (q(c, "confirm") !== "yes") throw new DriveError("INVALID_PATH", "add ?confirm=yes to delete everything you own for good");
-    return c.json(await c.var.drive.deleteAll(c.var.ctx));
+    if (q(c, "confirm") !== "yes") throw new DriveError("INVALID_PATH", "add ?confirm=yes to erase you for good: your drive, and what you shared or held");
+    return c.json(await c.var.drive.erasePerson(c.var.ctx));
   });
+  api.get("/home", async (c) => {
+    const home = await c.var.drive.home(c.var.ctx, { app: q(c, "app"), limit: number(q(c, "limit"), "limit") });
+    return c.json({ apps: home.apps, files: home.files, items: home.items.map((i) => ({ ...publicNode(i.node, i.path), app: i.app })) });
+  });
+  api.post("/documents", async (c) => {
+    const b = await body(c);
+    return c.json(publicNode(await c.var.drive.registerDocument(c.var.ctx, { ref: str(b.ref, "ref"), name: str(b.name, "name"), folder: opt(b.folder, "folder") })), 201);
+  });
+  api.delete("/documents", async (c) => c.json(await c.var.drive.forgetDocument(c.var.ctx, need(q(c, "ref"), "ref"))));
 
   // The signature is the credential here, so this route sits outside the bearer-token check.
   app.get("/api/v1/drive/blob", async (c) => {
