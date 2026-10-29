@@ -6,6 +6,21 @@
 
 - **Account plug-in.** `driveAccount` (from `agentic-drive/account`, also exported from the root) has `exportAccount` and `eraseAccount`, so a host runs a GDPR export and erase without reading the drive storage layout. The export has `items`, `authored`, `agents`, `grants`, `invites`, `audit`, and `activity`. The erase returns counts, and a second erase counts zero.
 
+## 0.9.1
+
+No change to the SDK, CLI, MCP or HTTP shape. Two breaking changes for hosts that pin `agentic-design` or `agentic-identity`, see Breaking.
+
+### Breaking
+
+- **A host that pins `agentic-design` to `^0.4.0` must move its pin to `^0.5.0`.** The 0.9.0 README told hosts to add `agentic-design@^0.4.0` to their own dependencies. This release depends on `agentic-design` `^0.5.0`, so a host that keeps `^0.4.0` gets two copies. The two copies do not share React context. A host that wraps `DriveBrowser` in its own `ToastProvider` or `TooltipProvider` from `agentic-design/react` on 0.4 gets the error `useToast needs a ToastProvider above it`. `mount()` brings its own providers and is not affected.
+- A host that also pins `agentic-identity` to `^0.6.0` gets two copies of it, and the identity error classes and types from one copy do not match the other. Move the host's pin to `^0.9.0`.
+
+### Changed
+
+- `agentic-identity` is `^0.9.0`. It was `^0.6.0`. The lockfile follows. The 0.7.0 to 0.9.0 additions are not used by the drive package.
+- `agentic-design` is `^0.5.0`. It was `^0.4.0`. The design release changes values only: colors, borders, shadows, the large radius, control height, heading sizes, dialog and menu padding, and the disabled and danger button styles. The token names and the `agd-` prefix do not change. The web UI and the embedded UI take the new look. The look of a page that the host renders follows the host's own `agentic-design` pin. The screenshots in `docs/ui` show the 0.4 look until they are refreshed.
+- The README embed section names `agentic-design@^0.5.0`.
+
 ## 0.9.0
 
 ### Added
