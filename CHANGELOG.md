@@ -10,7 +10,7 @@
 
 ### Added
 
-- **`agentic-drive/client`.** A typed client for the HTTP API: `createClient({ baseUrl, token, fetch?, retries? })`. It has one method for each route, a typed `DriveApiError` with the API `code` and the HTTP `status`, and `AbortSignal` support. It sends a write once. It uses only `fetch`.
+- **`agentic-drive/client`.** A typed client for the HTTP API: `createClient({ baseUrl, token, fetch?, retries? })`. It has one method for each bearer route and each shared route, a typed `DriveApiError` with the API `code` and the HTTP `status`, and `AbortSignal` support. It sends a write once. It uses only `fetch`.
 
 ### Changed
 

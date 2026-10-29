@@ -190,6 +190,7 @@ describe("the client without a server", () => {
   it("imports nothing from Node, so a browser or a Worker can run it", () => {
     const source = readFileSync(join(import.meta.dirname, "client.ts"), "utf8");
     expect(source.match(/^import .* from "(.*)";$/gm)).toEqual(['import type { ErrorCode, Node, SearchQuery } from "./drive.js";']);
+    expect(source.match(/\bimport\s*\(|\brequire\s*\(|\bimport\s+[^t(]|from\s+"node:|process\./g)).toBeNull();
   });
   const counting = (status: number) => {
     const calls: string[] = [];
@@ -216,5 +217,24 @@ describe("the client without a server", () => {
     expect(() => createClient({ baseUrl: "https://x", token: "bad token" })).toThrow(TypeError);
     expect(() => createClient({ baseUrl: "https://x", retries: 99 })).toThrow(RangeError);
     await expect(createClient({ baseUrl: "https://x" }).list("/")).rejects.toThrow(TypeError);
+  });
+  const answering = (make: () => Response) => createClient({ baseUrl: "https://drive.example.com", token: "abc", fetch: (async () => make()) as unknown as typeof fetch });
+  it("fails closed on an answer of another shape, an unknown code, a wrong hash, and a dropped body", async () => {
+    const wrongHost = answering(() => Response.json({}));
+    expect(await failure(wrongHost.list("/"))).toMatchObject({ code: "BAD_RESPONSE", status: 200 });
+    expect(await failure(answering(() => Response.json(null)).stat("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    expect(await failure(answering(() => new Response("<html>", { status: 200 })).stat("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    const unknown = await failure(answering(() => Response.json({ error: { code: "RATE_LIMITED", message: "slow down" } }, { status: 429 })).stat("/a"));
+    expect(unknown).toMatchObject({ code: "BAD_RESPONSE", status: 429 });
+    const wrongBytes = answering(() => new Response("tampered", { headers: { "x-content-sha256": createHash("sha256").update("original").digest("hex") } }));
+    expect(await failure(wrongBytes.download("/a"))).toMatchObject({ code: "BAD_RESPONSE" });
+    const dropped = answering(() => new Response(new ReadableStream({ start: (c) => c.error(new Error("reset")) })));
+    expect(await failure(dropped.download("/a"))).toMatchObject({ code: "NETWORK_ERROR", status: 0 });
+  });
+  it("does not follow a redirect", async () => {
+    let seen: RequestInit | undefined;
+    const client = createClient({ baseUrl: "http://drive.example.com", token: "abc", fetch: (async (_url: string, init?: RequestInit) => { seen = init; return Response.json([]); }) as unknown as typeof fetch });
+    await client.list("/");
+    expect(seen?.redirect).toBe("error");
   });
 });
