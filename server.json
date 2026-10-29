@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.pooriaarab/agentic-drive",
   "description": "Store, sort, and share files and folders.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "repository": {
     "url": "https://github.com/pooriaarab/agentic-drive",
     "source": "github",
@@ -13,7 +13,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "agentic-drive",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "environmentVariables": [
         { "name": "AGENTIC_DRIVE_TOKEN", "description": "An API key. Make one with `principal add <id>` and `key issue <id>`.", "isRequired": true, "isSecret": true },
         { "name": "AGENTIC_DRIVE_DIR", "description": "The data folder. Default ./.agentic-drive.", "isRequired": false, "isSecret": false }
