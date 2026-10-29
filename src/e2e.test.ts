@@ -45,6 +45,7 @@ describe("CLI", () => {
     expect(log.map((e: { actor: unknown }) => e.actor)).toEqual([{ id: "bot1", kind: "agent" }, { id: "u1", kind: "human" }]);
     expect(run(["activity", "/b", "--limit", "1"]).json()).toHaveLength(1);
     expect(run(["activity"]).code).toBe(2);
+    expect(run(["activity", made.id, "--limit", "0"]).code).toBe(2);
   }, 30_000);
   it("registers app documents, lists them in the home view, and forgets one", () => {
     const { run } = fixture();

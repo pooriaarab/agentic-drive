@@ -95,13 +95,28 @@ describe("activity log", () => {
     expect(log[1]!.detail).toEqual({ subjectKind: "human", subjectId: "u2", role: "viewer" });
   });
 
-  it("keeps the roots of two drives apart, and logs no share of a root", async () => {
+  it("keeps the roots of two drives apart, and removes the root log with the drive", async () => {
     const store = createMemoryStore();
     const drive = createDrive({ store, blobs: createMemoryBlobs(), sharing: createSharing(store) });
     const ctxOf = (id: string): Ctx => ({ owner: id, actor: { id, kind: "human" }, principal: { principalId: id, kind: "human", chain: [{ id, kind: "human" }], scopes: ["drive:admin"] } });
     await drive.shareWith(ctxOf("ann"), "/", { kind: "human", id: "carol" }, "editor");
+    expect(actions(await drive.listActivity(ctxOf("ann"), "/"))).toEqual(["share"]);
     expect(await drive.listActivity(ctxOf("eve"), "/")).toEqual([]);
-    expect(await drive.listActivity(ctxOf("ann"), "root")).toEqual([]);
+    await drive.deleteAll(ctxOf("ann"));
+    expect((await store.query("drive_activity", { where: { itemId: "root" }, limit: 10 })).items).toEqual([]);
+  });
+
+  it("writes no audit entry when it decides what to show", async () => {
+    const store = createMemoryStore();
+    const drive = createDrive({ store, blobs: createMemoryBlobs(), sharing: createSharing(store) });
+    const p = (id: string): PrincipalContext => ({ principalId: id, kind: "human", chain: [{ id, kind: "human" }], scopes: ["drive:admin"] });
+    const ann: Ctx = { owner: "ann", actor: { id: "ann", kind: "human" }, principal: p("ann") };
+    const bob: Ctx = { owner: "bob", actor: { id: "bob", kind: "human" }, principal: p("bob") };
+    const file = await drive.putFile(ann, "/a.txt", bytes("x"));
+    await drive.shareWith(ann, file.id, { kind: "human", id: "bob" }, "viewer");
+    await drive.listActivity(bob, file.id);
+    const audit = (await store.query("audit", { where: { principalId: "bob" }, limit: 50 })).items.map((e) => e.data.action);
+    expect(audit).not.toContain("admin");
   });
 
   it("shows who got a role to an owner only", async () => {
@@ -126,7 +141,10 @@ describe("activity log", () => {
     expect(actions(await drive.listActivity(human, file.id))).toEqual(["create"]);
     const [stored] = (await store.query("drive_activity", { where: { itemId: file.id }, limit: 1 })).items;
     await store.put("drive_activity", stored!.id, { ...stored!.data, principalKind: "weird", actor: { id: "u1", kind: "human" } });
-    expect((await drive.listActivity(human, file.id))[0]!.actor.kind).toBe("agent");
+    expect((await drive.listActivity(human, file.id))[0]).toMatchObject({ actor: { kind: "agent" }, principalKind: "agent" });
+    await store.put("drive_activity", "broken", { id: "broken", itemId: file.id, owner: "u1", at: 5, action: "create" });
+    await store.put("drive_activity", "odd", { id: "odd", itemId: file.id, owner: "u1", at: 6, action: "format-disk", actor: { id: "x", kind: "human" }, principalKind: "human" });
+    expect(await drive.listActivity(human, file.id)).toHaveLength(1);
   });
 
   it("keeps names out of the export for a drive that the person does not own", async () => {
@@ -160,8 +178,14 @@ describe("activity log", () => {
     // u1 and an agent of u1 change an item in the drive of u2.
     await drive.rename({ owner: "u2", actor: { id: "bot9", kind: "agent_of_human" } }, theirs.id, "a.txt");
     await drive.rename({ owner: "u2", actor: { id: "u1", kind: "human" } }, theirs.id, "b.txt");
+    // A share entry that names the person, and one that names an agent with the same id.
+    const named = (id: string, kind: string) => store.put("drive_activity", id, { id, itemId: theirs.id, owner: "u2", at: id === "s1" ? 50 : 51, action: "share", actor: { id: "u2", kind: "human" }, actorId: "u2", principalKind: "human", subjectId: "u1", subjectKind: kind, detail: { subjectId: "u1", subjectKind: kind, role: "viewer" } });
+    await named("s1", "human");
+    await named("s2", "agent");
     await drive.erasePerson(human);
-    const log = await drive.listActivity(stranger, theirs.id);
+    const shares = (await drive.listActivity(stranger, theirs.id)).filter((e) => e.action === "share").map((e) => e.detail!.subjectId);
+    expect(shares).toEqual(["u1", "erased"]);
+    const log = (await drive.listActivity(stranger, theirs.id)).filter((e) => e.action !== "share");
     expect(log.map((e) => e.actor)).toEqual([{ id: "erased", kind: "human" }, { id: "erased", kind: "agent" }, { id: "u2", kind: "human" }]);
   });
 });

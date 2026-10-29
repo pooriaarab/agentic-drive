@@ -147,7 +147,11 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         break;
       case "activity":
         need(1, "activity <path|id> [--limit n]");
-        print(await drive.listActivity(ctx, args[0]!, { limit: num(values.limit, "limit") }));
+        {
+          const limit = num(values.limit, "limit");
+          if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new UsageError("--limit needs a whole number of 1 or more");
+          print(await drive.listActivity(ctx, args[0]!, { limit }));
+        }
         break;
       case "mkdir":
         need(1, "mkdir <path> [-p]");
