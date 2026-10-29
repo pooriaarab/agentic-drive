@@ -242,6 +242,12 @@ const publicActivity = ({ owner: _owner, actorId: _actorId, subjectId: _subjectI
   ...entry,
   actor: { id: entry.actor.id, kind: entry.principalKind === "human" ? "human" : "agent" },
 });
+/** Takes the names and ids out of an entry. The `via` of an accepted invite stays. */
+const keepVia = (entry: ActivityEntry) => {
+  const via = entry.detail?.via;
+  if (via === undefined) delete entry.detail;
+  else entry.detail = { via };
+};
 /** A stored doc that has no shape to show (a kind that is not a principal kind too) is left out, so a bad doc never breaks the list or reads as a change by a person. */
 const shown = (doc: Doc): doc is Doc & ActivityDoc =>
   typeof doc.id === "string" && typeof doc.itemId === "string" && typeof doc.at === "number" && Number.isFinite(doc.at) && ACTIVITY_ACTIONS.includes(doc.action as string) &&
@@ -868,7 +874,8 @@ export function createDrive(deps: DriveDeps) {
         for (const e of page.items) {
           if (!shown(e.data)) continue;
           const entry = publicActivity(e.data);
-          if (!owner && (entry.action === "share" || entry.action === "unshare")) delete entry.detail;
+          // `via` stays, so an accepted invite does not read as a share by the person who accepted it.
+          if (!owner && (entry.action === "share" || entry.action === "unshare")) keepVia(entry);
           out.push(entry);
         }
         if (!page.nextCursor) break;
@@ -1304,7 +1311,7 @@ export function createDrive(deps: DriveDeps) {
           const doc = e.data;
           const entry = publicActivity(doc);
           // What they did in the drive of another person keeps its action, time, and kind. The names in it belong to that drive.
-          if (doc.owner !== subject.id && !ownedAgents.includes(doc.owner)) delete entry.detail;
+          if (doc.owner !== subject.id && !ownedAgents.includes(doc.owner)) keepVia(entry);
           activity.push(entry);
         }
       }

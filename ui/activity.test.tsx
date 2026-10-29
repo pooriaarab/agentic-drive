@@ -33,6 +33,11 @@ describe("ActivityList", () => {
     expect(host.textContent).toContain("accepted an invite and now has the role viewer");
     expect(host.textContent).not.toContain("shared it");
   });
+  it("says an invite was accepted when the role is hidden from the reader", async () => {
+    const host = await render([entry("4", "human", "share", { via: "invite" })]);
+    expect(host.textContent).toContain("accepted an invite");
+    expect(host.textContent).not.toContain("shared it");
+  });
   it("says so when nothing happened", async () => {
     expect((await render([])).textContent).toContain("No activity yet.");
   });

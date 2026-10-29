@@ -162,6 +162,9 @@ describe("activity log", () => {
     const invite = await drive.invite(ann, file.id, { role: "viewer", email: "bob@example.com" });
     await drive.acceptInvite(bob, invite.id, { email: "bob@example.com" });
     expect((await drive.listActivity(ann, file.id))[0]).toMatchObject({ action: "share", actor: { id: "bob" }, detail: { subjectId: "bob", role: "viewer", via: "invite" } });
+    // A reader who does not own the drive sees the invite, not who got which role.
+    const otherSees = await drive.listActivity({ ...bob, owner: "bob" }, file.id);
+    expect(otherSees[0]!.detail).toEqual({ via: "invite" });
     // An invite below the role held changes nothing, so it leaves no entry.
     const low = await drive.invite(ann, ref.id, { role: "viewer", email: "bob@example.com" });
     await drive.acceptInvite(bob, low.id, { email: "bob@example.com" });
