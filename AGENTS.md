@@ -21,7 +21,7 @@ document in another app. Each item belongs to one owner.
 - A locator with a `/` is a path: `/x` from the root, or `<folder id>/x` from a folder. Any other locator is an id.
 - Trash first. Purge only items that are in the trash.
 - Report a `DriveError` as an error. Read its `code`.
-- Run with `--actor-kind agent_of_human` so items show a machine made them.
+- Run the CLI with an agent key in `AGENTIC_DRIVE_TOKEN`, so items show a machine made them. Exit code 3 means no valid key.
 - Do not retry a `FORBIDDEN` error with other input. `NOT_FOUND` can mean you have no role.
 - Name a shared item by id, or start a path at a folder id: `<id>/a.txt`.
 
