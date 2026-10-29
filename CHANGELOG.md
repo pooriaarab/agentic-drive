@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1
+
+Patch. No change to the SDK, CLI, MCP or HTTP shape.
+
+- `agentic-identity` is `^0.9.0`. It was `^0.6.0`. The lockfile follows. The 0.7.0 to 0.9.0 additions are not used by the drive package.
+- `agentic-design` is `^0.5.0`. It was `^0.4.0`. The design release changes colors and sizes only. The token names and the `agd-` prefix do not change. The web UI and the embedded UI take the new look: a cooler palette, 2.25rem controls, smaller headings and more dialog padding. The screenshots in `docs/ui` show the 0.4 look until they are refreshed.
+- The README embed section names `agentic-design@^0.5.0`.
+- A host that also pins `agentic-identity` to `^0.6.0` or `agentic-design` to `^0.4.0` gets two copies of it. Move the host's pins to `^0.9.0` and `^0.5.0`.
+
 ## 0.9.0
 
 ### Added
