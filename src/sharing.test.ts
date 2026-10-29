@@ -540,6 +540,13 @@ describe("identity erase and kinds", () => {
     await fails(drive.purge(ctxOf(botOf(["drive:admin"])), file.id), "NOT_FOUND");
     expect(await drive.purge(A, file.id)).toEqual({ removed: 1 });
   });
+  it("leaves a grant with no kind out of the share list, because identity does not honor it", async () => {
+    const file = await drive.putFile(A, "/old.txt", bytes("o"));
+    await store.put("grants", `${file.id}:carol`, { resourceId: file.id, subjectId: "carol", role: "viewer" });
+    const { grants } = await drive.shares(A, file.id);
+    expect(grants.map((g) => g.subjectId)).not.toContain("carol");
+    await fails(drive.stat(C, file.id), "NOT_FOUND");
+  });
   it("keeps a person and an agent with one id apart", async () => {
     const file = await drive.putFile(A, "/k.txt", bytes("k"));
     await drive.shareWith(A, file.id, { kind: "agent", id: "bob" }, "viewer");

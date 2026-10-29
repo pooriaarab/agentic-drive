@@ -1156,7 +1156,8 @@ export function createDrive(deps: DriveDeps) {
       const where = { resourceId: await resourceOf(node) };
       const rows = async (collection: string) => (await store.query(collection, { where, limit: 100 })).items.map((item) => item.data);
       return {
-        grants: (await rows("grants")).map((g) => ({ subjectKind: g.subjectKind, subjectId: g.subjectId, role: g.role })),
+        // A grant with no valid kind is from before 0.4.0 and not migrated. Identity does not honor it, so the list leaves it out.
+        grants: (await rows("grants")).filter((g) => (SUBJECT_KINDS as readonly unknown[]).includes(g.subjectKind)).map((g) => ({ subjectKind: g.subjectKind, subjectId: g.subjectId, role: g.role })),
         links: (await rows("links")).map((l) => ({ id: l.id, role: l.role, signedInOnly: l.signedInOnly === true, expiresAt: l.expiresAt ?? null, revoked: l.revokedAt != null })),
         invites: (await rows("invites")).map((i) => ({ id: i.id, role: i.role, email: i.email ?? null, handle: i.handle ?? null, expiresAt: i.expiresAt ?? null, accepted: i.acceptedAt !== undefined })),
       };
