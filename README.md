@@ -166,7 +166,13 @@ export { default } from "agentic-drive/worker";
 }
 ```
 
-Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `DRIVE_URL_SECRET` needs 32 bytes or more. `DRIVE_PUBLIC_URL` is the origin of this Worker. The Worker declares region `eu` unless `DRIVE_REGION` says otherwise, so keep the EU jurisdiction and location above. Sign-in uses agentic-identity credentials in the same D1 database. Create a token there first, or every bearer API request gets 401. A token needs two rows in the D1 database. A `principals` row, such as `{ "id": "me", "kind": "human", "scopes": ["drive:admin"] }`. A `credentials` row whose `id` is the lowercase hex SHA-256 of the token, and whose body is `{ "principalId": "me", "kind": "api_key" }`. The [seed script](https://github.com/pooriaarab/agentic-drive/blob/main/e2e/serve.mjs) shows both rows. Its tokens are for tests only. Never use them in a deployment. Without both secrets, the API answers 503. With this config, `/` serves the UI, and `/health` and `/api/v1/drive/*` answer from the Worker.
+Set `DRIVE_URL_SECRET` and `DRIVE_PUBLIC_URL` with `npx wrangler secret put`. `DRIVE_URL_SECRET` needs 32 bytes or more. `DRIVE_PUBLIC_URL` is the origin of this Worker. The Worker declares region `eu` unless `DRIVE_REGION` says otherwise, so keep the EU jurisdiction and location above. Sign-in uses agentic-identity credentials in the same D1 database. Create a token there first, or every bearer API request gets 401. In the D1 database:
+
+1. Create the table with `D1_SCHEMA` from `agentic-identity/cloudflare`, unless a request has already run.
+2. Insert a row into `store_docs` with `collection` `principals`, such as `{ "id": "me", "kind": "human", "scopes": ["drive:admin"] }`.
+3. Insert a row into `store_docs` with `collection` `credentials`. Its `id` is the lowercase hex SHA-256 of the token, and its body is `{ "principalId": "me", "kind": "api_key" }`.
+
+The [seed script](https://github.com/pooriaarab/agentic-drive/blob/main/e2e/serve.mjs) shows these rows. Its tokens are for tests only. Never use them in a deployment. Without both secrets, the API answers 503. With this config, `/` serves the UI, and `/health` and `/api/v1/drive/*` answer from the Worker.
 
 The UI does not make snapshot links yet. The address of a share link shows once, when you create it.
 
