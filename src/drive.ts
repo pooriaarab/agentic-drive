@@ -1,4 +1,4 @@
-import { EraseRefusedError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { EraseRefusedError, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -17,9 +17,10 @@ export type Ctx = {
   owner: string;
   actor: Actor;
   principal?: PrincipalContext;
-  /** Inside a transaction only: the access answers the drive fetched before it. Callers never set it. */
-  decided?: Map<string, boolean>;
 };
+/** Inside a transaction only: the access answers the drive fetched before it. The key is private, so a caller cannot set it. */
+const DECIDED = Symbol("decided");
+type TxCtx = Ctx & { [DECIDED]?: Map<string, boolean> };
 /** `delete` is for the owner only: purge and erase. Trash needs `write`. */
 export type Action = "read" | "write" | "delete";
 export type Sharing = ReturnType<typeof createSharing>;
@@ -231,11 +232,12 @@ export function createDrive(deps: DriveDeps) {
    * it stops with `Ask`, and `transactAs` asks outside, then runs the transaction again.
    */
   const can: Can = (ctx, action, node) => {
-    if (!ctx.decided) return askCan(ctx, action, node);
+    const decided = (ctx as TxCtx)[DECIDED];
+    if (!decided) return askCan(ctx, action, node);
     const key = JSON.stringify([action, node.id, node.owner, node.parentId, node.updatedAt, node.trashed, ctx.owner, ctx.actor, ctx.principal ?? null]);
-    const known = ctx.decided.get(key);
+    const known = decided.get(key);
     if (known !== undefined) return known;
-    const { decided: _decided, ...plain } = ctx;
+    const { [DECIDED]: _decided, ...plain } = ctx as TxCtx;
     throw new Ask(key, plain, action, node);
   };
 
@@ -556,7 +558,7 @@ export function createDrive(deps: DriveDeps) {
     try {
       return await store.transaction(fn);
     } catch (error) {
-      if (error instanceof Error && /transaction kept conflicting|store file changed during the write|locked by another process/.test(error.message)) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
+      if (error instanceof StoreConflictError || (error instanceof Error && /transaction kept conflicting/.test(error.message))) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
       throw error;
     }
   }
@@ -564,16 +566,17 @@ export function createDrive(deps: DriveDeps) {
   /** A transaction for a caller. It reads access answers that it fetched outside, one retry per missing answer. */
   async function transactAs<R>(ctx: Ctx, fn: (tx: StoreOps, ctx: Ctx) => Promise<R>): Promise<R> {
     const decided = new Map<string, boolean>();
-    let started = false;
+    // Every run counts and none is forgotten, so a drive that keeps changing ends in BUSY instead of a loop.
+    let runs = 0;
     let asked = false;
     for (;;) {
       try {
         return await transact((tx) => {
           // The store ran this transaction again because the data changed. The answers may be stale, so ask again.
-          if (started && !asked) decided.clear();
-          started = true;
+          if (++runs > 2 * MAX_ASKS) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
+          if (runs > 1 && !asked) decided.clear();
           asked = false;
-          return fn(tx, { ...ctx, decided });
+          return fn(tx, { ...ctx, [DECIDED]: decided } as Ctx);
         });
       } catch (error) {
         if (!(error instanceof Ask)) throw error;

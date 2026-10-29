@@ -72,3 +72,11 @@ it("refuses a line that parses but is not a list of changes", async () => {
   await expect(importLegacyLocal(dir, store, blobs)).rejects.toThrow(/bad line 1/);
   expect(await store.get("drive_meta", "legacy_import")).toBeNull();
 });
+
+it("refuses to import over data that something wrote first", async () => {
+  const dir = oldLayout();
+  const { store, blobs } = openLocal(dir);
+  await store.put("principals", "u9", { id: "u9" });
+  await expect(importLegacyLocal(dir, store, blobs)).rejects.toThrow(/old data and new data/);
+  expect(await store.get("drive_nodes", "n1")).toBeNull();
+});

@@ -14,6 +14,12 @@ type Change = [collection: string, id: string, doc: Doc | null];
 export async function importLegacyLocal(dir: string, store: Store, blobs: Blobs): Promise<void> {
   const journal = join(dir, "db", "store.jsonl");
   if (!existsSync(journal) || (await store.get("drive_meta", "legacy_import"))) return;
+  // Data in the new store with no marker means something wrote there first. A copy would overwrite it.
+  for (const collection of ["drive_nodes", "drive_names", "principals"]) {
+    if ((await store.query(collection, { limit: 1 })).items.length > 0) {
+      throw new Error(`the folder holds old data and new data, and the old data was not imported. Move ${journal} away or import by hand.`);
+    }
+  }
   const lines = readFileSync(journal, "utf8").split("\n");
   const tail = lines.pop() as string;
   const docs = new Map<string, Change>();
@@ -40,14 +46,20 @@ export async function importLegacyLocal(dir: string, store: Store, blobs: Blobs)
     }
     if (!cut) replay(tail, "last");
   }
+  let missing = 0;
   const path = (key: string) => join(dir, "blobs", createHash("sha256").update(key).digest("hex"));
   for (const [collection, , doc] of docs.values()) {
     const key = collection === "drive_nodes" ? doc?.blobKey : undefined;
-    if (typeof key !== "string" || !existsSync(path(key))) continue;
+    if (typeof key !== "string") continue;
+    if (!existsSync(path(key))) {
+      missing++;
+      continue;
+    }
     const type = existsSync(`${path(key)}.type`) ? readFileSync(`${path(key)}.type`, "utf8") : undefined;
     // A blob that is there already came from an earlier run of this import.
     await blobs.put(key, new Uint8Array(readFileSync(path(key))), { ifNoneMatch: "*", ...(type ? { contentType: type } : {}) });
   }
+  if (missing > 0) console.error(`import: ${missing} old blob files are missing, so those files cannot be read.`);
   // One transaction is one write of the store file, and no half copy is left behind.
   await store.transaction(async (tx) => {
     if (await tx.get("drive_meta", "legacy_import")) return;

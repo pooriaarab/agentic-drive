@@ -152,7 +152,7 @@ The root export, `agentic-drive`, also exports these names. The package typings 
   from each entry name to its bytes. It throws for a compressed entry. `writeZip(entries, at)` writes a zip with
   one `{ name, data }` entry for each file, and `at` sets the time in milliseconds. It throws for an unsafe
   name, such as one with `..` or a leading `/`.
-- The local drive has the functions behind the CLI. `openLocal(dir)` returns `{ drive, store }` for a folder.
+- The local drive has the functions behind the CLI. `openLocal(dir)` returns `{ drive, store, blobs }` for a folder. Call `await importLegacyLocal(dir, store, blobs)` first on a folder that an older version made. It copies the old data once, and it refuses when the new store already holds data.
   `addPrincipal(store, id, { parent?, scopes? })` makes a principal. `issueKey(store, principalId, label?)`
   returns the key. Keep it: the store keeps no plain copy. `resolveToken(store, token)` returns the caller, or throws `AuthError`
   with the code `UNAUTHENTICATED`. `revokeKey(store, token)` stops one key. `revokePrincipal(store, id)` stops a
