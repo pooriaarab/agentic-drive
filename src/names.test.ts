@@ -1,0 +1,149 @@
+// Failure modes first. Each case names a way two writers, or a half-finished write, can break the rule
+// that a live name is unique in its folder. Each store below is its own lock, like a second Worker isolate
+// on one database.
+//  1. Two stores create the same name at once: both win.
+//  2. Two stores move different items to one name at once: both win.
+//  3. A trashed item keeps its name, so a new item cannot take it.
+//  4. Restore puts a second item under a name that a new item took.
+//  5. A claim whose item is gone still blocks the name (fail closed).
+//  6. Purge or erase leaves a claim behind, so the name is lost for good.
+//  7. Purge of a trashed item deletes the claim of the live item that took its name.
+import { Miniflare } from "miniflare";
+import { D1_SCHEMA, createD1Store, type D1Like } from "agentic-identity/cloudflare";
+import { createMemoryBlobs } from "agentic-identity";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createDrive, type Ctx } from "./drive.js";
+
+let mf: Miniflare;
+let db: D1Like;
+beforeAll(async () => {
+  mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok'); } }", d1Databases: ["DB"] });
+  db = (await mf.getD1Database("DB")) as unknown as D1Like;
+  await (db as unknown as { prepare(sql: string): { run(): Promise<unknown> } }).prepare(D1_SCHEMA).run();
+});
+afterAll(() => mf.dispose());
+
+const store = () => createD1Store(db, { region: "eu" });
+const blobs = createMemoryBlobs();
+const drive = (s = store()) => createDrive({ store: s, blobs });
+let n = 0;
+const owner = (): Ctx => ({ owner: `o${++n}`, actor: { id: `o${n}`, kind: "human" } });
+const bytes = (s: string) => new TextEncoder().encode(s);
+const claims = async (me: Ctx) => (await store().query("drive_names", { where: { owner: me.owner }, limit: 100 })).items.length;
+
+describe("name uniqueness across stores", () => {
+  it("lets only one of two stores create a live name", { timeout: 60_000 }, async () => {
+    for (let round = 0; round < 15; round++) {
+      const me = owner();
+      const [a, b] = [drive(), drive()];
+      const results = await Promise.allSettled([a.putFile(me, "/r.txt", bytes("1")), b.putFile(me, "/r.txt", bytes("2"))]);
+      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+      expect(((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason as { code: string }).code).toBe("NAME_TAKEN");
+      expect(await a.list(me, "/")).toHaveLength(1);
+    }
+  });
+  it("lets only one of two stores move into the same name", { timeout: 60_000 }, async () => {
+    for (let round = 0; round < 10; round++) {
+      const me = owner();
+      const [a, b] = [drive(), drive()];
+      await a.putFile(me, "/x.txt", bytes("1"));
+      await a.putFile(me, "/y.txt", bytes("2"));
+      await a.mkdir(me, "/dest");
+      const results = await Promise.allSettled([a.move(me, "/x.txt", "/dest", { name: "t.txt" }), b.move(me, "/y.txt", "/dest", { name: "t.txt" })]);
+      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+      expect(await a.list(me, "/dest")).toHaveLength(1);
+    }
+  });
+  it("never lets two stores move two folders into each other", { timeout: 60_000 }, async () => {
+    for (let round = 0; round < 10; round++) {
+      const me = owner();
+      const [a, b] = [drive(), drive()];
+      await a.mkdir(me, "/A");
+      await a.mkdir(me, "/B");
+      const results = await Promise.allSettled([a.move(me, "/A", "/B"), b.move(me, "/B", "/A")]);
+      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+      const [top] = await a.list(me, "/");
+      expect(await a.list(me, "/")).toHaveLength(1);
+      expect(await a.list(me, top!.id)).toHaveLength(1);
+    }
+  });
+  it("reruns a transaction whose reads changed before the commit", async () => {
+    const [one, two] = [store(), store()];
+    const key = `k${++n}`;
+    await one.put("counters", key, { v: 1 });
+    const seen: number[] = [];
+    await one.transaction(async (tx) => {
+      const doc = (await tx.get<{ v: number }>("counters", key))!;
+      seen.push(doc.v);
+      if (seen.length === 1) await two.put("counters", key, { v: 10 });
+      await tx.put("counters", key, { v: doc.v + 1 });
+    });
+    expect(seen).toEqual([1, 10]);
+  });
+});
+
+describe("claims follow the life of an item", () => {
+  it("frees a name when its item is trashed, and refuses to restore into a name that was taken", async () => {
+    const me = owner();
+    const d = drive();
+    const first = await d.putFile(me, "/a.txt", bytes("1"));
+    await d.trash(me, "/a.txt");
+    expect(await claims(me)).toBe(0);
+    await d.putFile(me, "/a.txt", bytes("2"));
+    await expect(d.restore(me, first.id)).rejects.toMatchObject({ code: "NAME_TAKEN" });
+    expect((await d.restore(me, first.id, { onConflict: "rename" })).name).toBe("a (2).txt");
+    expect(await claims(me)).toBe(2);
+  });
+  it("moves the claim with a move and a rename", async () => {
+    const me = owner();
+    const d = drive();
+    await d.mkdir(me, "/dest");
+    await d.putFile(me, "/a.txt", bytes("1"));
+    await d.move(me, "/a.txt", "/dest");
+    await d.putFile(me, "/a.txt", bytes("2"));
+    await expect(d.move(me, "/a.txt", "/dest")).rejects.toMatchObject({ code: "NAME_TAKEN" });
+    await d.rename(me, "/dest/a.txt", "b.txt");
+    await d.putFile(me, "/dest/a.txt", bytes("3"));
+    expect(await claims(me)).toBe(4);
+  });
+  it("still blocks a name when its claim names no item", async () => {
+    const me = owner();
+    const s = store();
+    const d = drive(s);
+    const a = await d.putFile(me, "/ghost.txt", bytes("1"));
+    await s.delete("drive_nodes", a.id);
+    await expect(d.putFile(me, "/ghost.txt", bytes("2"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
+    await expect(d.stat(me, "/ghost.txt")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+  it("leaves no claim after a purge or an erase", async () => {
+    const me = owner();
+    const d = drive();
+    await d.putFile(me, "/p/q/r.txt", bytes("1"), { parents: true });
+    await d.trash(me, "/p");
+    await d.purge(me, (await d.listTrash(me))[0]!.id);
+    expect(await claims(me)).toBe(0);
+    await d.putFile(me, "/s/t.txt", bytes("2"), { parents: true });
+    await d.deleteAll(me);
+    expect(await claims(me)).toBe(0);
+    await d.putFile(me, "/s/t.txt", bytes("3"), { parents: true });
+  });
+  it("keeps the claim of a live item when a trashed item of the same name is purged", async () => {
+    const me = owner();
+    const d = drive();
+    const old = await d.putFile(me, "/same.txt", bytes("1"));
+    await d.trash(me, "/same.txt");
+    await d.putFile(me, "/same.txt", bytes("2"));
+    await d.purge(me, old.id);
+    await expect(d.putFile(me, "/same.txt", bytes("3"))).rejects.toMatchObject({ code: "NAME_TAKEN" });
+  });
+  it("purges a nested folder with more than 100 children", { timeout: 60_000 }, async () => {
+    const me = owner();
+    const d = drive();
+    await d.mkdir(me, "/big/inbox", { parents: true });
+    for (let i = 0; i < 101; i++) await d.putRef(me, `/big/inbox/r${i}`, `docs:${i}`);
+    await d.trash(me, "/big");
+    expect(await d.purge(me, (await d.listTrash(me))[0]!.id)).toEqual({ removed: 103 });
+    expect(await d.list(me, "/")).toEqual([]);
+    expect(await claims(me)).toBe(0);
+  });
+});

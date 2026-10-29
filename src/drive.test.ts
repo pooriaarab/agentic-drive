@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createFileBlobs, createFileStore } from "./adapters/fs.js";
-import { createMemoryBlobs, createMemoryStore } from "./adapters/memory.js";
+import { createMemoryBlobs, createMemoryStore } from "agentic-identity";
 import { createDrive, DriveError, type Ctx, type Drive } from "./drive.js";
-import type { Blobs, Store } from "./ports.js";
+import type { Blobs, Store } from "agentic-identity";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const human: Ctx = { owner: "u1", actor: { id: "u1", kind: "human" } };

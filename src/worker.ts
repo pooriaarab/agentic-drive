@@ -1,14 +1,13 @@
 import { Hono } from "hono";
-import { createD1Store, type D1Like } from "./adapters/d1.js";
-import { createR2Blobs, type R2BucketLike } from "./adapters/r2.js";
-import { ACTOR_KINDS, createDrive, DEFAULT_URL_SECONDS, DRIVE_UNIQUE_INDEXES, DriveError, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
+import { D1_SCHEMA, createD1Store, createR2Blobs, verifySignedBlobUrl, type D1Like, type R2Like } from "agentic-identity/cloudflare";
+import { ACTOR_KINDS, createDrive, DEFAULT_URL_SECONDS, DriveError, safeMime, type ActorKind, type Ctx, type Drive, type ErrorCode, type OnConflict, type SearchQuery } from "./drive.js";
 import { buildExport } from "./export.js";
 import { publicNode } from "./local.js";
 import { DEFAULT_MAX_BYTES, upload } from "./upload.js";
 
 export interface WorkerEnv {
   DB: D1Like;
-  FILES: R2BucketLike;
+  FILES: R2Like;
   /**
    * JSON: `{ "<token>": { "owner": "u1", "actor": "u1", "kind": "human" } }`. A token is at least 32 characters.
    * Every grant needs an owner, an actor id, and an actor kind. A token with a missing or bad part gets 401.
@@ -16,11 +15,10 @@ export interface WorkerEnv {
    */
   DRIVE_API_TOKENS?: string;
   DRIVE_MAX_BYTES?: string;
-  /** All four are needed for signed URLs. */
-  R2_ACCOUNT_ID?: string;
-  R2_BUCKET_NAME?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
+  /** The origin of this Worker, such as `https://drive.example.com`. Signed download URLs start with it. */
+  DRIVE_PUBLIC_URL?: string;
+  /** At least 32 bytes. Signs download URLs. Without it, every request gets 503. */
+  DRIVE_URL_SECRET?: string;
 }
 
 const MIN_TOKEN_LENGTH = 32;
@@ -32,7 +30,7 @@ const STATUS: Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500> = {
   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
 };
 
-const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 501) =>
+const fail = (code: string, message: string, status: 400 | 401 | 403 | 404 | 413 | 503) =>
   new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } });
 
 function sameText(a: string, b: string): boolean {
@@ -71,17 +69,36 @@ export function authenticate(request: Request, env: WorkerEnv): Ctx | null {
   return principalOf(found);
 }
 
-const stores = new WeakMap<object, ReturnType<typeof createD1Store>>();
+/** The database is ready once its table exists. The check runs once per binding. */
+const schemas = new WeakMap<object, Promise<unknown>>();
 
-const hasSigning = (env: WorkerEnv) => Boolean(env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY);
+function settings(env: WorkerEnv): { publicUrl: string; urlSecret: string } | null {
+  let publicUrl: string;
+  try {
+    publicUrl = new URL(env.DRIVE_PUBLIC_URL ?? "").origin;
+  } catch {
+    return null;
+  }
+  const urlSecret = env.DRIVE_URL_SECRET;
+  return typeof urlSecret === "string" && new TextEncoder().encode(urlSecret).length >= 32 ? { publicUrl, urlSecret } : null;
+}
 
-function driveFor(env: WorkerEnv): Drive {
-  let store = stores.get(env.DB);
-  if (!store) stores.set(env.DB, (store = createD1Store(env.DB, { unique: DRIVE_UNIQUE_INDEXES })));
-  const signing = hasSigning(env)
-    ? { accountId: env.R2_ACCOUNT_ID!, bucketName: env.R2_BUCKET_NAME!, accessKeyId: env.R2_ACCESS_KEY_ID!, secretAccessKey: env.R2_SECRET_ACCESS_KEY!, jurisdiction: "eu" as const }
-    : undefined;
-  return createDrive({ store, blobs: createR2Blobs({ bucket: env.FILES, signing }) });
+/** The R2 bucket is declared as "eu": create it with `--jurisdiction eu`. */
+function blobsFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>) {
+  return createR2Blobs(env.FILES, { region: "eu", urlBase: `${config.publicUrl}/api/v1/drive/blob`, urlSecret: config.urlSecret });
+}
+
+async function driveFor(env: WorkerEnv, config: NonNullable<ReturnType<typeof settings>>): Promise<Drive> {
+  let ready = schemas.get(env.DB);
+  if (!ready) {
+    ready = env.DB.prepare(D1_SCHEMA).run().catch((error: unknown) => {
+      schemas.delete(env.DB);
+      throw error;
+    });
+    schemas.set(env.DB, ready);
+  }
+  await ready;
+  return createDrive({ store: createD1Store(env.DB, { region: "eu" }), blobs: blobsFor(env, config) });
 }
 
 const number = (v: string | undefined, name: string) => {
@@ -101,10 +118,12 @@ export function createApp(): Hono<App> {
 
   const api = new Hono<App>();
   api.use("*", async (c, next) => {
+    const config = settings(c.env);
+    if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
     const ctx = authenticate(c.req.raw, c.env);
     if (!ctx) return fail("UNAUTHORIZED", "send a valid bearer token", 401);
     c.set("ctx", ctx);
-    c.set("drive", driveFor(c.env));
+    c.set("drive", await driveFor(c.env, config));
     await next();
   });
   const q = (c: { req: { query(k: string): string | undefined } }, k: string) => c.req.query(k);
@@ -158,7 +177,6 @@ export function createApp(): Hono<App> {
     });
   });
   api.get("/url", async (c) => {
-    if (!hasSigning(c.env)) return fail("SIGNING_NOT_CONFIGURED", "signed URLs need R2 signing keys", 501);
     const expires = number(q(c, "expires"), "expires") ?? DEFAULT_URL_SECONDS;
     return c.json({ url: await c.var.drive.downloadUrl(c.var.ctx, need(q(c, "path"), "path"), expires), expiresInSeconds: expires });
   });
@@ -189,6 +207,23 @@ export function createApp(): Hono<App> {
     return c.json(await c.var.drive.deleteAll(c.var.ctx));
   });
 
+  // The signature is the credential here, so this route sits outside the bearer-token check.
+  app.get("/api/v1/drive/blob", async (c) => {
+    const config = settings(c.env);
+    if (!config) return fail("NOT_CONFIGURED", "set DRIVE_PUBLIC_URL and DRIVE_URL_SECRET (32 bytes or more)", 503);
+    const signed = await verifySignedBlobUrl(c.req.url, { secret: config.urlSecret });
+    if (!signed || signed.method !== "GET") return fail("INVALID_LINK", "this link is not valid, or it has expired", 403);
+    const blob = await blobsFor(c.env, config).get(signed.key);
+    if (!blob) return fail("NOT_FOUND", "the bytes are gone", 404);
+    return new Response(blob.data as BodyInit, {
+      headers: {
+        "content-type": safeMime(blob.contentType),
+        "content-disposition": "attachment",
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  });
   app.route("/api/v1/drive", api);
   app.notFound(() => fail("NOT_FOUND", "no such route", 404));
   app.onError((error) => {
