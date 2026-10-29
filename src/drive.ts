@@ -1,12 +1,12 @@
-import { EraseRefusedError, MAX_FOLDER_DEPTH, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { EraseRefusedError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
 /** One claim doc per live name. Its id is a hash of the owner, the folder, and the name. */
 const NAMES = "drive_names";
 
-export const ACTOR_KINDS = ["human", "agent_of_human", "agent_of_agent", "agent", "user_token"] as const;
-export type ActorKind = (typeof ACTOR_KINDS)[number];
+export const ACTOR_KINDS = PRINCIPAL_KINDS;
+export type ActorKind = PrincipalKind;
 
 export type Actor = { id: string; kind: ActorKind };
 /**
