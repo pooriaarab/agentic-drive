@@ -9,6 +9,10 @@
 - The UI has an Activity page for an item (the Activity entry of the item menu). An entry made by an agent shows an "AI agent" label.
 - `buildExport` adds `activity` to the manifest: the entries made by the person and their agents, in any drive. In a drive that the person does not own, the entries have no names. `erasePerson` changes the actor id of those entries, and the id of a person named in a share entry, to `erased`. It keeps the kind.
 
+### Changed
+
+- **The web UI has a calm list view.** Files show in a table with sortable Name and Modified columns, a search that opens from a button, and a Share button next to the title of a folder. Select rows with the check boxes to see a bar at the bottom of the page that moves them all to the trash. A search with no match has its own empty state. The design classes in the list view are now `drive-*` classes of the app, not `agd-file-*` classes.
+
 ## 0.8.0
 
 Read the breaking changes before you upgrade.

@@ -68,7 +68,9 @@
     "ci:local": "npm run build && npm run build:ui && npm run typecheck && npm test && npm run test:e2e",
     "build:ui": "vite build",
     "deploy:demo": "npm run build:ui && wrangler deploy -c wrangler.demo.jsonc",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "dev": "npm run build:ui && WRANGLER_SEND_METRICS=false wrangler dev --local --var DRIVE_PUBLIC_URL:http://127.0.0.1:8787 --var DRIVE_REGION:unknown",
+    "dev:smoke": "node scripts/dev-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

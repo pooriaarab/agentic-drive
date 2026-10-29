@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: 0.8.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
+> Status: 0.9.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
 > A small web UI works. See [UI](#ui).
 
 ## Live demo
@@ -315,6 +315,21 @@ export default { fetch: app.fetch };
 - Every access check writes one audit row, and a transaction that runs again writes its rows again. The audit holds ids and kinds only: no emails and no content.
 - Data made before sharing has no `resources` docs, so its owner gets `NOT_FOUND`. Run `backfillResources(store, { maxPages: 1 })` on that store, paged the same way, once the old Worker has stopped writing. See CHANGELOG.md for the order of the upgrade steps.
 - A person who is not an owner cannot move an item into their own drive: the move fails with `CROSS_DRIVE`.
+
+## Run locally
+
+```sh
+bun install        # or: npm ci
+bun run dev        # or: npm run dev
+curl http://localhost:8787/health
+```
+
+The script builds the UI, then runs `wrangler dev --local` with `DRIVE_PUBLIC_URL=http://127.0.0.1:8787` and `DRIVE_REGION=unknown`. `/health` needs no token and no secret. Every `/api/v1/drive` call answers 503 until you set a secret: copy `.dev.vars.example` to `.dev.vars` and set `DRIVE_URL_SECRET` to a random value of 32 bytes or more (`openssl rand -hex 32`). `.dev.vars` stays out of git. If you change the port, also pass `--var DRIVE_PUBLIC_URL:http://127.0.0.1:<port>`, or the signed links point at port 8787. A fresh local database has no tokens: see `e2e/serve.mjs` to seed one.
+
+The scripts call `npm` and `node` (Node 22 or newer), so install both, even if you use bun. They need a POSIX shell.
+
+Run `npm run dev:smoke` to check this path. It starts the dev server on port 8799, waits for `GET /health` to answer 200, and stops the server. CI runs it as the "dev smoke" step. Set `DEV_SMOKE_PORT` to use another port.
+
 ## Develop
 
 ```sh
