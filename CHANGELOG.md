@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+### Changed
+
+- **Bearer tokens are checked by the agentic-identity HTTP helper.** The Worker and the local key check now call `requirePrincipal` from `agentic-identity/http` (agentic-identity 0.6). The package no longer has its own copy of the bearer-token check in `src/auth.ts` and `src/local.ts`. A request without an `authorization` header still gets no caller, so a session cookie does not sign in. A bad key still gives 401, and `resolveToken` still throws `AuthError` with the code `UNAUTHENTICATED`.
+- **The dependency is agentic-identity 0.6.** The package now needs `agentic-identity` `^0.6.0`.
+
 ## 0.6.0
 
 ### Added
