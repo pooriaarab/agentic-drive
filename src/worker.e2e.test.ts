@@ -1,5 +1,6 @@
 // End to end: the real Worker under `wrangler dev`, with local D1 and R2.
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +9,8 @@ import { authenticate, createApp } from "./worker.js";
 import { readZip } from "./zip.js";
 
 const root = join(import.meta.dirname, "..");
-const port = 8700 + Math.floor(Math.random() * 200);
-const base = `http://127.0.0.1:${port}`;
+let port = 0;
+let base = "";
 const tok = (name: string) => `${name}-`.padEnd(40, "k");
 const TOK_U1 = tok("u1");
 const TOK_BOT = tok("bot");
@@ -41,10 +42,21 @@ const json = async (res: Response) => (await res.json()) as any;
 const put = (path: string, data: string | Uint8Array, token?: string | null, q = "") =>
   call("PUT", `/files?path=${encodeURIComponent(path)}${q}`, { token, body: data as BodyInit, headers: { "content-type": "application/octet-stream" } });
 
+// The system picks the port, so a wrangler left over from an earlier run cannot answer for this one.
+const freePort = () =>
+  new Promise<number>((resolve) => {
+    const probe = createServer().listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address() as AddressInfo;
+      probe.close(() => resolve(free));
+    });
+  });
+
 beforeAll(async () => {
+  port = await freePort();
+  base = `http://127.0.0.1:${port}`;
   const persist = mkdtempSync(join(tmpdir(), "drive-wrangler-"));
   proc = spawn("npx", ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persist, "--var", `DRIVE_API_TOKENS:${JSON.stringify(tokens)}`, "--var", "DRIVE_MAX_BYTES:1000", "--var", `DRIVE_PUBLIC_URL:${base}`, "--var", `DRIVE_URL_SECRET:${URL_SECRET}`], {
-    cwd: root, stdio: "ignore", env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
+    cwd: root, stdio: "ignore", detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
   });
   for (let i = 0; i < 120; i++) {
     try {
@@ -57,7 +69,8 @@ beforeAll(async () => {
   throw new Error("wrangler dev did not start");
 }, 90_000);
 afterAll(() => {
-  proc?.kill("SIGTERM");
+  // wrangler starts child processes. Stop the whole group, or they keep the port.
+  if (proc?.pid) process.kill(-proc.pid, "SIGTERM");
 });
 
 describe("sign-in", () => {

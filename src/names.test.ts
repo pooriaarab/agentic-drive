@@ -229,6 +229,39 @@ describe("a purge that races with other changes", () => {
     expect(await store.query("drive_nodes", { limit: 10 })).toMatchObject({ items: [] });
     expect(await names(store)).toEqual([]);
   });
+  it("keeps a folder that a restore moved out of the purged tree, with everything in it", async () => {
+    const me = owner();
+    const { store, hooks, d } = setup();
+    await d.putFile(me, "/box/sub/g.txt", bytes("g"), { parents: true });
+    await d.trash(me, "/box/sub");
+    await d.trash(me, "/box");
+    const trash = await d.listTrash(me);
+    const [box, sub] = [trash.find((n) => n.name === "box")!, trash.find((n) => n.name === "sub")!];
+    const boxId = box.id;
+    hooks.afterQuery = async () => void (await d.restore(me, sub.id, { parentId: "root" }));
+    expect(await d.purge(me, boxId)).toEqual({ removed: 1 });
+    expect(new TextDecoder().decode((await d.read(me, "/sub/g.txt")).data)).toBe("g");
+    expect(await dangling(store)).toEqual([]);
+  });
+  it("makes progress on every run, so a large purge that keeps failing still finishes", { timeout: 60_000 }, async () => {
+    const me = owner();
+    const inner = createMemoryBlobs();
+    let deletes = 0;
+    let failAt = 40;
+    const blobs: Blobs = { ...inner, delete: async (key) => { if (++deletes === failAt) throw new Error("storage 503"); await inner.delete(key); } };
+    const store = createMemoryStore();
+    const d = createDrive({ store, blobs });
+    for (let i = 0; i < 60; i++) await d.putFile(me, `/big/f${i}.txt`, bytes("x"), { parents: true });
+    await d.trash(me, "/big");
+    const big = (await d.listTrash(me))[0]!;
+    await expect(d.purge(me, big.id)).rejects.toThrow("storage 503");
+    const left = (await store.query("drive_nodes", { limit: 100 })).items.length;
+    expect(left).toBeLessThan(61);
+    failAt = -1;
+    expect((await d.purge(me, big.id)).removed).toBeLessThan(61);
+    expect((await store.query("drive_nodes", { limit: 100 })).items).toEqual([]);
+    expect((await names(store))).toEqual([]);
+  });
   it("does not delete the claim of another item when a move leaves a name", async () => {
     const me = owner();
     const { store, d } = setup();

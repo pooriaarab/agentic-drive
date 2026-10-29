@@ -80,6 +80,8 @@ export type Drive = ReturnType<typeof createDrive>;
 
 const MAX_PATH_SEGMENTS = 64;
 const DEFAULT_MAX_DEPTH = 256;
+/** Nodes a purge marks or deletes in one transaction. A Worker call has a cap on database queries. */
+const CHUNK = 25;
 export const DEFAULT_URL_SECONDS = 900;
 export const MAX_URL_SECONDS = 3600;
 const OPAQUE = "application/octet-stream";
@@ -324,13 +326,13 @@ export function createDrive(deps: DriveDeps) {
       onOrphan(key, error);
     }
   }
-  async function ownerNodes(ctx: Ctx): Promise<Node[]> {
+  async function ownerNodes(ctx: Ctx, withMarked = false): Promise<Node[]> {
     const root = rootNode(ctx);
     if (!(await can(ctx, "read", root))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
     const out: Node[] = [];
     for (let cursor: string | undefined; ; ) {
       const page = await store.query<Node>(NODES, { where: { owner: ctx.owner }, limit: 100, cursor });
-      out.push(...page.items.map((item) => item.data));
+      out.push(...page.items.map((item) => item.data).filter((node) => withMarked || node.purging !== true));
       if (!page.nextCursor) return out;
       cursor = page.nextCursor;
     }
@@ -363,34 +365,52 @@ export function createDrive(deps: DriveDeps) {
 
   /**
    * Deletes nodes for good, and returns how many it deleted. Step 1 marks each node that still looks as
-   * it did when it was read, top item first. A marked node is invisible and cannot be restored, moved,
-   * or changed, so nothing can bring it back while its bytes go. A node that changed before its mark
-   * stays untouched, with its bytes and its name. If the top item changed, nothing is deleted.
-   * Step 2 deletes the blobs of the marked nodes, then their rows (children first) and their claims.
-   * A failure leaves marked rows that still name what is left, and `purge` can run again on them.
+   * it did when it was read. A marked node is invisible and cannot be restored, moved, or changed, so
+   * nothing can bring it back while its bytes go. A node that changed before its mark stays untouched,
+   * with its bytes and its name. With a `top` item, parents come before children, and a node is marked
+   * only when its parent is: a subtree that a restore moved out is skipped whole. If the top item
+   * changed, nothing is deleted. Step 2 deletes the blobs of the marked nodes, then their rows
+   * (children first) and their claims. Work comes in small chunks, and each chunk commits, so a call
+   * that fails or runs out of time leaves progress behind. Nodes that an earlier call marked need no
+   * new mark, so the same call can run again until it is done.
    */
   async function removeNodes(nodes: Node[], top?: Node): Promise<number> {
     const unchanged = (now: Node | null, seen: Node) =>
       now !== null && now.trashed === seen.trashed && now.parentId === seen.parentId && now.updatedAt === seen.updatedAt;
     const marked: Node[] = [];
-    for (let i = 0; i < nodes.length; i += 100) {
+    const markedIds = new Set<string>();
+    for (let i = 0; i < nodes.length; i += CHUNK) {
+      const slice = nodes.slice(i, i + CHUNK);
+      for (const node of slice) {
+        if (node.purging === true) {
+          marked.push(node);
+          markedIds.add(node.id);
+        }
+      }
       const found = await transact(async (tx) => {
         const out: Node[] = [];
-        for (const node of nodes.slice(i, i + 100)) {
+        const ids = new Set(markedIds);
+        for (const node of slice) {
+          if (node.purging === true) continue;
+          if (top && node.id !== top.id && !ids.has(node.parentId)) continue;
           const current = await tx.get<Node>(NODES, node.id);
-          if (unchanged(current, node)) out.push(current as Node);
+          if (unchanged(current, node)) {
+            out.push(current as Node);
+            ids.add(node.id);
+          }
         }
-        // The top item is first. If it changed, mark nothing.
-        if (top && i === 0 && out[0]?.id !== top.id) return [];
         for (const node of out) await tx.put(NODES, node.id, { ...node, purging: true });
         return out;
       });
-      if (top && i === 0 && found.length === 0) throw new DriveError("BUSY", `${top.name} changed during the purge. Nothing was deleted.`);
-      marked.push(...found);
+      for (const node of found) {
+        marked.push(node);
+        markedIds.add(node.id);
+      }
+      if (top && i === 0 && !markedIds.has(top.id)) throw new DriveError("BUSY", `${top.name} changed during the purge. Nothing was deleted.`);
     }
     const rows = marked.reverse();
-    for (let i = 0; i < rows.length; i += 100) {
-      const chunk = rows.slice(i, i + 100);
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
       await transact(async (tx) => {
         const held: { node: Node; claim: string | null; owns: boolean }[] = [];
@@ -597,15 +617,14 @@ export function createDrive(deps: DriveDeps) {
       return out;
     },
 
-    /** Deletes every item and byte of the owner for good. Only the owner may do this, never an agent for them. */
-    /** Deletes every item and blob of one owner. Blobs go first, so a failure can be retried. */
+    /** Deletes every item and blob of the owner for good. Only the owner may do this, never an agent for them. A failed call can run again. */
     async deleteAll(ctx: Ctx): Promise<{ removed: number }> {
       if (ctx.actor.kind !== "human" || ctx.actor.id !== ctx.owner) throw new DriveError("FORBIDDEN", "only the owner in person can delete the whole drive");
       await need(ctx, "delete", rootNode(ctx));
       let removed = 0;
       // A file created during a pass shows up in the next one.
       for (let pass = 0; pass < 5; pass++) {
-        const all = await ownerNodes(ctx);
+        const all = await ownerNodes(ctx, true);
         if (all.length === 0) return { removed };
         removed += await removeNodes(all);
       }

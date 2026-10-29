@@ -96,4 +96,9 @@ describe("file store journal", () => {
     expect(await two.get("docs", "a")).toEqual({ v: 1 });
     expect(await two.get("docs", "b")).toEqual({ v: 2 });
   });
+  it("refuses to open a journal whose whole last line cannot apply", async () => {
+    const dir = fresh();
+    writeFileSync(join(dir, "store.jsonl"), '[["docs","a",{"v":1}],["Bad Name","b",{"v":2}]]');
+    await expect(createFileStore(dir).get("docs", "a")).rejects.toThrow(/bad last line/);
+  });
 });

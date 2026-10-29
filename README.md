@@ -91,6 +91,7 @@ Create the R2 bucket with `--jurisdiction eu` and the D1 database with `--locati
 - A claimed type that a browser would run (HTML, SVG, scripts) is stored as `application/octet-stream`.
 - The file adapters allow one process at a time.
 - The MCP `drive_export` tool writes a new `.zip` into `<dir>/exports` and never overwrites a file. It takes a plain file name, not a path.
+- A purge or an erase works in chunks of 25 items, and each chunk commits. A Worker call has a cap on database queries, so a very large tree can need several calls. A failed or cut-off call leaves marked items hidden, and the same call finishes the job.
 - Hard delete removes blobs first and then rows. If a blob delete fails, the call throws and the same call can run again.
 - The export holds every file in memory. A very large drive needs a streaming export, which is not built yet.
 - The zip export stores entries without compression and has no Zip64 support.

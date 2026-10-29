@@ -62,6 +62,8 @@ describe("deleteAll deletes blobs first and misses nothing", () => {
     // The items are marked for erase and hidden, and every row stays so the retry can finish.
     expect(await drive.list(me, "/")).toHaveLength(0);
     expect((await store.query("drive_nodes", { limit: 100 })).items).toHaveLength(4);
+    // An export leaves out items that are marked for erase.
+    expect((await drive.exportData(me)).map((e) => e.node.name)).toEqual([]);
     state.failing = false;
     expect(await drive.deleteAll(me)).toEqual({ removed: 4 });
     expect(await blobKeys(drive, inner)).toEqual([]);

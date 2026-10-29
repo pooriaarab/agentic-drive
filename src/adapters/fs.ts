@@ -23,25 +23,33 @@ export function createFileStore(dir: string, options: AdapterOptions & { shared?
     const lines = text.split("\n");
     // The last piece is empty when the file ends with a newline. Otherwise a crash cut the last append.
     const tail = lines.pop() as string;
-    const replay = async (line: string) => {
-      for (const [collection, id, doc] of JSON.parse(line) as Change[]) await (doc ? inner.put(collection, id, doc) : inner.delete(collection, id));
+    const apply = async (changes: Change[]) => {
+      for (const [collection, id, doc] of changes) await (doc ? inner.put(collection, id, doc) : inner.delete(collection, id));
     };
     for (const [i, line] of lines.entries()) {
       if (line === "") continue;
       try {
-        await replay(line);
+        await apply(JSON.parse(line) as Change[]);
       } catch {
         throw new Error(`the journal ${file} has a bad line ${i + 1}`);
       }
     }
     if (tail === "") return;
+    let changes: Change[];
     try {
-      await replay(tail);
-      // The cut landed right before the newline. End the line, so the next append starts a new one.
-      appendFileSync(file, "\n");
+      changes = JSON.parse(tail) as Change[];
     } catch {
+      // A crash cut the last append. The cut line was never acknowledged, so drop it.
       truncateSync(file, Buffer.byteLength(text) - Buffer.byteLength(tail));
+      return;
     }
+    // The cut landed right before the newline. The line is whole, so it must apply, or the data is bad.
+    try {
+      await apply(changes);
+    } catch {
+      throw new Error(`the journal ${file} has a bad last line`);
+    }
+    appendFileSync(file, "\n");
   })();
   let failed: unknown;
   const keep = (changes: Change[]) => {
