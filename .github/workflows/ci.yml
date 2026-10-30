@@ -23,6 +23,7 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
+      - run: node scripts/check-tested-dependencies.mjs
       - run: npm run build
       - run: npm run build:ui
       - run: npm run typecheck
