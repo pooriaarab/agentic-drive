@@ -62,6 +62,68 @@ const open = async (options: DriveUiOptions) => {
 const base: DriveUiOptions = { baseUrl: "https://drive.example.com", getToken: () => "tok-1" };
 
 describe("mount", () => {
+  // Failure cases: handled refs download, declined refs stop opening, updates keep a stale hook,
+  // ordinary files or folders call the hook, or React prop changes reset the folder.
+  it("handles references, replaces and removes the hook, and keeps the default path", async () => {
+    const ref = { ...item("ref1", "Plan", "file", "root"), kind: "ref" as const, ref: "docs:plan" };
+    CHILDREN["/"]!.push(ref as never);
+    ITEMS.ref1 = ref as never;
+    const first = vi.fn(() => true);
+    const second = vi.fn(() => false);
+    try {
+      await open({ ...base, onOpenItem: first });
+      const activate = async (name: string) => {
+        const link = [...host.querySelectorAll("a")].find((a) => a.textContent === name)!;
+        await act(async () => link.click());
+        await settle();
+      };
+      await activate("Plan");
+      expect(first).toHaveBeenCalledExactlyOnceWith(ref);
+      expect(server.seen.some((r) => r.path.includes("/url"))).toBe(false);
+      await act(async () => mounted!.update({ ...base, onOpenItem: second }));
+      await settle();
+      await activate("Plan");
+      expect(second).toHaveBeenCalledExactlyOnceWith(ref);
+      expect(server.seen.some((r) => r.path.includes("/url"))).toBe(true);
+      await act(async () => mounted!.update(base));
+      await settle();
+      server.seen.length = 0;
+      await activate("Plan");
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(server.seen.some((r) => r.path.includes("/url"))).toBe(true);
+    } finally {
+      CHILDREN["/"]!.pop();
+      delete ITEMS.ref1;
+    }
+  });
+
+  it("DriveBrowser uses a changed callback without reloading the folder", async () => {
+    const ref = { ...item("react-ref", "React plan", "file", "docs"), kind: "ref" as const, ref: "docs:react" };
+    CHILDREN.docs!.push(ref as never);
+    const root = createRoot(host);
+    const first = vi.fn(() => true);
+    const second = vi.fn(() => true);
+    const render = (onOpenItem: typeof first) => act(async () => root.render(<TooltipProvider><ToastProvider><DriveBrowser {...base} onOpenItem={onOpenItem} /></ToastProvider></TooltipProvider>));
+    try {
+      await render(first);
+      await settle();
+      await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/docs"]')!.click());
+      await settle();
+      const click = () => act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/f/react-ref"]')!.click());
+      await click();
+      expect(first).toHaveBeenCalledExactlyOnceWith(ref);
+      const requests = server.seen.length;
+      await render(second);
+      await click();
+      expect(second).toHaveBeenCalledExactlyOnceWith(ref);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(server.seen).toHaveLength(requests);
+    } finally {
+      await act(async () => root.unmount());
+      CHILDREN.docs!.pop();
+    }
+  });
+
   it.each<[string, unknown]>([
     ["no baseUrl", { getToken: () => "a" }],
     ["a baseUrl that is not http", { baseUrl: "ftp://x.example", getToken: () => "a" }],

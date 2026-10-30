@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0
+
+- Add `onOpenItem` to the public UI options. Hosts can handle reference opens in list and grid views by pointer or keyboard. Export `OnOpenItem` and `Item` from `agentic-drive/ui`. Keep the download action for unhandled items.
+
 ## 0.10.2
 
 - Document all public exports and entry points. Check export names against README and llms.txt.

@@ -63,7 +63,7 @@ describe("public export documentation", () => {
         const members: Record<string, string[]> = {
           [`${pkg.name}/client`]: ["fetch", "retries", "code", "status"],
           [`${pkg.name}/worker`]: ["store", "blobs", "auth"],
-          [`${pkg.name}/ui`]: ["update", "unmount", "getToken"],
+          [`${pkg.name}/ui`]: ["update", "unmount", "getToken", "onOpenItem"],
         };
         for (const name of documented) {
           if (members[specifier]?.includes(name)) continue;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode, type MouseEvent } from "react";
 import {
   AppShell, Button, Dialog, DialogClose, EmptyState, FileIcon, FileList, FileRow, FolderIcon, IconButton, Input, Menu, MoreIcon, PlusIcon, PresenceChip,
   Select, ShareDialog, SidebarNav, Toolbar, ToolbarButton, useTheme, useToast, type LinkExpiry, type PresenceEntry, type ShareLink, type ShareRole,
@@ -6,6 +6,8 @@ import {
 import { ActivityList } from "./Activity.js";
 import { BulkBar, ExpandableSearch, ItemTable, sortItems, type Sort, type SortKey } from "./browse.js";
 import { createClient, DriveApiError, type DriveClient, type Item, type Role } from "../src/client.js";
+
+import type { OnOpenItem } from "./embed.js";
 
 const TOKEN_KEY = "agentic-drive-token";
 const errorText = (e: unknown) => (e instanceof DriveApiError ? `${e.message} (${e.code})` : e instanceof Error ? e.message : "Something went wrong");
@@ -43,12 +45,12 @@ const goHash = (loc: string) => {
 };
 
 /** The signed-in views. `origin` is the server that signs download links and makes share links. `go` opens a folder. */
-export function Routes({ hash, client, origin, go }: { hash: string; client: DriveClient; origin: string; go: (loc: string) => void }) {
+export function Routes({ hash, client, origin, go, onOpenItem }: { hash: string; client: DriveClient; origin: string; go: (loc: string) => void; onOpenItem?: OnOpenItem }) {
   const parts = routeParts(hash);
   if (parts[0] === "trash") return <TrashView key="trash" client={client} />;
   if (parts[0] === "a" && parts[1]) return <ActivityView key={hash} client={client} id={parts[1]} />;
   if (parts[0] === "f" && parts[1]) return <Download key={hash} client={client} id={parts[1]} origin={origin} go={go} />;
-  return <Browser key={hash} client={client} loc={parts[0] || "/"} origin={origin} />;
+  return <Browser key={hash} client={client} loc={parts[0] || "/"} origin={origin} onOpenItem={onOpenItem} />;
 }
 
 export function App() {
@@ -138,7 +140,11 @@ function SignIn({ onToken }: { onToken: (t: string) => void }) {
 
 type Dlg = { kind: "mkdir" } | { kind: "rename" | "move" | "share"; item: Item };
 
-function Browser({ client, loc, origin }: { client: DriveClient; loc: string; origin: string }) {
+function Browser({ client, loc, origin, onOpenItem }: { client: DriveClient; loc: string; origin: string; onOpenItem?: OnOpenItem }) {
+  const openItem = (e: MouseEvent, item: Item) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || item.kind !== "ref") return;
+    if (onOpenItem?.(item) === true) e.preventDefault();
+  };
   const toast = useToast();
   const [view, setView] = useState<"list" | "grid">(() => (localStorage.getItem("agentic-drive-view") === "grid" ? "grid" : "list"));
   const [dlg, setDlg] = useState<Dlg | null>(null);
@@ -258,13 +264,13 @@ function Browser({ client, loc, origin }: { client: DriveClient; loc: string; or
               ) : items.length === 0 ? (
                 <EmptyState title="Nothing matches" description={`No item in this folder has “${query.trim()}” in its name.`} action={<Button onClick={() => setQuery("")}>Clear search</Button>} />
               ) : view === "list" ? (
-                <ItemTable label={`Items in ${folder.name || "My files"}`} items={items} sort={sort} onSort={onSort} selected={selected} onSelect={setSelected} href={href} who={who} actions={actions} />
+                <ItemTable label={`Items in ${folder.name || "My files"}`} items={items} sort={sort} onSort={onSort} selected={selected} onSelect={setSelected} onOpen={openItem} href={href} who={who} actions={actions} />
               ) : (
                 <ul className="drive-grid" aria-label={`Items in ${folder.name || "My files"}`}>
                   {items.map((i) => (
                     <li key={i.id} className="drive-card">
                       <span className="drive-card__icon" aria-hidden="true">{i.kind === "folder" ? <FolderIcon /> : <FileIcon />}</span>
-                      <a href={href(i)} className="drive-card__name">{i.name}</a>
+                      <a href={href(i)} onClick={(e) => openItem(e, i)} className="drive-card__name">{i.name}</a>
                       <span className="drive-card__meta">Edited by <PresenceChip entry={who(i.updatedBy, i.owner)} /></span>
                       <span className="drive-card__actions">{actions(i)}</span>
                     </li>
