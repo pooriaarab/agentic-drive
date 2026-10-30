@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.3
+
+- Allow `agentic-design` 0.10 while keeping support for 0.8 and 0.9.
+
 ## 0.10.2
 
 - Document all public exports and entry points. Check export names against README and llms.txt.
