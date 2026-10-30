@@ -4,6 +4,7 @@ Store, sort, and share files and folders.
 
 Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
 
+- SDK: import { createDrive } from "agentic-drive". See the root example below.
 - CLI: agentic-drive ls /. Needs a principal: set AGENTIC_DRIVE_TOKEN (or --token) to an API key. Make one with `principal add <id> [--of <person>]` and `key issue <id>`. No key, or a revoked key, exits 3.
 - MCP: run agentic-drive mcp, then call drive_ls.
 
@@ -56,8 +57,10 @@ await client.list("/");
 `ActivityAction`, `ActivityEntry`, `ErrorCode`, `Node`, `Role`, `OnConflict`,
 `SubjectKind`, `Subject`, `Item`, `PathItem`, `ApiErrorCode`, `ClientErrorCode`,
 `ClientOptions`, `CallOptions`, `UploadBody`, `Downloaded`, and `DriveClient`.
-These describe API data, options, errors, and results. Client options also accept
-a fetch function and a retries count for reads.
+These describe API data, options, errors, and results. The client runs in browsers,
+Workers, and Node 22. It has a method for each bearer and shared route.
+`DriveApiError` carries `code` and `status`. Client options also accept
+a `fetch` function and a `retries` count for reads.
 
 ### Account: `agentic-drive/account`
 
@@ -85,8 +88,10 @@ injected ports. `authenticate` resolves a bearer token. `ERROR_STATUS` maps driv
 errors to HTTP statuses. `backfillAuthorIds` and `backfillResources` migrate old
 stores. Types: `ErrorCode`, `Node`, `BackfillOptions`, `BackfillResult`, `WorkerEnv`,
 and `AppOptions` describe errors, items, migrations, bindings, and injected ports.
-The store, blobs, and auth options each accept a value or a function of the env.
-The auth callback has the signature (request, store, env) => Ctx | null.
+The `store`, `blobs`, and `auth` options each accept a value or a function of
+the env. The auth callback has the signature `(request, store, env) => Ctx | null`
+or returns a Promise of that result. With no options, the Worker uses bearer
+tokens from the store.
 
 ### UI: `agentic-drive/ui` and `agentic-drive/ui.css`
 
@@ -101,8 +106,9 @@ view.unmount();
 
 `mount` returns a `MountedDrive` handle. `DriveBrowser` is the React component;
 `DriveUiOptions` is its configuration. The CSS path supplies its styles. The handle
-has update and unmount methods. The getToken callback runs before each request
-and may return undefined. React 19 and React DOM 19 are optional peer dependencies.
+has `update` and `unmount` methods. The `getToken` callback runs before each request
+and may return undefined. The UI does not change the page address or theme.
+React 19 and React DOM 19 are optional peer dependencies.
 
 ### CLI, MCP, and adapters
 

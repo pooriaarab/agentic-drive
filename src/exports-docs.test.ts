@@ -36,7 +36,7 @@ describe("public export documentation", () => {
   for (const doc of ["README.md", "llms.txt"]) {
     it(`names each package path and exported symbol in ${doc}`, () => {
       const text = readFileSync(resolve(root, doc), "utf8");
-      const sections = text.split(/^### /m);
+      const sections = text.split(/^#{2,} /m);
       const cliSection = sections.find((part) => part.startsWith("CLI, MCP, and adapters\n"));
       expect(cliSection, "missing CLI section").toBeDefined();
       for (const binary of Object.keys(pkg.bin)) {
@@ -60,7 +60,13 @@ describe("public export documentation", () => {
         // Backticked identifiers in the prose are the export inventory. Ignore examples.
         const prose = section!.replace(/```[\s\S]*?```/g, "");
         const documented = [...prose.matchAll(/`([A-Za-z_$][\w$]*)`/g)].map((match) => match[1]!);
+        const members: Record<string, string[]> = {
+          [`${pkg.name}/client`]: ["fetch", "retries", "code", "status"],
+          [`${pkg.name}/worker`]: ["store", "blobs", "auth"],
+          [`${pkg.name}/ui`]: ["update", "unmount", "getToken"],
+        };
         for (const name of documented) {
+          if (members[specifier]?.includes(name)) continue;
           expect(names, `${specifier} documents non-export ${name}`).toContain(name);
         }
       }
