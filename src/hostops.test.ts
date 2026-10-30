@@ -240,6 +240,18 @@ describe("trusted resource references", () => {
     await guarded.trash(A, node.id);
     expect((await guarded.claimResourceRef(A, "/new", "docs:1", ownership("alice"))).ref).toBe("docs:1");
   });
+  it("checks restore state before a stale ownership conflict", async () => {
+    const node = await drive.claimResourceRef(A, "/live", "docs:1", ownership("alice"));
+    await store.put("resource_claims", "app-document", { subjectId: "bob", subjectKind: "human", references: ["other"] });
+    await fails(drive.restore(A, node.id), "NOT_TRASHED");
+  });
+  it("checks restore write access before revealing an ownership conflict", async () => {
+    const node = await drive.claimResourceRef(A, "/shared", "docs:1", ownership("alice"));
+    await drive.shareWith(A, node.id, { kind: "human", id: "bob" }, "viewer");
+    await drive.trash(A, node.id);
+    await drive.claimResourceRef(B, "/b", "docs:1", ownership("bob"));
+    await fails(drive.restore(B, node.id), "FORBIDDEN");
+  });
   it("reports invalid ownership and generated claim ids with typed errors", async () => {
     for (const input of [null, { ...ownership("alice"), resourceId: "docs:1" }, { ...ownership("alice"), type: "Doc" }]) {
       await fails(drive.claimResourceRef(A, "/bad", "docs:1", input as never), "INVALID_REF");
