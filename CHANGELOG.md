@@ -2,7 +2,7 @@
 
 ## 0.10.2
 
-- Document all public exports and entry points. Check export names against the README.
+- Document all public exports and entry points. Check export names against README and llms.txt.
 
 ## 0.10.1
 

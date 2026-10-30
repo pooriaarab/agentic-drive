@@ -4,13 +4,6 @@ Store, sort, and share files and folders.
 
 Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
 
-- SDK: import { createDrive } from "agentic-drive".
-- Other SDK exports: VERSION, ROOT_ID, ACTOR_KINDS, DEFAULT_MAX_BYTES, sniffMime, parseName, parseSubject, subjectKindOf, DriveError,
-  readZip, writeZip, AuthError, openLocal, addPrincipal, issueKey, resolveToken, revokeKey, revokePrincipal, publicNode.
-  See README, "Other exports".
-- Remote SDK: import { createClient } from "agentic-drive/client". createClient({ baseUrl, token, fetch?, retries? }) has one method for each bearer route and each shared route (list, stat, mkdir, upload, download, move, trash, restore, purge, search, share, createLink, and more). A failed call throws DriveApiError with code and status. It runs in browsers, Workers, and Node 22.
-- Worker: import { createApp } from "agentic-drive/worker". createApp({ store?, blobs?, auth? }) takes an injected Store, Blobs, and auth callback `(request, store, env) => Ctx | null`. Each may be a value or a function of the env. With no options, it uses D1, R2, and bearer tokens from the store. See README, "Inject a store, blobs, and sign-in".
-- UI: import { mount } from "agentic-drive/ui"; import "agentic-drive/ui.css" (with agentic-design/styles.css). mount(element, { baseUrl, getToken }) renders the drive (files, trash, upload, share) and returns { update(options), unmount() }. getToken is called before each request and returns a token or undefined. It does not touch the page address or theme. DriveBrowser is the same as a React component. React 19 is an optional peer dependency.
 - CLI: agentic-drive ls /. Needs a principal: set AGENTIC_DRIVE_TOKEN (or --token) to an API key. Make one with `principal add <id> [--of <person>]` and `key issue <id>`. No key, or a revoked key, exits 3.
 - MCP: run agentic-drive mcp, then call drive_ls.
 

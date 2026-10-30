@@ -7,6 +7,7 @@ const root = process.cwd();
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
   name: string;
   exports: Record<string, string | { types: string; import: string }>;
+  bin: Record<string, string>;
 };
 
 // Read the build entries so a new export path cannot escape this check.
@@ -35,9 +36,14 @@ describe("public export documentation", () => {
   for (const doc of ["README.md", "llms.txt"]) {
     it(`names each package path and exported symbol in ${doc}`, () => {
       const text = readFileSync(resolve(root, doc), "utf8");
+      const sections = text.split(/^### /m);
+      for (const binary of Object.keys(pkg.bin)) {
+        expect(text, `missing binary ${binary}`).toContain(`npx ${binary} `);
+      }
       for (const [path, target] of Object.entries(pkg.exports)) {
         const specifier = path === "." ? pkg.name : `${pkg.name}/${path.slice(2)}`;
-        expect(text, `missing ${specifier}`).toContain(`\`${specifier}\``);
+        const section = sections.find((part) => part.split("\n", 1)[0].includes(`\`${specifier}\``));
+        expect(section, `missing section for ${specifier}`).toBeDefined();
         if (typeof target === "string") continue; // CSS has no named exports.
         const source = entries.get(basename(target.import, ".js"));
         if (!source) throw new Error(`No build entry for ${target.import}`);
@@ -46,7 +52,7 @@ describe("public export documentation", () => {
         const module = checker.getSymbolAtLocation(file);
         if (!module) throw new Error(`Missing module ${source}`);
         for (const symbol of checker.getExportsOfModule(module)) {
-          expect(text, `${specifier} missing ${symbol.name}`).toContain(`\`${symbol.name}\``);
+          expect(section, `${specifier} missing ${symbol.name}`).toContain(`\`${symbol.name}\``);
         }
       }
     });
