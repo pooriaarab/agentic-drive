@@ -1,6 +1,6 @@
 {
   "name": "agentic-drive",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Store, sort, and share files and folders.",
   "keywords": [
     "drive",
@@ -44,6 +44,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./account": {
+      "types": "./dist/account.d.ts",
+      "import": "./dist/account.js"
     },
     "./client": {
       "types": "./dist/client.d.ts",

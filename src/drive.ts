@@ -1,4 +1,4 @@
-import { EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, hasScope, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -613,6 +613,23 @@ export function createDrive(deps: DriveDeps) {
     if (!(await can(ctx, "read", rootNode(ctx.owner, ctx.actor)))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
     return rawOwnerNodes(ctx.owner, withMarked);
   }
+  /**
+   * The owner's root, read for an export. It is made on the first write, so a missing root means an empty drive.
+   * A drive with no root and no items is empty, so it is read as empty, with no write. A drive with items but no
+   * root (one from before roots) gets its root the way a write makes it, and then the caller's role decides, as for
+   * any read. The role check always runs when the root exists.
+   */
+  async function readOwnerRoot(ctx: Ctx) {
+    if (sharing && ctx.principal !== undefined && (await store.get("resources", await rootResource(ctx.owner))) === null) {
+      if ((await rawOwnerNodes(ctx.owner, true)).length === 0) {
+        // No root and no items: sharing gives no answer for a root that is not made, so the drive read scope decides.
+        if (hasScope(ctx.principal.scopes, "drive:read")) return;
+        throw new DriveError("FORBIDDEN", "not allowed to read this drive");
+      }
+      await prepare(ctx);
+    }
+    if (!(await can(ctx, "read", rootNode(ctx.owner, ctx.actor)))) throw new DriveError("FORBIDDEN", "not allowed to read this drive");
+  }
   /** The path of a node, built from a map of all the owner's nodes. Null when the node or an ancestor is trashed. */
   function pathIn(byId: Map<string, Node>, node: Node, liveOnly: boolean): string | null {
     const names: string[] = [];
@@ -1109,7 +1126,8 @@ export function createDrive(deps: DriveDeps) {
 
     /** Every item of the owner, trashed or not, with its original path and bytes. For export. */
     async exportData(ctx: Ctx): Promise<{ node: Node; path: string; data: Uint8Array | null; missing: boolean }[]> {
-      const all = await ownerNodes(ctx);
+      await readOwnerRoot(ctx);
+      const all = await rawOwnerNodes(ctx.owner, false);
       const byId = new Map(all.map((n) => [n.id, n]));
       const out: { node: Node; path: string; data: Uint8Array | null; missing: boolean }[] = [];
       for (const node of all.sort((a, b) => (a.id < b.id ? -1 : 1))) {
@@ -1268,11 +1286,11 @@ export function createDrive(deps: DriveDeps) {
      * What drive holds about the person behind a call, besides their own drive (`exportData` has that). It is
      * only for the person in person: an agent gets `partial: true` and nothing else. It holds the ids of the
      * items they or their agents made or changed in other drives (no names, and nothing of the people who own
-     * them), the shares they hold, the invites they sent, and the audit entries of what they and their agents
-     * did. Invitee emails and link tokens are not in it.
+     * them), the shares they hold and the invites they sent on drive items, and the audit entries of what they and
+     * their agents did. Invitee emails and link tokens are not in it.
      */
     async exportPerson(ctx: Ctx) {
-      await need(ctx, "read", rootNode(ctx.owner, ctx.actor));
+      await readOwnerRoot(ctx);
       const subject = subjectOf(ctx);
       if (!isInPerson(ctx)) return { subject, partial: true, authored: [], agents: [], shares: { held: [], invitesCreated: [] }, audit: [], activity: [] };
       const { actors, ownedAgents } = await actorsOf(store, subject.id);
@@ -1284,8 +1302,10 @@ export function createDrive(deps: DriveDeps) {
           by: [...new Set([actors.includes(n.createdById) ? n.createdBy : null, actors.includes(n.updatedById) ? n.updatedBy : null].filter((a) => a !== null).map((a) => JSON.stringify(a)))].map((a) => JSON.parse(a as string)),
         }))
         .sort((x, y) => (x.id < y.id ? -1 : 1));
+      // Shares and invites on drive items only, as erase sweeps them. The grants of other apps stay with those apps.
+      const onDrive = async (resourceId: unknown) => typeof resourceId === "string" && (await store.get("resources", resourceId))?.type === "drive";
       const held: { subjectKind: unknown; subjectId: unknown; resourceId: unknown; role: unknown }[] = [];
-      for (const [actor, kind] of heldBy(subject, ownedAgents)) for (const g of await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })) held.push({ subjectKind: g.data.subjectKind, subjectId: g.data.subjectId, resourceId: g.data.resourceId, role: g.data.role });
+      for (const [actor, kind] of heldBy(subject, ownedAgents)) for (const g of await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })) if (await onDrive(g.data.resourceId)) held.push({ subjectKind: g.data.subjectKind, subjectId: g.data.subjectId, resourceId: g.data.resourceId, role: g.data.role });
       // An agent with its own identity has its own drive. It belongs to the person. The bytes are not in the export.
       const agents = [];
       for (const agent of ownedAgents) {
@@ -1296,6 +1316,7 @@ export function createDrive(deps: DriveDeps) {
       const audit: { at: unknown; action: unknown; resourceId: unknown; outcome: unknown; principalId: unknown; principalKind: unknown; machineMade: unknown }[] = [];
       for (const actor of actors) {
         for (const i of await allWhere(store, "invites", { createdBy: actor })) {
+          if (!(await onDrive(i.data.resourceId))) continue;
           invitesCreated.push({ id: i.data.id, resourceId: i.data.resourceId, role: i.data.role, expiresAt: i.data.expiresAt ?? null, accepted: i.data.acceptedAt !== undefined });
         }
         for (const e of await allWhere(store, "audit", { principalId: actor }, { field: "at" })) {
@@ -1486,11 +1507,13 @@ export function createDrive(deps: DriveDeps) {
     }
   }
 
-  /** The drive root is a resource too, so a person's own role on it can be checked. It is made on first use. */
-  async function prepare(ctx: Ctx) {
+  /** The drive root is a resource too, so a person's own role on it can be checked. It is made on first write. */
+  async function prepare(ctx: Ctx, create = true) {
     if (!sharing || ctx.principal === undefined) return;
     // The owner is the root of the chain. A caller whose owner is someone else's id would read that drive.
     if (ctx.principal.chain[0]?.id !== ctx.owner) throw new DriveError("FORBIDDEN", "the caller does not own this drive");
+    // An export only reads. It must not write the root back after an erase.
+    if (!create) return;
     const id = await rootResource(ctx.owner);
     if ((await store.get("resources", id))?.type === "drive") return;
     try {
@@ -1499,10 +1522,12 @@ export function createDrive(deps: DriveDeps) {
       // The caller may only read, or the root was made a moment ago. Either way `can` decides next.
     }
   }
-  const guarded = (call: (ctx: Ctx, ...args: never[]) => unknown) => async (ctx: Ctx, ...args: never[]) => {
-    await prepare(ctx);
+  const guarded = (call: (ctx: Ctx, ...args: never[]) => unknown, create = true) => async (ctx: Ctx, ...args: never[]) => {
+    await prepare(ctx, create);
     return call(ctx, ...args);
   };
   const open = new Set(["openShared", "listShared", "readShared"]);
-  return Object.fromEntries(Object.entries(api).map(([name, call]) => [name, open.has(name) ? call : guarded(call as never)])) as typeof api;
+  // The exports only read, so they make no root.
+  const reads = new Set(["exportData", "exportPerson"]);
+  return Object.fromEntries(Object.entries(api).map(([name, call]) => [name, open.has(name) ? call : guarded(call as never, !reads.has(name))])) as typeof api;
 }

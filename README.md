@@ -7,7 +7,7 @@
 
 Store, sort, and share files and folders.
 
-> Status: 0.9.1, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
+> Status: 0.10.0, early. The library, CLI, MCP server, and HTTP API work, with sharing in the SDK, the HTTP API, the CLI, and the MCP server.
 > A small web UI works. See [UI](#ui).
 
 ## Live demo
@@ -162,6 +162,12 @@ The root export, `agentic-drive`, also exports these names. The package typings 
 
   The local functions trust their caller. Local data is the trust boundary: anyone who can write the folder
   can act as any principal in it.
+
+## Account export and erase
+
+A host that runs account export and erase across many packages calls `driveAccount` (from `agentic-drive/account`). It has `exportAccount(subject, { drive, ctx })` and `eraseAccount(subject, { drive, ctx })`, so the host does not read the storage layout. `subject` is an id and a kind (`human`, or `agent` with its own identity), and `ctx` is the drive context of that subject. A context for someone else throws `FORBIDDEN`. A bad subject, or a missing `drive` or `ctx`, throws a `TypeError`.
+
+The checks of an export write access-log rows to `audit`, as every read does. That log is the record of access to personal data. The export writes no other data of the person. The export is plain JSON with `items` (your drive, trashed items flagged, file bytes as base64 in `data`), `authored` (items you made in other drives), `agents`, `grants` (shares you hold on drive items), `invites` (invites you sent on drive items), `audit`, and `activity` (the entries of your changes to items, with your kind). Only an agent with its own identity can be a subject: it gets its own `items` and empty collections. An agent that acts for a person is refused with `FORBIDDEN`. The erase removes your drive with its bytes, the shares you hold on drive items, and the invites you sent on drive items. It returns counts of `items`, `grants`, `invites`, and `anonymized`. `invites` counts only the invites sent on other drives: the invites on your own items go with your drive and are not counted. What you made in other drives stays, with your id set to `erased` and the kind kept. Only the person, not an agent, may erase: an agent subject gets `FORBIDDEN`. A second erase counts zero. The shape is provisional until `agentic-identity` adds its `AccountPackage` contract.
 
 ## UI
 
