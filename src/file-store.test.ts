@@ -10,3 +10,5 @@ import { backend } from "./test-backend.js";
 backend.store = () => createFileStore({ path: join(mkdtempSync(join(tmpdir(), "drive-shared-")), "db") });
 await import("./sharing.test.js");
 await import("./person.test.js");
+
+await import("./hostops.test.js");

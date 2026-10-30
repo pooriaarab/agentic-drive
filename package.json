@@ -1,6 +1,6 @@
 {
   "name": "agentic-drive",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Store, sort, and share files and folders.",
   "keywords": [
     "drive",
@@ -79,7 +79,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "agentic-design": ">=0.8.0 <1.0.0",
-    "agentic-identity": ">=0.9.0 <1.0.0",
+    "agentic-identity": ">=0.12.0 <1.0.0",
     "hono": "^4.13.14",
     "zod": "^4.6.6"
   },

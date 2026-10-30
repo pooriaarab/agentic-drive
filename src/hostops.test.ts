@@ -1,5 +1,5 @@
 // What a host app needs: find a node by ref, list the trash with paths, put a ref with a role, and the status map.
-import { createMemoryBlobs, createSharing, type PrincipalContext } from "agentic-identity";
+import { createMemoryBlobs, createSharing, type PrincipalContext, type Store } from "agentic-identity";
 import { backend } from "./test-backend.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDrive, ERROR_STATUS, type Ctx, type Drive, type ErrorCode } from "./drive.js";
@@ -13,11 +13,12 @@ const bytes = (s: string) => new TextEncoder().encode(s);
 const fails = (promise: Promise<unknown>, code: string) => expect(promise).rejects.toMatchObject({ code });
 
 let drive: Drive;
+let store: Store;
 let sharing: ReturnType<typeof createSharing>;
 let clock: number;
 beforeEach(() => {
   clock = 1_000_000;
-  const store = backend.store();
+  store = backend.store();
   sharing = createSharing(store, { now: () => clock });
   drive = createDrive({ store, blobs: createMemoryBlobs(), sharing, now: () => ++clock });
 });
@@ -123,7 +124,7 @@ describe("claimRef", () => {
 
 describe("exports for hosts", () => {
   const all: ErrorCode[] = [
-    "NOT_FOUND", "NAME_TAKEN", "BLOB_EXISTS", "INVALID_NAME", "INVALID_PATH", "INVALID_REF", "NOT_A_FOLDER", "NOT_A_FILE", "MOVE_INTO_SELF", "TOO_DEEP",
+    "REF_CONFLICT", "NOT_FOUND", "NAME_TAKEN", "BLOB_EXISTS", "INVALID_NAME", "INVALID_PATH", "INVALID_REF", "NOT_A_FOLDER", "NOT_A_FILE", "MOVE_INTO_SELF", "TOO_DEEP",
     "PARENT_GONE", "TRASHED", "NOT_TRASHED", "IS_ROOT", "FORBIDDEN", "BLOB_MISSING", "TOO_LARGE", "INVALID_EXPIRY", "BUSY", "CROSS_DRIVE", "INVALID_SHARE", "TOO_MANY_ITEMS",
   ];
   it("maps every error code to an HTTP error status, from the package and the worker entry", () => {
@@ -132,5 +133,132 @@ describe("exports for hosts", () => {
     expect(Object.keys(ERROR_STATUS).sort()).toEqual([...all].sort());
     expect(Object.isFrozen(ERROR_STATUS)).toBe(true);
     expect(ERROR_STATUS).toMatchObject({ NOT_FOUND: 404, FORBIDDEN: 403, NAME_TAKEN: 409, TOO_LARGE: 413, INVALID_REF: 400 });
+  });
+});
+
+// Failure cases: two hosts race, existing sharing has another owner, a path
+// conflicts, trash frees ownership, restore conflicts, and removal frees it.
+describe("trusted resource references", () => {
+  const ownership = (id: string) => ({ resourceId: "app-document", type: "doc", subject: { kind: "human" as const, id } });
+  it("allows only one subject across two drive instances", async () => {
+    const store = backend.store();
+    const sharing = createSharing(store);
+    const deps = { store, sharing, blobs: createMemoryBlobs() };
+    const a = createDrive(deps), b = createDrive(deps);
+    const results = await Promise.allSettled([
+      a.claimResourceRef(A, "/a", "docs:1", ownership("alice")),
+      b.claimResourceRef(B, "/b", "docs:1", ownership("bob")),
+    ]);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(r => r.status === "rejected")).toMatchObject({ reason: { code: "REF_CONFLICT" } });
+    expect((await store.query("drive_nodes", { where: { kind: "ref" } })).items).toHaveLength(1);
+  });
+  it("repeats the same claim without host conflict recovery", async () => {
+    const nodes = await Promise.all(Array.from({ length: 4 }, () => drive.claimResourceRef(A, "/same", "docs:1", ownership("alice"))));
+    expect(new Set(nodes.map(n => n.id)).size).toBe(1);
+    await fails(drive.claimResourceRef(A, "/same", "docs:2", ownership("alice")), "REF_CONFLICT");
+  });
+  it("rolls back a reference when existing ownership conflicts", async () => {
+    await sharing.claimResource("app-document", { kind: "human", id: "bob" }, "external", async (_tx, claims) => { claims.ensureOwner("doc"); });
+    await fails(drive.claimResourceRef(A, "/a", "docs:1", ownership("alice")), "REF_CONFLICT");
+    expect(await drive.findByRef(A, "docs:1")).toEqual([]);
+  });
+  it("keeps ownership until the last reference is released", async () => {
+    const a = await drive.claimResourceRef(A, "/a", "docs:1", ownership("alice"));
+    const b = await drive.claimResourceRef(A, "/b", "docs:1", ownership("alice"));
+    await drive.trash(A, a.id);
+    await fails(drive.claimResourceRef(B, "/b", "docs:1", ownership("bob")), "REF_CONFLICT");
+    await drive.trash(A, b.id);
+    expect((await drive.claimResourceRef(B, "/b", "docs:1", ownership("bob"))).ref).toBe("docs:1");
+  });
+  it("releases a live child when a trashed folder is purged", async () => {
+    await drive.claimResourceRef(A, "/folder/plan", "docs:1", ownership("alice"), { parents: true });
+    await drive.trash(A, "/folder");
+    await fails(drive.claimResourceRef(B, "/plan", "docs:1", ownership("bob")), "REF_CONFLICT");
+    await drive.purge(A, (await drive.listTrash(A))[0]!.id);
+    expect((await drive.claimResourceRef(B, "/plan", "docs:1", ownership("bob"))).ref).toBe("docs:1");
+  });
+  it.each(["trash", "deleteAll", "erasePerson"] as const)("finishes %s after identity erasure and a new resource claim", async (action) => {
+    const a = await drive.claimResourceRef(A, "/plan", "docs:1", ownership("alice"));
+    await store.delete("resource_claims", "app-document");
+    for (const { id } of (await store.query("grants", { where: { resourceId: "app-document" } })).items) await store.delete("grants", id);
+    await store.delete("resources", "app-document");
+    const b = await drive.claimResourceRef(B, "/plan", "docs:1", ownership("bob"));
+    if (action === "trash") await drive.trash(A, a.id);
+    else await drive[action](A);
+    expect((await store.get("resource_claims", "app-document"))?.subjectId).toBe("bob");
+    expect((await drive.stat(B, b.id)).ref).toBe("docs:1");
+  });
+  it.each(["deleteAll", "erasePerson"] as const)("releases live claims on %s", async (action) => {
+    await drive.claimResourceRef(A, "/plan", "docs:1", ownership("alice"));
+    await drive[action](A);
+    expect((await drive.claimResourceRef(B, "/plan", "docs:1", ownership("bob"))).ref).toBe("docs:1");
+  });
+  it.each(["live", "erased", "reclaimed"])("does not restore an erased subject with a %s claim", async (state) => {
+    const folder = await drive.mkdir(A, "/team");
+    await drive.shareWith(A, folder.id, { kind: "human", id: "bob" }, "editor");
+    const authored = await drive.claimResourceRef(B, `${folder.id}/authored`, "docs:1", ownership("bob"));
+    // A host can also claim for a subject who did not author the reference.
+    const hosted = await drive.claimResourceRef(A, "/hosted", "docs:1", ownership("bob"));
+    if (state !== "live") {
+      await store.delete("resource_claims", "app-document");
+      for (const { id } of (await store.query("grants", { where: { resourceId: "app-document" } })).items) await store.delete("grants", id);
+      await store.delete("resources", "app-document");
+    }
+    if (state === "reclaimed") await drive.claimResourceRef(A, "/new", "docs:1", ownership("alice"));
+    await drive.erasePerson(B);
+    for (const node of [authored, hosted]) {
+      expect((await drive.stat(A, node.id)).resourceOwnership).toBeUndefined();
+      await drive.trash(A, node.id);
+      await drive.restore(A, node.id);
+    }
+    if (state === "reclaimed") {
+      expect((await store.get("resource_claims", "app-document"))?.subjectId).toBe("alice");
+    } else {
+      expect(await store.get("resource_claims", "app-document")).toBeNull();
+      expect(await store.get("resources", "app-document")).toBeNull();
+    }
+    expect((await drive.claimResourceRef(A, "/new", "docs:1", ownership("alice"))).ref).toBe("docs:1");
+  });
+  it("rolls back restore if account erase clears ownership before its transaction", async () => {
+    let eraseOnClaim = false;
+    const hooked = { ...sharing, claimResource: async (...args: Parameters<typeof sharing.claimResource>) => {
+      if (eraseOnClaim) {
+        eraseOnClaim = false;
+        await guarded.erasePerson(B);
+      }
+      return sharing.claimResource(...args);
+    } };
+    const guarded = createDrive({ store, sharing: hooked, blobs: createMemoryBlobs() });
+    const node = await guarded.claimResourceRef(A, "/hosted", "docs:1", ownership("bob"));
+    await guarded.trash(A, node.id);
+    eraseOnClaim = true;
+    await fails(guarded.restore(A, node.id), "BUSY");
+    expect(await store.get("resource_claims", "app-document")).toBeNull();
+    expect(await store.get("resources", "app-document")).toBeNull();
+    await guarded.restore(A, node.id);
+    await guarded.trash(A, node.id);
+    expect((await guarded.claimResourceRef(A, "/new", "docs:1", ownership("alice"))).ref).toBe("docs:1");
+  });
+  it("reports invalid ownership and generated claim ids with typed errors", async () => {
+    for (const input of [null, { ...ownership("alice"), resourceId: "docs:1" }, { ...ownership("alice"), type: "Doc" }]) {
+      await fails(drive.claimResourceRef(A, "/bad", "docs:1", input as never), "INVALID_REF");
+    }
+    const invalid = createDrive({ store, sharing, blobs: createMemoryBlobs(), newId: () => "bad:id" });
+    await fails(invalid.claimResourceRef(A, "/bad", "docs:1", ownership("alice")), "INVALID_REF");
+    expect(await drive.findByRef(A, "docs:1")).toEqual([]);
+  });
+  it("keeps claims through failed paths and releases on trash and purge", async () => {
+    const a = await drive.claimResourceRef(A, "/a", "docs:1", ownership("alice"));
+    await fails(drive.claimResourceRef(A, "/a", "docs:2", ownership("alice")), "REF_CONFLICT");
+    await drive.trash(A, a.id);
+    const b = await drive.claimResourceRef(B, "/b", "docs:1", ownership("bob"));
+    await fails(drive.restore(A, a.id), "REF_CONFLICT");
+    expect((await drive.listTrash(A)).map(n => n.id)).toContain(a.id);
+    await drive.trash(B, b.id);
+    await drive.restore(A, a.id);
+    await drive.trash(A, a.id);
+    await drive.purge(A, a.id);
+    expect((await drive.claimResourceRef(B, "/c", "docs:1", ownership("bob"))).ref).toBe("docs:1");
   });
 });

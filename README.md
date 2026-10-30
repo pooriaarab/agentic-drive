@@ -134,6 +134,39 @@ try {
 - A browser page needs the Worker on its own origin for now: the Worker sends no CORS headers.
 - Share with a subject: `share("/pub", { kind: "human", id: "u2" }, "viewer")`.
 
+### Atomic app resource ownership
+
+Trusted hosts can call `drive.claimResourceRef(ctx, path, ref, ownership, opts)`.
+Use the same Store for Drive and identity sharing. Check app access first. This
+host-only helper is not exposed by HTTP, CLI, or MCP.
+
+```ts
+const item = await drive.claimResourceRef(ctx, "/Plan", "docs:plan", {
+  resourceId: "plan", type: "doc", subject: { kind: "human", id: "ana" },
+});
+await drive.trash(ctx, item.id);
+await drive.restore(ctx, item.id);
+```
+
+The same claim at the same path returns the existing reference, including when
+calls run at the same time. Options accept `parents` to create missing folders.
+Resource ids use 1 to 128 letters, digits, underscores, or hyphens. Resource types
+start with a lowercase letter and use lowercase letters, digits, underscores, or
+hyphens. The reference, resource, and owner grant commit in one transaction. A conflict
+throws `DriveError` with code `REF_CONFLICT` (HTTP status 409). A failed path or
+owner grant leaves no reference or claim. One subject can hold several references.
+Direct trash releases one claim. Restore reacquires it and can conflict with a
+new owner. Trashing a folder only hides its children; their claims stay until
+those references are trashed or removed. Hard removal releases live claims.
+If identity erase has removed an old claim, local trash and removal still succeed.
+They keep any claim that another subject now holds. Call `erasePerson` as part of
+account erase. It clears the subject from claimed references in other drives,
+even when another person made the reference. Restore then restores the item
+without recreating the erased subject's ownership.
+Existing resources must already grant the subject ownership. The identity
+lifecycle keeps existing shares and resources when it releases a claim.
+This helper needs `agentic-identity` 0.12.0 or later.
+
 ### Other exports
 
 The root export, `agentic-drive`, also exports these names. The package typings give the type of each one.
@@ -189,7 +222,7 @@ checks), `upload`, `sniffMime`, `DEFAULT_MAX_BYTES` (upload helpers), `buildExpo
 (account plug-in). See Other exports and Features for behavior and limits.
 
 Root types: `ActivityAction`, `ActivityEntry`, `Action`, `Actor`, `ActorKind`,
-`Can`, `Ctx`, `Drive`, `DriveDeps`, `ErrorCode`, `Node`, `OnConflict`,
+`Can`, `Ctx`, `Drive`, `DriveDeps`, `ErrorCode`, `Node`, `OnConflict`, `ResourceOwnership`,
 `UploadOptions`, `SearchQuery`, `BackfillOptions`, `BackfillResult`,
 `DriveAccount`, and `DriveAccountDeps`. They describe activity, callers, drive
 operations, uploads, migrations, and account operations.

@@ -53,7 +53,7 @@ export interface Downloaded {
 
 const BASE = "/api/v1/drive";
 const CODES: Record<ApiErrorCode, true> = {
-  NOT_FOUND: true, NAME_TAKEN: true, BLOB_EXISTS: true, INVALID_NAME: true, INVALID_PATH: true, INVALID_REF: true, NOT_A_FOLDER: true, NOT_A_FILE: true, MOVE_INTO_SELF: true, TOO_DEEP: true,
+  REF_CONFLICT: true, NOT_FOUND: true, NAME_TAKEN: true, BLOB_EXISTS: true, INVALID_NAME: true, INVALID_PATH: true, INVALID_REF: true, NOT_A_FOLDER: true, NOT_A_FILE: true, MOVE_INTO_SELF: true, TOO_DEEP: true,
   PARENT_GONE: true, TRASHED: true, NOT_TRASHED: true, IS_ROOT: true, FORBIDDEN: true, BLOB_MISSING: true, TOO_LARGE: true, INVALID_EXPIRY: true, BUSY: true, CROSS_DRIVE: true, INVALID_SHARE: true,
   TOO_MANY_ITEMS: true, UNAUTHORIZED: true, NOT_CONFIGURED: true, INVALID_LINK: true, INTERNAL: true,
 };

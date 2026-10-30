@@ -1,6 +1,6 @@
 export { VERSION } from "./version.js";
 export { ACTOR_KINDS, createDrive, DriveError, ERROR_STATUS, parseName, parseSubject, ROOT_ID, subjectKindOf } from "./drive.js";
-export type { ActivityAction, ActivityEntry, Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, Node, OnConflict } from "./drive.js";
+export type { ActivityAction, ActivityEntry, Action, Actor, ActorKind, Can, Ctx, Drive, DriveDeps, ErrorCode, ResourceOwnership, Node, OnConflict } from "./drive.js";
 export { upload, sniffMime, DEFAULT_MAX_BYTES } from "./upload.js";
 export type { UploadOptions } from "./upload.js";
 export { buildExport } from "./export.js";
