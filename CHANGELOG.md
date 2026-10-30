@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.2
+
+- Document all public exports and entry points. Check export names against README and llms.txt.
+
 ## 0.10.1
 
 - Allow `agentic-design` versions 0.8 and 0.9 and `agentic-identity` versions 0.9 and 0.10.

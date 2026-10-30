@@ -4,13 +4,7 @@ Store, sort, and share files and folders.
 
 Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
 
-- SDK: import { createDrive } from "agentic-drive".
-- Other SDK exports: VERSION, ROOT_ID, ACTOR_KINDS, DEFAULT_MAX_BYTES, sniffMime, parseName, parseSubject, subjectKindOf, DriveError,
-  readZip, writeZip, AuthError, openLocal, addPrincipal, issueKey, resolveToken, revokeKey, revokePrincipal, publicNode.
-  See README, "Other exports".
-- Remote SDK: import { createClient } from "agentic-drive/client". createClient({ baseUrl, token, fetch?, retries? }) has one method for each bearer route and each shared route (list, stat, mkdir, upload, download, move, trash, restore, purge, search, share, createLink, and more). A failed call throws DriveApiError with code and status. It runs in browsers, Workers, and Node 22.
-- Worker: import { createApp } from "agentic-drive/worker". createApp({ store?, blobs?, auth? }) takes an injected Store, Blobs, and auth callback `(request, store, env) => Ctx | null`. Each may be a value or a function of the env. With no options, it uses D1, R2, and bearer tokens from the store. See README, "Inject a store, blobs, and sign-in".
-- UI: import { mount } from "agentic-drive/ui"; import "agentic-drive/ui.css" (with agentic-design/styles.css). mount(element, { baseUrl, getToken }) renders the drive (files, trash, upload, share) and returns { update(options), unmount() }. getToken is called before each request and returns a token or undefined. It does not touch the page address or theme. DriveBrowser is the same as a React component. React 19 is an optional peer dependency.
+- SDK: import { createDrive } from "agentic-drive". See the root example below.
 - CLI: agentic-drive ls /. Needs a principal: set AGENTIC_DRIVE_TOKEN (or --token) to an API key. Make one with `principal add <id> [--of <person>]` and `key issue <id>`. No key, or a revoked key, exits 3.
 - MCP: run agentic-drive mcp, then call drive_ls.
 
@@ -18,3 +12,112 @@ Keywords: drive,files,folders,storage,upload,sharing,agents,mcp,cli,r2.
 
 - README: https://github.com/pooriaarab/agentic-drive
 - License: MIT
+
+## Public exports and usage
+
+Each import path below is part of the package. The examples use TypeScript.
+The CLI and MCP are commands, not import paths. The package does not export
+`agentic-drive/cli`, `agentic-drive/mcp`, or an adapters subpath.
+
+### Root: `agentic-drive`
+
+```ts
+import { ROOT_ID, parseName, type SearchQuery } from "agentic-drive";
+const name = parseName("report.txt");
+const query: SearchQuery = { name: name.name };
+console.log(ROOT_ID, query);
+```
+
+The root values are `VERSION` (version), `ROOT_ID` (root id), `ACTOR_KINDS`
+(principal kinds), `createDrive` (drive factory), `DriveError` and `ERROR_STATUS`
+(errors and HTTP statuses), `parseName`, `parseSubject`, `subjectKindOf` (input
+checks), `upload`, `sniffMime`, `DEFAULT_MAX_BYTES` (upload helpers), `buildExport`
+(account ZIP), `readZip` and `writeZip` (stored ZIP entries), `importLegacyLocal`
+(old local data), `AuthError`, `openLocal`, `addPrincipal`, `issueKey`,
+`resolveToken`, `revokeKey`, `revokePrincipal`, `publicNode` (local access),
+`backfillAuthorIds` and `backfillResources` (migrations), and `driveAccount`
+(account plug-in). See README for behavior and limits.
+
+Root types: `ActivityAction`, `ActivityEntry`, `Action`, `Actor`, `ActorKind`,
+`Can`, `Ctx`, `Drive`, `DriveDeps`, `ErrorCode`, `Node`, `OnConflict`,
+`UploadOptions`, `SearchQuery`, `BackfillOptions`, `BackfillResult`,
+`DriveAccount`, and `DriveAccountDeps`. They describe activity, callers, drive
+operations, uploads, migrations, and account operations.
+
+### Client: `agentic-drive/client`
+
+```ts
+import { createClient, type ClientOptions } from "agentic-drive/client";
+const options: ClientOptions = { baseUrl: "https://drive.example.com", token: "your-token" };
+const client = createClient(options);
+await client.list("/");
+```
+
+`createClient` makes the HTTP client; `DriveApiError` reports failures. Types:
+`ActivityAction`, `ActivityEntry`, `ErrorCode`, `Node`, `Role`, `OnConflict`,
+`SubjectKind`, `Subject`, `Item`, `PathItem`, `ApiErrorCode`, `ClientErrorCode`,
+`ClientOptions`, `CallOptions`, `UploadBody`, `Downloaded`, and `DriveClient`.
+These describe API data, options, errors, and results. The client runs in browsers,
+Workers, and Node 22. It has a method for each bearer and shared route.
+`DriveApiError` carries `code` and `status`. Client options also accept
+a `fetch` function and a `retries` count for reads.
+
+### Account: `agentic-drive/account`
+
+```ts
+import { driveAccount, type DriveAccountDeps } from "agentic-drive/account";
+// Use the subject's own drive and context.
+async function exportMine(deps: DriveAccountDeps) {
+  return driveAccount.exportAccount({ id: "u1", kind: "human" }, deps);
+}
+```
+
+`driveAccount` exports and erases an account. `DriveAccount` describes the plug-in;
+`DriveAccountDeps` describes its drive and caller context.
+
+### Worker: `agentic-drive/worker`
+
+```ts
+import { createApp, type WorkerEnv } from "agentic-drive/worker";
+const app = createApp<WorkerEnv>();
+export default { fetch: app.fetch };
+```
+
+The `default` export is the ready Worker. `createApp` makes an app with optional
+injected ports. `authenticate` resolves a bearer token. `ERROR_STATUS` maps drive
+errors to HTTP statuses. `backfillAuthorIds` and `backfillResources` migrate old
+stores. Types: `ErrorCode`, `Node`, `BackfillOptions`, `BackfillResult`, `WorkerEnv`,
+and `AppOptions` describe errors, items, migrations, bindings, and injected ports.
+The `store`, `blobs`, and `auth` options each accept a value or a function of
+the env. The auth callback has the signature `(request, store, env) => Ctx | null`
+or returns a Promise of that result. With no options, the Worker uses bearer
+tokens from the store.
+
+### UI: `agentic-drive/ui` and `agentic-drive/ui.css`
+
+```ts
+import "agentic-design/styles.css";
+import "agentic-drive/ui.css";
+import { mount, type DriveUiOptions } from "agentic-drive/ui";
+const options: DriveUiOptions = { baseUrl: "https://drive.example.com", getToken: () => "your-token" };
+const view = mount(document.getElementById("drive")!, options);
+view.unmount();
+```
+
+`mount` returns a `MountedDrive` handle. `DriveBrowser` is the React component;
+`DriveUiOptions` is its configuration. The CSS path supplies its styles. The handle
+has `update` and `unmount` methods. The `getToken` callback runs before each request
+and may return undefined. The UI does not change the page address or theme.
+React 19 and React DOM 19 are optional peer dependencies.
+
+### CLI, MCP, and adapters
+
+```sh
+npx agentic-drive ls /
+npx agentic-drive mcp
+```
+
+The CLI uses `AGENTIC_DRIVE_TOKEN`. The MCP command serves tools over stdio;
+call `drive_ls` with a path. Storage adapters are provided by `agentic-identity`,
+not by a drive subpath. For example: `import { createFileStore, createFileBlobs } from "agentic-identity/file"`;
+pass `createFileStore({ path: "./data/db" })` and `createFileBlobs({ dir: "./data/blobs" })` to `createDrive`. The Worker uses D1 and R2 adapters by default.
