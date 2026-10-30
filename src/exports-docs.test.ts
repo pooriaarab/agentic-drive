@@ -60,13 +60,18 @@ describe("public export documentation", () => {
         // Backticked identifiers in the prose are the export inventory. Ignore examples.
         const prose = section!.replace(/```[\s\S]*?```/g, "");
         const documented = [...prose.matchAll(/`([A-Za-z_$][\w$]*)`/g)].map((match) => match[1]!);
-        const members: Record<string, string[]> = {
-          [`${pkg.name}/client`]: ["fetch", "retries", "code", "status"],
-          [`${pkg.name}/worker`]: ["store", "blobs", "auth"],
-          [`${pkg.name}/ui`]: ["update", "unmount", "getToken"],
+        const owners: Record<string, string[]> = {
+          [`${pkg.name}/client`]: ["ClientOptions", "DriveApiError"],
+          [`${pkg.name}/worker`]: ["AppOptions"],
+          [`${pkg.name}/ui`]: ["MountedDrive", "DriveUiOptions"],
         };
+        const members = (owners[specifier] ?? []).flatMap((owner) => {
+          const symbol = checker.getExportsOfModule(module).find((item) => item.name === owner);
+          if (!symbol) throw new Error(`Missing member owner ${owner}`);
+          return checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(symbol)).map((item) => item.name);
+        });
         for (const name of documented) {
-          if (members[specifier]?.includes(name)) continue;
+          if (members.includes(name)) continue;
           expect(names, `${specifier} documents non-export ${name}`).toContain(name);
         }
       }
