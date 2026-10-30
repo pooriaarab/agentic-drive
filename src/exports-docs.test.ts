@@ -37,8 +37,10 @@ describe("public export documentation", () => {
     it(`names each package path and exported symbol in ${doc}`, () => {
       const text = readFileSync(resolve(root, doc), "utf8");
       const sections = text.split(/^### /m);
+      const cliSection = sections.find((part) => part.startsWith("CLI, MCP, and adapters\n"));
+      expect(cliSection, "missing CLI section").toBeDefined();
       for (const binary of Object.keys(pkg.bin)) {
-        expect(text, `missing binary ${binary}`).toContain(`npx ${binary} `);
+        expect(cliSection, `missing binary ${binary}`).toContain(`npx ${binary} `);
       }
       for (const [path, target] of Object.entries(pkg.exports)) {
         const specifier = path === "." ? pkg.name : `${pkg.name}/${path.slice(2)}`;
@@ -51,8 +53,15 @@ describe("public export documentation", () => {
         if (!file) throw new Error(`Missing source ${source}`);
         const module = checker.getSymbolAtLocation(file);
         if (!module) throw new Error(`Missing module ${source}`);
-        for (const symbol of checker.getExportsOfModule(module)) {
-          expect(section, `${specifier} missing ${symbol.name}`).toContain(`\`${symbol.name}\``);
+        const names = checker.getExportsOfModule(module).map((symbol) => symbol.name);
+        for (const name of names) {
+          expect(section, `${specifier} missing ${name}`).toContain(`\`${name}\``);
+        }
+        // Backticked identifiers in the prose are the export inventory. Ignore examples.
+        const prose = section!.replace(/```[\s\S]*?```/g, "");
+        const documented = [...prose.matchAll(/`([A-Za-z_$][\w$]*)`/g)].map((match) => match[1]!);
+        for (const name of documented) {
+          expect(names, `${specifier} documents non-export ${name}`).toContain(name);
         }
       }
     });

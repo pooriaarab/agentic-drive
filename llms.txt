@@ -56,7 +56,8 @@ await client.list("/");
 `ActivityAction`, `ActivityEntry`, `ErrorCode`, `Node`, `Role`, `OnConflict`,
 `SubjectKind`, `Subject`, `Item`, `PathItem`, `ApiErrorCode`, `ClientErrorCode`,
 `ClientOptions`, `CallOptions`, `UploadBody`, `Downloaded`, and `DriveClient`.
-These describe API data, options, errors, and results.
+These describe API data, options, errors, and results. Client options also accept
+a fetch function and a retries count for reads.
 
 ### Account: `agentic-drive/account`
 
@@ -84,6 +85,8 @@ injected ports. `authenticate` resolves a bearer token. `ERROR_STATUS` maps driv
 errors to HTTP statuses. `backfillAuthorIds` and `backfillResources` migrate old
 stores. Types: `ErrorCode`, `Node`, `BackfillOptions`, `BackfillResult`, `WorkerEnv`,
 and `AppOptions` describe errors, items, migrations, bindings, and injected ports.
+The store, blobs, and auth options each accept a value or a function of the env.
+The auth callback has the signature (request, store, env) => Ctx | null.
 
 ### UI: `agentic-drive/ui` and `agentic-drive/ui.css`
 
@@ -97,7 +100,9 @@ view.unmount();
 ```
 
 `mount` returns a `MountedDrive` handle. `DriveBrowser` is the React component;
-`DriveUiOptions` is its configuration. The CSS path supplies its styles.
+`DriveUiOptions` is its configuration. The CSS path supplies its styles. The handle
+has update and unmount methods. The getToken callback runs before each request
+and may return undefined. React 19 and React DOM 19 are optional peer dependencies.
 
 ### CLI, MCP, and adapters
 
