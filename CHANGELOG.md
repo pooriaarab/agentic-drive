@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1
+
+- Check trash state and write access before reporting a restore ownership conflict.
+
 ## 0.13.0
 
 - Add the trusted host `claimResourceRef` helper. Commit app ownership and a reference atomically. Release on direct trash or removal and reclaim on restore. Report ownership conflicts as `REF_CONFLICT`. Require identity 0.12.0.

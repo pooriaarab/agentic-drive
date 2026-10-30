@@ -1098,13 +1098,16 @@ export function createDrive(deps: DriveDeps) {
 
     /** Puts a trashed item back. It needs a live parent folder. */
     async restore(ctx: Ctx, id: string, opts: { parentId?: string; onConflict?: OnConflict } = {}): Promise<Node> {
-      const ownership = (await fetch(store, ctx, id))?.resourceOwnership;
+      const probe = await fetch(store, ctx, id);
+      if (!probe || probe.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
+      if (!probe.trashed) throw new DriveError("NOT_TRASHED", `${probe.name} is not in the trash`);
+      await need(ctx, "write", probe);
+      const ownership = probe.resourceOwnership;
       // Only a caller who may read both the folder and the new parent makes the store count the subtree.
       let height = 0;
       if (sharing && opts.parentId !== undefined) {
-        const probe = await fetch(store, ctx, id);
         const target = await rawNode(store, opts.parentId, ctx.owner, ctx.actor);
-        if (probe?.trashed && target && (await can(ctx, "read", target))) height = await heightFor(ctx, probe, target);
+        if (target && (await can(ctx, "read", target))) height = await heightFor(ctx, probe, target);
       }
       return transactAs(ctx, async (tx, ctx) => {
         const node = await fetch(tx, ctx, id);
