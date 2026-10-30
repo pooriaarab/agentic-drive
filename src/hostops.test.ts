@@ -194,6 +194,32 @@ describe("trusted resource references", () => {
     await drive[action](A);
     expect((await drive.claimResourceRef(B, "/plan", "docs:1", ownership("bob"))).ref).toBe("docs:1");
   });
+  it.each(["live", "erased", "reclaimed"])("does not restore an erased subject with a %s claim", async (state) => {
+    const folder = await drive.mkdir(A, "/team");
+    await drive.shareWith(A, folder.id, { kind: "human", id: "bob" }, "editor");
+    const authored = await drive.claimResourceRef(B, `${folder.id}/authored`, "docs:1", ownership("bob"));
+    // A host can also claim for a subject who did not author the reference.
+    const hosted = await drive.claimResourceRef(A, "/hosted", "docs:1", ownership("bob"));
+    if (state !== "live") {
+      await store.delete("resource_claims", "app-document");
+      for (const { id } of (await store.query("grants", { where: { resourceId: "app-document" } })).items) await store.delete("grants", id);
+      await store.delete("resources", "app-document");
+    }
+    if (state === "reclaimed") await drive.claimResourceRef(A, "/new", "docs:1", ownership("alice"));
+    await drive.erasePerson(B);
+    for (const node of [authored, hosted]) {
+      expect((await drive.stat(A, node.id)).resourceOwnership).toBeUndefined();
+      await drive.trash(A, node.id);
+      await drive.restore(A, node.id);
+    }
+    if (state === "reclaimed") {
+      expect((await store.get("resource_claims", "app-document"))?.subjectId).toBe("alice");
+    } else {
+      expect(await store.get("resource_claims", "app-document")).toBeNull();
+      expect(await store.get("resources", "app-document")).toBeNull();
+    }
+    expect((await drive.claimResourceRef(A, "/new", "docs:1", ownership("alice"))).ref).toBe("docs:1");
+  });
   it("reports invalid ownership and generated claim ids with typed errors", async () => {
     for (const input of [null, { ...ownership("alice"), resourceId: "docs:1" }, { ...ownership("alice"), type: "Doc" }]) {
       await fails(drive.claimResourceRef(A, "/bad", "docs:1", input as never), "INVALID_REF");

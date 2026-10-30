@@ -50,6 +50,9 @@ export type ResourceOwnership = { resourceId: string; subject: Subject; type: st
 export type Node = {
   /** Trusted host claim. Kept in trash so restore can reacquire it. */
   resourceOwnership?: ResourceOwnership;
+  /** Indexed subject fields let account erase find claims in other drives. */
+  resourceOwnerId?: string;
+  resourceOwnerKind?: SubjectKind;
   id: string;
   owner: string;
   parentId: string;
@@ -864,7 +867,7 @@ export function createDrive(deps: DriveDeps) {
         if (current?.resourceOwnership && !current.trashed) await transactAs({ owner: node.owner, actor: node.updatedBy }, async (tx) => {
           const held = await tx.get<Node>(NODES, node.id);
           if (held) {
-            const { resourceOwnership: _released, ...rest } = held;
+            const { resourceOwnership: _released, resourceOwnerId: _id, resourceOwnerKind: _kind, ...rest } = held;
             await tx.put(NODES, node.id, rest);
           }
         }, { ownership: current.resourceOwnership, id: node.id, release: true });
@@ -1328,7 +1331,7 @@ export function createDrive(deps: DriveDeps) {
           }
           if (existing) throw new DriveError("BUSY", "the reference moved at the same time. Try again.");
           const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, "fail", id);
-          const owned = { ...node, resourceOwnership: claim };
+          const owned = { ...node, resourceOwnership: claim, resourceOwnerId: subject.id, resourceOwnerKind: subject.kind };
           w.put(NODES, id, owned);
           await w.apply(tx);
           return owned;
@@ -1446,6 +1449,20 @@ export function createDrive(deps: DriveDeps) {
       let invites = 0;
       for (const [actor, kind] of heldBy(subjectOf(ctx), ownedAgents)) grants += await sweep(await ofDrive(await allWhere(store, "grants", { subjectId: actor, subjectKind: kind })), "grants");
       for (const actor of actors) invites += await sweep(await ofDrive(await allWhere(store, "invites", { createdBy: actor })), "invites");
+      // Claims can name this subject even when someone else authored the reference.
+      // Release and remove their metadata together, so restore cannot recreate an erased owner.
+      for (const [actor, kind] of heldBy(subjectOf(ctx), ownedAgents)) {
+        for (const { data } of await allWhere(store, NODES, { resourceOwnerId: actor, resourceOwnerKind: kind })) {
+          const node = data as Node;
+          if (!node.resourceOwnership) continue;
+          await transactAs(ctx, async (tx) => {
+            const current = await tx.get<Node>(NODES, node.id);
+            if (current?.resourceOwnerId !== actor || current.resourceOwnerKind !== kind) return;
+            const { resourceOwnership: _claim, resourceOwnerId: _id, resourceOwnerKind: _kind, ...rest } = current;
+            await tx.put(NODES, node.id, rest);
+          }, { ownership: node.resourceOwnership, id: node.id, release: true });
+        }
+      }
       const todo = await madeBy(store, actors);
       for (let i = 0; i < todo.length; i += CHUNK) {
         await transact(async (tx) => {

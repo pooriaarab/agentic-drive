@@ -159,7 +159,10 @@ Direct trash releases one claim. Restore reacquires it and can conflict with a
 new owner. Trashing a folder only hides its children; their claims stay until
 those references are trashed or removed. Hard removal releases live claims.
 If identity erase has removed an old claim, local trash and removal still succeed.
-They keep any claim that another subject now holds.
+They keep any claim that another subject now holds. Call `erasePerson` as part of
+account erase. It clears the subject from claimed references in other drives,
+even when another person made the reference. Restore then restores the item
+without recreating the erased subject's ownership.
 Existing resources must already grant the subject ownership. The identity
 lifecycle keeps existing shares and resources when it releases a claim.
 This helper needs `agentic-identity` 0.12.0 or later.
