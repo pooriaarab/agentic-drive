@@ -6,6 +6,11 @@
 
 - **Account plug-in.** `driveAccount` (from `agentic-drive/account`, also exported from the root) has `exportAccount` and `eraseAccount`, so a host runs a GDPR export and erase without reading the drive storage layout. The export has `items`, `authored`, `agents`, `grants`, `invites`, `audit`, and `activity`. The erase returns counts, and a second erase counts zero.
 
+### Changed
+
+- Person exports include held grants and sent invites for drive resources only. They no longer include shares for other apps. This also affects the export manifest in the SDK, CLI, MCP, and HTTP API.
+- Reading or exporting an empty drive no longer creates its root. When no root or items exist, a delegated caller needs the `drive:read` scope.
+
 ## 0.9.1
 
 No change to the SDK, CLI, MCP or HTTP shape. Two breaking changes for hosts that pin `agentic-design` or `agentic-identity`, see Breaking.
