@@ -220,6 +220,26 @@ describe("trusted resource references", () => {
     }
     expect((await drive.claimResourceRef(A, "/new", "docs:1", ownership("alice"))).ref).toBe("docs:1");
   });
+  it("rolls back restore if account erase clears ownership before its transaction", async () => {
+    let eraseOnClaim = false;
+    const hooked = { ...sharing, claimResource: async (...args: Parameters<typeof sharing.claimResource>) => {
+      if (eraseOnClaim) {
+        eraseOnClaim = false;
+        await guarded.erasePerson(B);
+      }
+      return sharing.claimResource(...args);
+    } };
+    const guarded = createDrive({ store, sharing: hooked, blobs: createMemoryBlobs() });
+    const node = await guarded.claimResourceRef(A, "/hosted", "docs:1", ownership("bob"));
+    await guarded.trash(A, node.id);
+    eraseOnClaim = true;
+    await fails(guarded.restore(A, node.id), "BUSY");
+    expect(await store.get("resource_claims", "app-document")).toBeNull();
+    expect(await store.get("resources", "app-document")).toBeNull();
+    await guarded.restore(A, node.id);
+    await guarded.trash(A, node.id);
+    expect((await guarded.claimResourceRef(A, "/new", "docs:1", ownership("alice"))).ref).toBe("docs:1");
+  });
   it("reports invalid ownership and generated claim ids with typed errors", async () => {
     for (const input of [null, { ...ownership("alice"), resourceId: "docs:1" }, { ...ownership("alice"), type: "Doc" }]) {
       await fails(drive.claimResourceRef(A, "/bad", "docs:1", input as never), "INVALID_REF");

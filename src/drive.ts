@@ -1109,6 +1109,10 @@ export function createDrive(deps: DriveDeps) {
       return transactAs(ctx, async (tx, ctx) => {
         const node = await fetch(tx, ctx, id);
         if (!node || node.id === ROOT_ID) throw new DriveError("NOT_FOUND", `no item ${id}`);
+        const current = node.resourceOwnership;
+        if (Boolean(current) !== Boolean(ownership) || current?.resourceId !== ownership?.resourceId || current?.type !== ownership?.type || current?.subject?.id !== ownership?.subject?.id || current?.subject?.kind !== ownership?.subject?.kind) {
+          throw new DriveError("BUSY", "the reference ownership changed at the same time. Try again.");
+        }
         if (!node.trashed) throw new DriveError("NOT_TRASHED", `${node.name} is not in the trash`);
         await need(ctx, "write", node);
         // A parent id the caller names is read from the caller's drive, so "root" is the caller's own root.
