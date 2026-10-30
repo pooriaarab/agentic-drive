@@ -7,7 +7,7 @@ import { ActivityList } from "./Activity.js";
 import { BulkBar, ExpandableSearch, ItemTable, sortItems, type Sort, type SortKey } from "./browse.js";
 import { createClient, DriveApiError, type DriveClient, type Item, type Role } from "../src/client.js";
 
-import type { OnOpenItem } from "./embed.js";
+import type { OnOpenItem, DriveNavigationOptions } from "./embed.js";
 
 const TOKEN_KEY = "agentic-drive-token";
 const errorText = (e: unknown) => (e instanceof DriveApiError ? `${e.message} (${e.code})` : e instanceof Error ? e.message : "Something went wrong");
@@ -45,7 +45,7 @@ const goHash = (loc: string) => {
 };
 
 /** The signed-in views. `origin` is the server that signs download links and makes share links. `go` opens a folder. */
-export function Routes({ hash, client, origin, go, onOpenItem, folderLoc }: { hash: string; client: DriveClient; origin: string; go: (loc: string) => void; onOpenItem?: OnOpenItem; folderLoc?: string }) {
+export function Routes({ hash, client, origin, go, onOpenItem, folderLoc }: { hash: string; client: DriveClient; origin: string; go: (loc: string, options?: DriveNavigationOptions) => void; onOpenItem?: OnOpenItem; folderLoc?: string }) {
   const parts = routeParts(hash);
   if (parts[0] === "trash") return <TrashView key="trash" client={client} />;
   if (parts[0] === "a" && parts[1]) return <ActivityView key={hash} client={client} id={parts[1]} />;
@@ -140,7 +140,7 @@ function SignIn({ onToken }: { onToken: (t: string) => void }) {
 
 type Dlg = { kind: "mkdir" } | { kind: "rename" | "move" | "share"; item: Item };
 
-function Browser({ client, loc, origin, onOpenItem, go }: { client: DriveClient; loc: string; origin: string; onOpenItem?: OnOpenItem; go: (loc: string) => void }) {
+function Browser({ client, loc, origin, onOpenItem, go }: { client: DriveClient; loc: string; origin: string; onOpenItem?: OnOpenItem; go: (loc: string, options?: DriveNavigationOptions) => void }) {
   const openItem = (e: MouseEvent, item: Item) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || item.kind !== "ref") return;
     if (onOpenItem?.(item) === true) e.preventDefault();
@@ -428,7 +428,7 @@ function ActivityView({ client, id }: { client: DriveClient; id: string }) {
 }
 
 /** Opens a signed download link, then goes back to the folder of the file. */
-function Download({ client, id, origin, go }: { client: DriveClient; id: string; origin: string; go: (loc: string) => void }) {
+function Download({ client, id, origin, go }: { client: DriveClient; id: string; origin: string; go: (loc: string, options?: DriveNavigationOptions) => void }) {
   const [state, retry] = useLoad(async () => {
     const item = await client.stat(id);
     const { url } = await client.url(id);
@@ -437,7 +437,7 @@ function Download({ client, id, origin, go }: { client: DriveClient; id: string;
     a.href = url;
     a.download = item.name;
     a.click();
-    go(item.parentId);
+    go(item.parentId, { replace: true });
     return item;
   });
   return <Status state={state} retry={retry}>{null}</Status>;

@@ -10,7 +10,11 @@ Object.assign(window, {
   startRouter: (token: string, initial: DriveLocation) => {
     mounted = mount(document.getElementById("drive")!, {
       baseUrl: location.origin, getToken: () => token, location: initial,
-      onNavigate: (next) => history.pushState(next, "", `?drive=${encodeURIComponent(JSON.stringify(next))}`),
+      onNavigate: (next, { replace }) => {
+        const url = `?drive=${encodeURIComponent(JSON.stringify(next))}`;
+        if (replace) history.replaceState(next, "", url);
+        else history.pushState(next, "", url);
+      },
     });
     history.replaceState(initial, "");
     addEventListener("popstate", (event) => mounted?.setLocation(event.state));

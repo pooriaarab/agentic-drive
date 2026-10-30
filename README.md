@@ -248,7 +248,7 @@ view.unmount();
 ```
 
 `mount` returns a `MountedDrive` handle. `DriveBrowser` is the React component;
-`DriveUiOptions` is its configuration. `DriveLocation` is the folder, trash, activity, or file location type. `OnOpenItem` is the reference-open callback type, and `Item` is its argument type. The CSS path supplies its styles.
+`DriveUiOptions` is its configuration. `DriveLocation` is the folder, trash, activity, or file location type. `DriveNavigationOptions` describes host history updates. `OnOpenItem` is the reference-open callback type, and `Item` is its argument type. The CSS path supplies its styles.
 
 ### CLI, MCP, and adapters
 
@@ -348,10 +348,11 @@ const drive = mount(document.getElementById("drive")!, {
   baseUrl: location.origin,
   getToken: () => session.token,
   location: readLocation(),
-  onNavigate(next) {
+  onNavigate(next, { replace }) {
     const url = new URL(location.href);
     url.searchParams.set("drive", JSON.stringify(next));
-    history.pushState(null, "", url);
+    if (replace) history.replaceState(null, "", url);
+    else history.pushState(null, "", url);
   },
 });
 addEventListener("popstate", () => drive.setLocation(readLocation()));
@@ -362,7 +363,12 @@ if (active.kind === "folder") {
 ```
 
 `onNavigate` reports folder, breadcrumb, trash, activity, and download navigation.
-Initial render, `setLocation`, and `update` do not call it.
+The second argument has `replace: false` for user navigation. A completed
+download returns to its parent with `replace: true`. Use `replaceState` for that
+return so Back does not start the download again. Root returns use `"/"`.
+Assigning a location through initial render, `setLocation`, or `update` does not
+call the callback itself. A file location starts a download; its completed return
+does call the callback.
 `update` keeps the current location unless it receives a new `location`.
 In React, `DriveBrowser location={current} onNavigate={setCurrent}` is controlled:
 the host must apply the next location. Without `location`, React keeps it locally.

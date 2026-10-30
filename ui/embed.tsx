@@ -36,11 +36,17 @@ function fromHash(hash: string): DriveLocation {
   return { kind: "folder", path: path || "/" };
 }
 
+/** Replace the current host history entry after an automatic navigation. */
+export interface DriveNavigationOptions {
+  replace: boolean;
+}
+
 export interface DriveUiOptions {
   /** Controlled in React. In mount/update, selects the location; omission preserves it. */
   location?: DriveLocation;
-  /** User navigation only. Controlled React hosts must apply the next location. */
-  onNavigate?: (location: DriveLocation) => void;
+  /** Internal navigation. Controlled React hosts must apply the next location.
+   * Use replaceState when options.replace is true (the return after a download). */
+  onNavigate?: (location: DriveLocation, options: DriveNavigationOptions) => void;
   /** Runs when a person activates a reference item. Return true to skip the built-in download. */
   onOpenItem?: OnOpenItem;
   /** The address of the drive server, for example `https://drive.example.com`. Only its origin is used. */
@@ -78,9 +84,9 @@ export function DriveBrowser({ baseUrl, getToken, onOpenItem, location, onNaviga
   const [local, setLocal] = useState<DriveLocation>(ROOT);
   const active = location ?? local;
   locationHash(active);
-  const navigate = (next: DriveLocation) => {
+  const navigate = (next: DriveLocation, options: DriveNavigationOptions = { replace: false }) => {
     if (location === undefined) setLocal(next);
-    onNavigate?.(next);
+    onNavigate?.(next, options);
   };
   const [made, setMade] = useState<{ id: number; client: DriveClient; origin: string }>();
   // The client closes when the component unmounts or an option changes, so work of the old one sends nothing more.
@@ -93,15 +99,15 @@ export function DriveBrowser({ baseUrl, getToken, onOpenItem, location, onNaviga
   return made ? <DriveView key={made.id} client={made.client} origin={made.origin} onOpenItem={onOpenItem} location={active} onNavigate={navigate} /> : null;
 }
 
-function DriveView({ client, origin, onOpenItem, location, onNavigate }: { client: DriveClient; origin: string; onOpenItem?: OnOpenItem; location: DriveLocation; onNavigate: (next: DriveLocation) => void }) {
+function DriveView({ client, origin, onOpenItem, location, onNavigate }: { client: DriveClient; origin: string; onOpenItem?: OnOpenItem; location: DriveLocation; onNavigate: NonNullable<DriveUiOptions["onNavigate"]> }) {
   const hash = locationHash(location);
-  const go = (loc: string) => onNavigate(fromHash(`#/${loc === "/" ? "" : loc}`));
+  const go = (loc: string, options: DriveNavigationOptions = { replace: false }) => onNavigate(fromHash(`#/${loc === "/" || loc === "root" ? "" : loc}`), options);
   const follow = (e: MouseEvent) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     const link = (e.target as Element).closest?.("a[href^='#/']");
     if (!link || !e.currentTarget.contains(link)) return;
     e.preventDefault();
-    onNavigate(fromHash(link.getAttribute("href")!));
+    onNavigate(fromHash(link.getAttribute("href")!), { replace: false });
   };
   const place = hash.startsWith("#/trash") ? "trash" : "files";
   return (
@@ -137,10 +143,10 @@ export function mount(element: HTMLElement, options: DriveUiOptions): MountedDri
   const root = createRoot(element);
   let open = true;
   let version = 0;
-  const navigate = (next: DriveLocation) => {
+  const navigate = (next: DriveLocation, options: DriveNavigationOptions = { replace: false }) => {
     active = { ...next };
     render(settings, current.client);
-    settings.onNavigate?.({ ...active });
+    settings.onNavigate?.({ ...active }, options);
   };
   const render = (next: DriveUiOptions, client: DriveClient) =>
     root.render(

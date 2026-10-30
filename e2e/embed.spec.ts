@@ -168,15 +168,17 @@ test("host navigation selects nested paths, tracks crumbs and trash, and applies
   await expect(drive.getByRole("heading", { name: "Activity: seed.txt" })).toBeVisible();
 });
 
-test("a host-selected folder still enforces server roles", async ({ page }) => {
+test("an authenticated caller cannot select a folder without a role", async ({ page }) => {
   const client = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: ADA });
   const folder = await client.mkdir("/router-denied");
+  const reader = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: "reader-token-for-the-ui-tests" });
+  await expect(reader.stat(folder.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   await openHost(page);
   await page.evaluate(({ token, id }) => {
     const host = window as unknown as { startRouter(t: string, l: unknown): void };
     host.startRouter(token, { kind: "folder", path: id });
-  }, { token: "not-a-real-token", id: folder.id });
-  await expect(page.locator("#drive").getByRole("alert")).toBeVisible();
+  }, { token: "reader-token-for-the-ui-tests", id: folder.id });
+  await expect(page.locator("#drive").getByRole("alert")).toContainText("NOT_FOUND");
   await expect(page.locator("#drive").getByLabel("Choose files to upload")).toHaveCount(0);
 });
 
@@ -195,4 +197,34 @@ test("a viewer can navigate a shared folder but cannot upload into it", async ({
   await drive.getByLabel("Choose files to upload").setInputFiles({ name: "denied.txt", mimeType: "text/plain", buffer: Buffer.from("x") });
   expect((await denied).status()).toBe(403);
   await expect(client.stat("/router-viewer/denied.txt")).rejects.toMatchObject({ code: "NOT_FOUND" });
+});
+
+test("file downloads replace temporary history entries and return to canonical root", async ({ page }) => {
+  const client = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: ADA });
+  await client.mkdir("/router-download");
+  await client.upload("/router-download/child.txt", "child");
+  await client.upload("/router-root.txt", "root");
+  await openHost(page);
+  await page.evaluate((token) => {
+    (window as unknown as { startRouter(t: string, l: unknown): void }).startRouter(token, { kind: "folder", path: "/" });
+  }, ADA);
+  const drive = page.locator("#drive");
+  const downloads: string[] = [];
+  page.on("download", (download) => downloads.push(download.suggestedFilename()));
+  await drive.locator(".drive-row").getByRole("link", { name: "router-download", exact: true }).click();
+  const child = page.waitForEvent("download");
+  await drive.getByRole("link", { name: "child.txt", exact: true }).click();
+  await child;
+  await expect(drive.getByRole("heading", { name: "router-download", exact: true })).toBeVisible();
+  await page.goBack();
+  await page.goBack();
+  await expect(drive.getByRole("heading", { name: "My files", exact: true })).toBeVisible();
+  await page.goForward();
+  await expect(drive.getByRole("heading", { name: "router-download", exact: true })).toBeVisible();
+  expect(downloads).toEqual(["child.txt"]);
+  await page.evaluate(() => (window as unknown as { navigate(l: unknown): void }).navigate({ kind: "folder", path: "/" }));
+  const root = page.waitForEvent("download");
+  await drive.getByRole("link", { name: "router-root.txt", exact: true }).click();
+  await root;
+  await expect.poll(() => page.evaluate(() => (window as unknown as { active(): unknown }).active())).toEqual({ kind: "folder", path: "/" });
 });

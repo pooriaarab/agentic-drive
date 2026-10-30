@@ -75,10 +75,10 @@ describe("mount", () => {
     const rootLink = host.querySelector<HTMLAnchorElement>('.drive-crumbs a[href="#/"]')!;
     await act(async () => rootLink.click());
     await settle();
-    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "folder", path: "/" });
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "folder", path: "/" }, { replace: false });
     await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/docs"]')!.click());
     await settle();
-    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "folder", path: "docs" });
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "folder", path: "docs" }, { replace: false });
     const view = host.querySelector(".drive-root");
     await act(async () => mounted!.setLocation({ kind: "trash" }));
     expect(host.querySelector(".drive-root")).toBe(view);
@@ -89,8 +89,28 @@ describe("mount", () => {
     await settle();
     await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/trash"]')!.click());
     await settle();
-    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "trash" });
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "trash" }, { replace: false });
     expect(mounted!.getLocation()).toEqual({ kind: "trash" });
+  });
+
+  it("returns a completed root download with a replace hint", async () => {
+    const onNavigate = vi.fn();
+    ITEMS.n1 = CHILDREN["/"]![1]!;
+    const fetch = server.fetch.getMockImplementation()!;
+    server.fetch.mockImplementation(async (input, init) =>
+      String(input).includes("/url?")
+        ? new Response(JSON.stringify({ url: "https://drive.example.com/download", expiresInSeconds: 60 }), { headers: { "content-type": "application/json" } })
+        : fetch(input, init));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      await open({ ...base, location: { kind: "file", itemId: "n1" }, onNavigate });
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "folder", path: "/" }, { replace: true });
+      expect(mounted!.getLocation()).toEqual({ kind: "folder", path: "/" });
+    } finally {
+      click.mockRestore();
+      delete ITEMS.n1;
+    }
   });
 
   it("React location is controlled and host changes do not echo navigation", async () => {
@@ -104,7 +124,7 @@ describe("mount", () => {
       await settle();
       await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/docs"]')!.click());
       await settle();
-      expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "folder", path: "docs" });
+      expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "folder", path: "docs" }, { replace: false });
       expect(host.textContent).toContain("notes.txt");
       await render("docs");
       await settle();
