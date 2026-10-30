@@ -2,7 +2,7 @@
 
 ## 0.10.3
 
-- Allow `agentic-design` 0.10 without changing the lower bound.
+- Allow `agentic-design` 0.10 and `agentic-identity` 0.11 without changing the lower bounds.
 
 ## 0.10.2
 

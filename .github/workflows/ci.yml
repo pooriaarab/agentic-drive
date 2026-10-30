@@ -23,6 +23,8 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
+      - run: npm install --no-save agentic-design@latest agentic-identity@latest
+      - run: npm ls agentic-design agentic-identity
       - run: npm run build
       - run: npm run build:ui
       - run: npm run typecheck

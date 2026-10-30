@@ -79,7 +79,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "agentic-design": ">=0.8.0 <0.11.0",
-    "agentic-identity": ">=0.9.0 <0.11.0",
+    "agentic-identity": ">=0.9.0 <0.12.0",
     "hono": "^4.13.14",
     "zod": "^4.6.6"
   },
@@ -92,7 +92,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
     "agentic-design-latest": "npm:agentic-design@0.10.1",
-    "agentic-identity-latest": "npm:agentic-identity@0.10.0",
+    "agentic-identity-latest": "npm:agentic-identity@0.11.0",
     "esbuild": "^0.27.7",
     "jsdom": "^26.1.0",
     "miniflare": "^4.20260730.0",
