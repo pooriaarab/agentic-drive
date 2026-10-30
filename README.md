@@ -308,7 +308,7 @@ drive.update({ baseUrl, getToken });  // use another server or callback
 drive.unmount();                      // remove the UI
 ```
 
-Use `onOpenItem` to open a reference in your app. It receives the full `Item`, including `id`, `kind` (`"ref"`), and `ref` (for example, `"docs:plan"`). Return `true` to handle the action and skip the download. Return `false` or nothing to keep the built-in download action. The hook runs for reference links in the list and grid, by pointer or Enter. Files and folders keep their built-in action. Modified clicks keep their existing behavior.
+Use `onOpenItem` to open a reference in your app. It receives the full `Item`, including `id`, `kind` (`"ref"`), and `ref` (for example, `"docs:plan"`). Return `true` to handle the action. Return `false` or nothing to keep the existing action, which shows a `NOT_A_FILE` error for a reference. The hook runs for reference links in the list and grid, by pointer or Enter. Files and folders keep their built-in action. Modified clicks keep their existing behavior.
 
 ```ts
 import type { Item, OnOpenItem } from "agentic-drive/ui";

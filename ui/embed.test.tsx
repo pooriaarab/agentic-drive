@@ -109,6 +109,8 @@ describe("mount", () => {
       await settle();
       await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/docs"]')!.click());
       await settle();
+      expect(first).not.toHaveBeenCalled();
+      expect(host.textContent).toContain("inner.txt");
       const click = () => act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/f/react-ref"]')!.click());
       await click();
       expect(first).toHaveBeenCalledExactlyOnceWith(ref);
