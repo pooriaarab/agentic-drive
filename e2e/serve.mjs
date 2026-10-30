@@ -13,7 +13,9 @@ const row = (collection, id, doc) => `INSERT INTO store_docs (collection, id, bo
 const sql = [
   `${D1_SCHEMA};`,
   row("principals", "ada", { id: "ada", kind: "human", scopes: ["drive:admin"] }),
+  row("principals", "reader", { id: "reader", kind: "human", scopes: ["drive:admin"] }),
   row("principals", "helper", { id: "helper", kind: "agent_of_human", parentId: "ada", scopes: ["drive:write"] }),
+  row("credentials", hash("reader-token-for-the-ui-tests"), { principalId: "reader", kind: "api_key" }),
   row("credentials", hash("ada-token-for-the-ui-tests"), { principalId: "ada", kind: "api_key" }),
   row("credentials", hash("helper-token-for-the-ui-tests"), { principalId: "helper", kind: "api_key" }),
 ].join("\n");

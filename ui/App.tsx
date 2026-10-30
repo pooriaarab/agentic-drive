@@ -7,7 +7,7 @@ import { ActivityList } from "./Activity.js";
 import { BulkBar, ExpandableSearch, ItemTable, sortItems, type Sort, type SortKey } from "./browse.js";
 import { createClient, DriveApiError, type DriveClient, type Item, type Role } from "../src/client.js";
 
-import type { OnOpenItem } from "./embed.js";
+import type { OnOpenItem, DriveNavigationOptions } from "./embed.js";
 
 const TOKEN_KEY = "agentic-drive-token";
 const errorText = (e: unknown) => (e instanceof DriveApiError ? `${e.message} (${e.code})` : e instanceof Error ? e.message : "Something went wrong");
@@ -19,13 +19,13 @@ const MachineLabel = ({ item }: { item: Item }) => (item.machineMade ? <span cla
 
 type Load<T> = { status: "loading" } | { status: "error"; error: string } | { status: "ok"; data: T };
 /** Runs `fn` on mount and on `reload`. A view remounts per route, so state never leaks between folders. */
-function useLoad<T>(fn: () => Promise<T>): [Load<T>, () => void] {
+function useLoad<T>(fn: (signal: AbortSignal) => Promise<T>): [Load<T>, () => void] {
   const [state, set] = useState<Load<T>>({ status: "loading" });
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    let live = true;
-    fn().then((data) => live && set({ status: "ok", data }), (e) => live && set({ status: "error", error: errorText(e) }));
-    return () => { live = false; };
+    const pending = new AbortController();
+    fn(pending.signal).then((data) => !pending.signal.aborted && set({ status: "ok", data }), (e) => !pending.signal.aborted && set({ status: "error", error: errorText(e) }));
+    return () => pending.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
   return [state, () => setTick((n) => n + 1)];
@@ -45,12 +45,12 @@ const goHash = (loc: string) => {
 };
 
 /** The signed-in views. `origin` is the server that signs download links and makes share links. `go` opens a folder. */
-export function Routes({ hash, client, origin, go, onOpenItem }: { hash: string; client: DriveClient; origin: string; go: (loc: string) => void; onOpenItem?: OnOpenItem }) {
+export function Routes({ hash, client, origin, go, onOpenItem, folderLoc }: { hash: string; client: DriveClient; origin: string; go: (loc: string, options?: DriveNavigationOptions) => void; onOpenItem?: OnOpenItem; folderLoc?: string }) {
   const parts = routeParts(hash);
   if (parts[0] === "trash") return <TrashView key="trash" client={client} />;
   if (parts[0] === "a" && parts[1]) return <ActivityView key={hash} client={client} id={parts[1]} />;
   if (parts[0] === "f" && parts[1]) return <Download key={hash} client={client} id={parts[1]} origin={origin} go={go} />;
-  return <Browser key={hash} client={client} loc={parts[0] || "/"} origin={origin} onOpenItem={onOpenItem} />;
+  return <Browser key={hash} client={client} loc={folderLoc ?? (parts[0] || "/")} go={go} origin={origin} onOpenItem={onOpenItem} />;
 }
 
 export function App() {
@@ -140,7 +140,7 @@ function SignIn({ onToken }: { onToken: (t: string) => void }) {
 
 type Dlg = { kind: "mkdir" } | { kind: "rename" | "move" | "share"; item: Item };
 
-function Browser({ client, loc, origin, onOpenItem }: { client: DriveClient; loc: string; origin: string; onOpenItem?: OnOpenItem }) {
+function Browser({ client, loc, origin, onOpenItem, go }: { client: DriveClient; loc: string; origin: string; onOpenItem?: OnOpenItem; go: (loc: string, options?: DriveNavigationOptions) => void }) {
   const openItem = (e: MouseEvent, item: Item) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || item.kind !== "ref") return;
     if (onOpenItem?.(item) === true) e.preventDefault();
@@ -215,7 +215,7 @@ function Browser({ client, loc, origin, onOpenItem }: { client: DriveClient; loc
               <Menu align="end" trigger={<IconButton label={`Actions for ${item.name}`} icon={<MoreIcon />} variant="ghost" />} items={[
                 { label: "Rename", onSelect: () => setDlg({ kind: "rename", item }) },
                 { label: "Move", onSelect: () => setDlg({ kind: "move", item }) },
-                { label: "Activity", onSelect: () => goHash(`a/${item.id}`) },
+                { label: "Activity", onSelect: () => go(`a/${item.id}`) },
                 { label: "Share", onSelect: () => setDlg({ kind: "share", item }) },
                 "separator",
                 { label: "Move to trash", danger: true, onSelect: () => void act(() => client.trash(item.id), `Moved ${item.name} to trash`) },
@@ -427,17 +427,26 @@ function ActivityView({ client, id }: { client: DriveClient; id: string }) {
   );
 }
 
-/** Opens a signed download link, then goes back to the folder of the file. */
-function Download({ client, id, origin, go }: { client: DriveClient; id: string; origin: string; go: (loc: string) => void }) {
-  const [state, retry] = useLoad(async () => {
-    const item = await client.stat(id);
-    const { url } = await client.url(id);
-    if (new URL(url, origin).origin !== origin) throw new Error("The download link points to another site.");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = item.name;
-    a.click();
-    go(item.parentId);
+/** Download only while the caller's view is still active. */
+export async function downloadItem(client: DriveClient, id: string, origin: string, signal: AbortSignal): Promise<Item> {
+  const item = await client.stat(id, { signal });
+  signal.throwIfAborted();
+  const { url } = await client.url(id, undefined, { signal });
+  signal.throwIfAborted();
+  if (new URL(url, origin).origin !== origin) throw new Error("The download link points to another site.");
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = item.name;
+  a.click();
+  return item;
+}
+
+/** Explicit file locations return to the parent after a successful download. */
+function Download({ client, id, origin, go }: { client: DriveClient; id: string; origin: string; go: (loc: string, options?: DriveNavigationOptions) => void }) {
+  const [state, retry] = useLoad(async (signal) => {
+    const item = await downloadItem(client, id, origin, signal);
+    signal.throwIfAborted();
+    go(item.parentId, { replace: true });
     return item;
   });
   return <Status state={state} retry={retry}>{null}</Status>;

@@ -31,7 +31,7 @@ function fakeServer() {
     const url = new URL(String(input));
     seen.push({ path: `${url.pathname}${url.search}`, authorization: new Headers(init?.headers).get("authorization") });
     const path = url.searchParams.get("path") ?? "/";
-    const body = url.pathname.endsWith("/stat") ? ITEMS[path] : url.pathname.endsWith("/items") ? CHILDREN[path] : undefined;
+    const body = url.pathname.endsWith("/stat") ? ITEMS[path] : url.pathname.endsWith("/items") ? CHILDREN[path] : url.pathname.endsWith("/trash") ? [] : undefined;
     if (!body) return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "no such item" } }), { status: 404 });
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
   });
@@ -62,6 +62,106 @@ const open = async (options: DriveUiOptions) => {
 const base: DriveUiOptions = { baseUrl: "https://drive.example.com", getToken: () => "tok-1" };
 
 describe("mount", () => {
+  // Navigation can fail through root resets, callback echoes, stale callbacks, or controlled clicks.
+  it("selects folders and trash, reports clicks, and preserves location on update", async () => {
+    const onNavigate = vi.fn();
+    await open({ ...base, location: { kind: "folder", path: "docs" }, onNavigate });
+    expect(host.textContent).toContain("inner.txt");
+    expect(mounted!.getLocation()).toEqual({ kind: "folder", path: "docs" });
+    expect(onNavigate).not.toHaveBeenCalled();
+    await act(async () => mounted!.update({ ...base, onNavigate }));
+    await settle();
+    expect(host.textContent).toContain("inner.txt");
+    const rootLink = host.querySelector<HTMLAnchorElement>('.drive-crumbs a[href="#/"]')!;
+    await act(async () => rootLink.click());
+    await settle();
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "folder", path: "/" }, { replace: false });
+    await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/docs"]')!.click());
+    await settle();
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "folder", path: "docs" }, { replace: false });
+    const view = host.querySelector(".drive-root");
+    await act(async () => mounted!.setLocation({ kind: "trash" }));
+    expect(host.querySelector(".drive-root")).toBe(view);
+    await settle();
+    expect(host.textContent).toContain("The trash is empty");
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    await act(async () => mounted!.setLocation({ kind: "folder", path: "/" }));
+    await settle();
+    await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/trash"]')!.click());
+    await settle();
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "trash" }, { replace: false });
+    expect(mounted!.getLocation()).toEqual({ kind: "trash" });
+  });
+
+  it("keeps the active folder and host history when a file download fails", async () => {
+    const onNavigate = vi.fn();
+    await open({ ...base, onNavigate });
+    await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/f/n1"]')!.click());
+    await settle();
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(mounted!.getLocation()).toEqual({ kind: "folder", path: "/" });
+    expect(host.textContent).toContain("notes.txt");
+  });
+
+  it("returns a completed root download with a replace hint", async () => {
+    const onNavigate = vi.fn();
+    ITEMS.n1 = CHILDREN["/"]![1]!;
+    const fetch = server.fetch.getMockImplementation()!;
+    server.fetch.mockImplementation(async (input, init) =>
+      String(input).includes("/url?")
+        ? new Response(JSON.stringify({ url: "https://drive.example.com/download", expiresInSeconds: 60 }), { headers: { "content-type": "application/json" } })
+        : fetch(input, init));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      await open({ ...base, location: { kind: "file", itemId: "n1" }, onNavigate });
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "folder", path: "/" }, { replace: true });
+      expect(mounted!.getLocation()).toEqual({ kind: "folder", path: "/" });
+      onNavigate.mockClear();
+      click.mockClear();
+      let finish!: (response: Response) => void;
+      server.fetch.mockImplementation(async (input, init) => String(input).includes("/url?")
+        ? new Promise<Response>((resolve) => { finish = resolve; }) : fetch(input, init));
+      await act(async () => mounted!.setLocation({ kind: "file", itemId: "n1" }));
+      await settle();
+      await act(async () => mounted!.setLocation({ kind: "trash" }));
+      await settle();
+      await act(async () => finish(new Response(JSON.stringify({ url: "https://drive.example.com/download", expiresInSeconds: 60 }))));
+      await settle();
+      expect(click).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mounted!.getLocation()).toEqual({ kind: "trash" });
+    } finally {
+      click.mockRestore();
+      delete ITEMS.n1;
+    }
+  });
+
+  it("React location is controlled and host changes do not echo navigation", async () => {
+    const root = createRoot(host);
+    const onNavigate = vi.fn();
+    const render = (path: string) => act(async () => root.render(
+      <TooltipProvider><ToastProvider><DriveBrowser {...base} location={{ kind: "folder", path }} onNavigate={onNavigate} /></ToastProvider></TooltipProvider>
+    ));
+    try {
+      await render("/");
+      await settle();
+      await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/docs"]')!.click());
+      await settle();
+      expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "folder", path: "docs" }, { replace: false });
+      expect(host.textContent).toContain("notes.txt");
+      await render("docs");
+      await settle();
+      expect(host.textContent).toContain("inner.txt");
+      expect(onNavigate).toHaveBeenCalledTimes(1);
+      await render("/");
+      await settle();
+      expect(host.textContent).toContain("notes.txt");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   // Failure cases: handled refs download, declined refs stop opening, updates keep a stale hook,
   // ordinary files or folders call the hook, or React prop changes reset the folder.
   it("handles references, replaces and removes the hook, and keeps the default path", async () => {
@@ -86,6 +186,7 @@ describe("mount", () => {
       expect(second).toHaveBeenCalledExactlyOnceWith(ref);
       expect(server.seen.some((r) => r.path.includes("/url"))).toBe(true);
       await act(async () => mounted!.update(base));
+      await act(async () => mounted!.setLocation({ kind: "folder", path: "/" }));
       await settle();
       server.seen.length = 0;
       await activate("Plan");
