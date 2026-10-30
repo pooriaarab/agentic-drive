@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type MouseEvent } from "react";
 import { Button, FileIcon, FolderIcon, PresenceChip, type PresenceEntry } from "agentic-design/react";
 import type { Item } from "../src/client.js";
 
@@ -57,6 +57,7 @@ type TableProps = {
   selected?: Set<string>;
   onSelect?: (ids: Set<string>) => void;
   href: (i: Item) => string;
+  onOpen?: (event: MouseEvent, item: Item) => void;
   who: (a: Item["updatedBy"], owner: string) => PresenceEntry;
   actions: (i: Item) => ReactNode;
   /** Defaults to the time of the last edit. */
@@ -64,7 +65,7 @@ type TableProps = {
 };
 
 /** The list view: a table with a select column, sortable headers, and a row menu. */
-export function ItemTable({ label, items, sort, onSort, selected = new Set(), onSelect, href, who, actions, dateOf = (i) => i.updatedAt }: TableProps) {
+export function ItemTable({ label, items, sort, onSort, selected = new Set(), onSelect, href, onOpen, who, actions, dateOf = (i) => i.updatedAt }: TableProps) {
   const all = items.length > 0 && items.every((i) => selected.has(i.id));
   const some = !all && items.some((i) => selected.has(i.id));
   const head = useRef<HTMLInputElement>(null);
@@ -106,7 +107,7 @@ export function ItemTable({ label, items, sort, onSort, selected = new Set(), on
             <td>
               <div className="drive-table__name">
                 <span className="drive-table__icon" aria-hidden="true">{i.kind === "folder" ? <FolderIcon /> : <FileIcon />}</span>
-                <a href={href(i)}>{i.name}</a>
+                <a href={href(i)} onClick={(e) => onOpen?.(e, i)}>{i.name}</a>
               </div>
             </td>
             <td className="drive-table__who"><PresenceChip entry={who(i.updatedBy, i.owner)} /></td>

@@ -72,3 +72,44 @@ test("a token that the server refuses shows an alert in the host page", async ({
   await page.evaluate(() => (window as unknown as { start(t: string): void }).start("not-a-real-token"));
   await expect(page.locator("#drive").getByRole("alert")).toBeVisible();
 });
+
+for (const view of ["list", "grid"]) {
+  for (const activation of ["pointer", "keyboard"]) {
+    test(`${view} reference opens by ${activation} and preserves fallback`, async ({ page }) => {
+      const person = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: ADA });
+      const name = `ref-${view}-${activation}`;
+      const item = await person.registerDocument({ name, ref: `docs:${name}` });
+      await person.upload(`/${name}.txt`, "hello");
+      await openHost(page);
+      await page.evaluate(({ token, view }) => {
+        localStorage.setItem("agentic-drive-view", view);
+        const host = window as unknown as { start(t: string): void; setOpenHook(t: string, h: boolean | null): void };
+        host.start(token);
+        host.setOpenHook(token, true);
+      }, { token: ADA, view });
+      const drive = page.locator("#drive");
+      const link = () => drive.getByRole("link", { name, exact: true });
+      const urls: string[] = [];
+      page.on("request", (r) => { if (r.url().includes("/url?")) urls.push(r.url()); });
+      const activate = async () => {
+        if (activation === "pointer") await link().click();
+        else { await link().focus(); await page.keyboard.press("Enter"); }
+      };
+      await activate();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { opened: unknown[] }).opened)).toEqual([item]);
+      expect(urls).toEqual([]);
+      await expect(link()).toBeVisible();
+      for (const handled of [false, null]) {
+        await page.evaluate(({ token, handled }) => (window as unknown as { setOpenHook(t: string, h: boolean | null): void }).setOpenHook(token, handled), { token: ADA, handled });
+        const request = page.waitForRequest((r) => r.url().includes("/url?") && r.url().includes(item.id));
+        await activate();
+        await request;
+      }
+      await page.evaluate((token) => (window as unknown as { setOpenHook(t: string, h: boolean): void }).setOpenHook(token, true), ADA);
+      const download = page.waitForEvent("download");
+      await drive.getByRole("link", { name: `${name}.txt`, exact: true }).click();
+      expect((await download).suggestedFilename()).toBe(`${name}.txt`);
+      expect(await page.evaluate(() => (window as unknown as { opened: unknown[] }).opened.length)).toBe(2);
+    });
+  }
+}

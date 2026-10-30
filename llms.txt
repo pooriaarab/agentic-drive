@@ -108,6 +108,7 @@ view.unmount();
 `DriveUiOptions` is its configuration. The CSS path supplies its styles. The handle
 has `update` and `unmount` methods. The `getToken` callback runs before each request
 and may return undefined. The UI does not change the page address or theme.
+The optional `onOpenItem` hook receives the full `Item` for a reference link, by pointer or Enter in list and grid views. Return true to skip the download; false or void keeps it. `OnOpenItem` and `Item` are exported types from `agentic-drive/ui`. Both `update` and React props can replace the hook.
 React 19 and React DOM 19 are optional peer dependencies.
 
 ### CLI, MCP, and adapters

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0
+
+- Add `onOpenItem` to the public UI options. Hosts can handle reference opens in list and grid views by pointer or keyboard. Export `OnOpenItem` and `Item` from `agentic-drive/ui`. Keep the download action for unhandled items.
+
 ## 0.10.3
 
 - Allow `agentic-design` 0.10 and `agentic-identity` 0.11 without changing the lower bounds.

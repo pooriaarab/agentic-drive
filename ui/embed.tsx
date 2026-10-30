@@ -4,11 +4,17 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { FolderIcon, SidebarNav, ToastProvider, TooltipProvider } from "agentic-design/react";
-import { createClient, type DriveClient } from "../src/client.js";
+import { createClient, type DriveClient, type Item } from "../src/client.js";
 import { Routes } from "./App.js";
 import "./app.css";
 
+/** Return true to handle a reference open; false or void keeps the download action. */
+export type OnOpenItem = (item: Item) => boolean | void;
+export type { Item } from "../src/client.js";
+
 export interface DriveUiOptions {
+  /** Runs when a person activates a reference item. Return true to skip the built-in download. */
+  onOpenItem?: OnOpenItem;
   /** The address of the drive server, for example `https://drive.example.com`. Only its origin is used. */
   baseUrl: string;
   /** Returns the bearer token for the next request. It runs before every request, so it can refresh a token. No token sends no `authorization` header. */
@@ -40,7 +46,7 @@ let clients = 0;
 
 /** The folders and trash of the signed-in caller, with upload, share, and the machine-made label. It needs the tooltip and toast providers above it. `mount` adds them.
  * It shows the root again when `baseUrl` changes. A bad `baseUrl` or `getToken` throws. Pass a stable `getToken`, because a new function makes a new client. */
-export function DriveBrowser({ baseUrl, getToken }: DriveUiOptions) {
+export function DriveBrowser({ baseUrl, getToken, onOpenItem }: DriveUiOptions) {
   const [made, setMade] = useState<{ id: number; client: DriveClient; origin: string }>();
   // The client closes when the component unmounts or an option changes, so work of the old one sends nothing more.
   // The view is keyed on the client, so it loads again from the root with the new one.
@@ -49,10 +55,10 @@ export function DriveBrowser({ baseUrl, getToken }: DriveUiOptions) {
     setMade({ id: ++clients, client: next.client, origin: new URL(baseUrl).origin });
     return () => next.close();
   }, [baseUrl, getToken]);
-  return made ? <DriveView key={made.id} client={made.client} origin={made.origin} /> : null;
+  return made ? <DriveView key={made.id} client={made.client} origin={made.origin} onOpenItem={onOpenItem} /> : null;
 }
 
-function DriveView({ client, origin }: { client: DriveClient; origin: string }) {
+function DriveView({ client, origin, onOpenItem }: { client: DriveClient; origin: string; onOpenItem?: OnOpenItem }) {
   // The route lives in this component, not in the page address, so the embed never moves the host page.
   const [hash, setHash] = useState("#/");
   const go = (loc: string) => setHash(`#/${loc === "/" ? "" : loc}`);
@@ -71,14 +77,14 @@ function DriveView({ client, origin }: { client: DriveClient; origin: string }) 
         { href: "#/trash", label: "Trash", current: place === "trash" },
       ]} />
       <div className="drive-main">
-        <Routes hash={hash} client={client} origin={origin} go={go} />
+        <Routes hash={hash} client={client} origin={origin} go={go} onOpenItem={onOpenItem} />
       </div>
     </div>
   );
 }
 
 export interface MountedDrive {
-  /** Show the drive with another address or token callback. The folder the person has open resets. */
+  /** Show the drive with another address, token callback, or item-open callback. The folder the person has open resets. */
   update(options: DriveUiOptions): void;
   /** Remove the UI. A request that runs is aborted, and no later request starts or calls `getToken`. Calling it again does nothing. */
   unmount(): void;
@@ -94,7 +100,7 @@ export function mount(element: HTMLElement, options: DriveUiOptions): MountedDri
     root.render(
       <TooltipProvider>
         <ToastProvider>
-          <DriveView key={version++} client={client} origin={new URL(next.baseUrl).origin} />
+          <DriveView key={version++} client={client} origin={new URL(next.baseUrl).origin} onOpenItem={next.onOpenItem} />
         </ToastProvider>
       </TooltipProvider>,
     );
