@@ -93,12 +93,14 @@ describe("mount", () => {
     expect(mounted!.getLocation()).toEqual({ kind: "trash" });
   });
 
-  it("replaces host history when a file link opens a temporary download route", async () => {
+  it("keeps the active folder and host history when a file download fails", async () => {
     const onNavigate = vi.fn();
     await open({ ...base, onNavigate });
     await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/f/n1"]')!.click());
     await settle();
-    expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "file", itemId: "n1" }, { replace: true });
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(mounted!.getLocation()).toEqual({ kind: "folder", path: "/" });
+    expect(host.textContent).toContain("notes.txt");
   });
 
   it("returns a completed root download with a replace hint", async () => {
@@ -115,6 +117,20 @@ describe("mount", () => {
       expect(click).toHaveBeenCalledTimes(1);
       expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "folder", path: "/" }, { replace: true });
       expect(mounted!.getLocation()).toEqual({ kind: "folder", path: "/" });
+      onNavigate.mockClear();
+      click.mockClear();
+      let finish!: (response: Response) => void;
+      server.fetch.mockImplementation(async (input, init) => String(input).includes("/url?")
+        ? new Promise<Response>((resolve) => { finish = resolve; }) : fetch(input, init));
+      await act(async () => mounted!.setLocation({ kind: "file", itemId: "n1" }));
+      await settle();
+      await act(async () => mounted!.setLocation({ kind: "trash" }));
+      await settle();
+      await act(async () => finish(new Response(JSON.stringify({ url: "https://drive.example.com/download", expiresInSeconds: 60 }))));
+      await settle();
+      expect(click).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mounted!.getLocation()).toEqual({ kind: "trash" });
     } finally {
       click.mockRestore();
       delete ITEMS.n1;

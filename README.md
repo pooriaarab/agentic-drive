@@ -362,14 +362,16 @@ if (active.kind === "folder") {
 }
 ```
 
-`onNavigate` reports folder, breadcrumb, trash, activity, and download navigation.
-The second argument has `replace: false` for folder, breadcrumb, trash, and
-activity navigation. A download link and its completed return to the parent both
-use `replace: true`. Use `replaceState` for those steps so a download adds no
-history entry and Back returns to the previous folder. Root returns use `"/"`.
+`onNavigate` reports folder, breadcrumb, trash, and activity navigation with
+`replace: false`. File links download in place without changing the location or
+notifying the host. Errors leave the folder open. Navigation cancels pending
+downloads, so a late response cannot move the view or start a download.
+An explicit `file` location returns to its parent with `replace: true`. Use
+`replaceState` for that return. Root returns use `"/"`.
 Assigning a location through initial render, `setLocation`, or `update` does not
-call the callback itself. A file location starts a download; its completed return
-does call the callback.
+call the callback itself. An explicit file location starts a download; its completed return
+does call the callback. An explicit file location that fails shows an error and
+stays selected; the host can set a folder location to leave it.
 `update` keeps the current location unless it receives a new `location`.
 In React, `DriveBrowser location={current} onNavigate={setCurrent}` is controlled:
 the host must apply the next location. Without `location`, React keeps it locally.

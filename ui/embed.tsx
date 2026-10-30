@@ -1,11 +1,11 @@
 // The drive UI for an app that embeds it: `agentic-drive/ui`. The app gives the address of a drive server and a function that
 // returns the bearer token. React and react-dom are peer dependencies. The styles are in `agentic-drive/ui.css`. The host owns
 // the theme, the page address, and sign-in, so the embed changes none of them.
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { FolderIcon, SidebarNav, ToastProvider, TooltipProvider } from "agentic-design/react";
-import { createClient, type DriveClient, type Item } from "../src/client.js";
-import { Routes } from "./App.js";
+import { FolderIcon, SidebarNav, ToastProvider, TooltipProvider, useToast } from "agentic-design/react";
+import { createClient, DriveApiError, type DriveClient, type Item } from "../src/client.js";
+import { Routes, downloadItem } from "./App.js";
 import "./app.css";
 
 /** Return true to handle a reference open; false or void keeps the download action. */
@@ -45,7 +45,7 @@ export interface DriveUiOptions {
   /** Controlled in React. In mount/update, selects the location; omission preserves it. */
   location?: DriveLocation;
   /** Internal navigation. Controlled React hosts must apply the next location.
-   * Use replaceState when options.replace is true (download routes). */
+   * Use replaceState when options.replace is true (an explicit download returns). */
   onNavigate?: (location: DriveLocation, options: DriveNavigationOptions) => void;
   /** Runs when a person activates a reference item. Return true to skip the built-in download. */
   onOpenItem?: OnOpenItem;
@@ -101,6 +101,20 @@ export function DriveBrowser({ baseUrl, getToken, onOpenItem, location, onNaviga
 
 function DriveView({ client, origin, onOpenItem, location, onNavigate }: { client: DriveClient; origin: string; onOpenItem?: OnOpenItem; location: DriveLocation; onNavigate: NonNullable<DriveUiOptions["onNavigate"]> }) {
   const hash = locationHash(location);
+  const toast = useToast();
+  const pending = useRef(new AbortController());
+  useEffect(() => {
+    const controller = new AbortController();
+    pending.current = controller;
+    return () => controller.abort();
+  }, [hash]);
+  const download = async (id: string) => {
+    const signal = pending.current.signal;
+    try { await downloadItem(client, id, origin, signal); }
+    catch (e) {
+      if (!signal.aborted) toast({ title: "Could not download", description: e instanceof DriveApiError ? `${e.message} (${e.code})` : e instanceof Error ? e.message : "Download failed", tone: "danger" });
+    }
+  };
   const go = (loc: string, options: DriveNavigationOptions = { replace: false }) => onNavigate(fromHash(`#/${loc === "/" || loc === "root" ? "" : loc}`), options);
   const follow = (e: MouseEvent) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -108,7 +122,8 @@ function DriveView({ client, origin, onOpenItem, location, onNavigate }: { clien
     if (!link || !e.currentTarget.contains(link)) return;
     e.preventDefault();
     const next = fromHash(link.getAttribute("href")!);
-    onNavigate(next, { replace: next.kind === "file" });
+    if (next.kind === "file") void download(next.itemId);
+    else onNavigate(next, { replace: false });
   };
   const place = hash.startsWith("#/trash") ? "trash" : "files";
   return (

@@ -19,13 +19,13 @@ const MachineLabel = ({ item }: { item: Item }) => (item.machineMade ? <span cla
 
 type Load<T> = { status: "loading" } | { status: "error"; error: string } | { status: "ok"; data: T };
 /** Runs `fn` on mount and on `reload`. A view remounts per route, so state never leaks between folders. */
-function useLoad<T>(fn: () => Promise<T>): [Load<T>, () => void] {
+function useLoad<T>(fn: (signal: AbortSignal) => Promise<T>): [Load<T>, () => void] {
   const [state, set] = useState<Load<T>>({ status: "loading" });
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    let live = true;
-    fn().then((data) => live && set({ status: "ok", data }), (e) => live && set({ status: "error", error: errorText(e) }));
-    return () => { live = false; };
+    const pending = new AbortController();
+    fn(pending.signal).then((data) => !pending.signal.aborted && set({ status: "ok", data }), (e) => !pending.signal.aborted && set({ status: "error", error: errorText(e) }));
+    return () => pending.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
   return [state, () => setTick((n) => n + 1)];
@@ -427,16 +427,25 @@ function ActivityView({ client, id }: { client: DriveClient; id: string }) {
   );
 }
 
-/** Opens a signed download link, then goes back to the folder of the file. */
+/** Download only while the caller's view is still active. */
+export async function downloadItem(client: DriveClient, id: string, origin: string, signal: AbortSignal): Promise<Item> {
+  const item = await client.stat(id, { signal });
+  signal.throwIfAborted();
+  const { url } = await client.url(id, undefined, { signal });
+  signal.throwIfAborted();
+  if (new URL(url, origin).origin !== origin) throw new Error("The download link points to another site.");
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = item.name;
+  a.click();
+  return item;
+}
+
+/** Explicit file locations return to the parent after a successful download. */
 function Download({ client, id, origin, go }: { client: DriveClient; id: string; origin: string; go: (loc: string, options?: DriveNavigationOptions) => void }) {
-  const [state, retry] = useLoad(async () => {
-    const item = await client.stat(id);
-    const { url } = await client.url(id);
-    if (new URL(url, origin).origin !== origin) throw new Error("The download link points to another site.");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = item.name;
-    a.click();
+  const [state, retry] = useLoad(async (signal) => {
+    const item = await downloadItem(client, id, origin, signal);
+    signal.throwIfAborted();
     go(item.parentId, { replace: true });
     return item;
   });

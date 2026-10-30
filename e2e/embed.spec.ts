@@ -199,11 +199,11 @@ test("a viewer can navigate a shared folder but cannot upload into it", async ({
   await expect(client.stat("/router-viewer/denied.txt")).rejects.toMatchObject({ code: "NOT_FOUND" });
 });
 
-test("file downloads replace temporary history entries and return to canonical root", async ({ page }) => {
+test("file links download in place and explicit downloads return to canonical root", async ({ page }) => {
   const client = createClient({ baseUrl: `http://127.0.0.1:${process.env.DRIVE_UI_PORT}`, token: ADA });
   await client.mkdir("/router-download");
   await client.upload("/router-download/child.txt", "child");
-  await client.upload("/router-root.txt", "root");
+  const rootItem = await client.upload("/router-root.txt", "root");
   await openHost(page);
   await page.evaluate((token) => {
     (window as unknown as { startRouter(t: string, l: unknown): void }).startRouter(token, { kind: "folder", path: "/" });
@@ -223,7 +223,7 @@ test("file downloads replace temporary history entries and return to canonical r
   expect(downloads).toEqual(["child.txt"]);
   await page.evaluate(() => (window as unknown as { navigate(l: unknown): void }).navigate({ kind: "folder", path: "/" }));
   const root = page.waitForEvent("download");
-  await drive.getByRole("link", { name: "router-root.txt", exact: true }).click();
+  await page.evaluate((id) => (window as unknown as { navigate(l: unknown): void }).navigate({ kind: "file", itemId: id }), rootItem.id);
   await root;
   await expect.poll(() => page.evaluate(() => (window as unknown as { active(): unknown }).active())).toEqual({ kind: "folder", path: "/" });
 });
