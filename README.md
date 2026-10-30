@@ -363,9 +363,10 @@ if (active.kind === "folder") {
 ```
 
 `onNavigate` reports folder, breadcrumb, trash, activity, and download navigation.
-The second argument has `replace: false` for user navigation. A completed
-download returns to its parent with `replace: true`. Use `replaceState` for that
-return so Back does not start the download again. Root returns use `"/"`.
+The second argument has `replace: false` for folder, breadcrumb, trash, and
+activity navigation. A download link and its completed return to the parent both
+use `replace: true`. Use `replaceState` for those steps so a download adds no
+history entry and Back returns to the previous folder. Root returns use `"/"`.
 Assigning a location through initial render, `setLocation`, or `update` does not
 call the callback itself. A file location starts a download; its completed return
 does call the callback.

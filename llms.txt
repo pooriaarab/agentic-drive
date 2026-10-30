@@ -136,7 +136,8 @@ registerDocument. update keeps the location unless its options supply one.
 React hosts can control location and apply onNavigate to their own state.
 
 onNavigate receives the next location and history options. Use pushState when
-replace is false, and replaceState when replace is true. A completed download
-returns to its parent with replace true so Back does not download the file again.
+replace is false, and replaceState when replace is true. A download link and its completed return
+to the parent both use replace true. A download adds no history entry, so Back
+returns to the previous folder without a second download.
 Root returns use "/". A direct location assignment does not notify the host,
 but a completed download does. Apply popstate with setLocation or React props.

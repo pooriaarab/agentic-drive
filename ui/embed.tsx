@@ -36,7 +36,7 @@ function fromHash(hash: string): DriveLocation {
   return { kind: "folder", path: path || "/" };
 }
 
-/** Replace the current host history entry after an automatic navigation. */
+/** Replace the current host history entry for a transient navigation. */
 export interface DriveNavigationOptions {
   replace: boolean;
 }
@@ -45,7 +45,7 @@ export interface DriveUiOptions {
   /** Controlled in React. In mount/update, selects the location; omission preserves it. */
   location?: DriveLocation;
   /** Internal navigation. Controlled React hosts must apply the next location.
-   * Use replaceState when options.replace is true (the return after a download). */
+   * Use replaceState when options.replace is true (download routes). */
   onNavigate?: (location: DriveLocation, options: DriveNavigationOptions) => void;
   /** Runs when a person activates a reference item. Return true to skip the built-in download. */
   onOpenItem?: OnOpenItem;
@@ -107,7 +107,8 @@ function DriveView({ client, origin, onOpenItem, location, onNavigate }: { clien
     const link = (e.target as Element).closest?.("a[href^='#/']");
     if (!link || !e.currentTarget.contains(link)) return;
     e.preventDefault();
-    onNavigate(fromHash(link.getAttribute("href")!), { replace: false });
+    const next = fromHash(link.getAttribute("href")!);
+    onNavigate(next, { replace: next.kind === "file" });
   };
   const place = hash.startsWith("#/trash") ? "trash" : "files";
   return (

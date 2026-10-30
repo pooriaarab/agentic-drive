@@ -93,6 +93,14 @@ describe("mount", () => {
     expect(mounted!.getLocation()).toEqual({ kind: "trash" });
   });
 
+  it("replaces host history when a file link opens a temporary download route", async () => {
+    const onNavigate = vi.fn();
+    await open({ ...base, onNavigate });
+    await act(async () => host.querySelector<HTMLAnchorElement>('a[href="#/f/n1"]')!.click());
+    await settle();
+    expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ kind: "file", itemId: "n1" }, { replace: true });
+  });
+
   it("returns a completed root download with a replace hint", async () => {
     const onNavigate = vi.fn();
     ITEMS.n1 = CHILDREN["/"]![1]!;

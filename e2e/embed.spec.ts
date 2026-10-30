@@ -217,7 +217,6 @@ test("file downloads replace temporary history entries and return to canonical r
   await child;
   await expect(drive.getByRole("heading", { name: "router-download", exact: true })).toBeVisible();
   await page.goBack();
-  await page.goBack();
   await expect(drive.getByRole("heading", { name: "My files", exact: true })).toBeVisible();
   await page.goForward();
   await expect(drive.getByRole("heading", { name: "router-download", exact: true })).toBeVisible();

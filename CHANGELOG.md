@@ -4,7 +4,7 @@
 
 - Add typed embedded navigation with `DriveLocation`, `location`, and `onNavigate`.
   Mounted views expose `setLocation` and `getLocation` for host routing.
-  Navigation includes a history replace hint for completed downloads.
+  Navigation includes a history replace hint for transient download routes.
 - Keep the current location on option updates. Route embedded activity actions
   through the host navigation API.
 
