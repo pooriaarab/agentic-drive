@@ -24,6 +24,7 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
+      - run: node scripts/check-tested-dependencies.mjs
       - run: npm run build
       - run: npm run build:ui
       - run: npm run typecheck
