@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0
+
+- Add typed embedded navigation with `DriveLocation`, `location`, and `onNavigate`.
+  Mounted views expose `setLocation` and `getLocation` for host routing.
+- Keep the current location on option updates. Route embedded activity actions
+  through the host navigation API.
+
 ## 0.11.1
 
 - Allow `agentic-design` and `agentic-identity` releases below 1.0.0 while keeping the existing lower bounds. Test with identity 0.12.0 and design 0.10.1.

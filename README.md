@@ -248,7 +248,7 @@ view.unmount();
 ```
 
 `mount` returns a `MountedDrive` handle. `DriveBrowser` is the React component;
-`DriveUiOptions` is its configuration. `OnOpenItem` is the reference-open callback type, and `Item` is its argument type. The CSS path supplies its styles.
+`DriveUiOptions` is its configuration. `DriveLocation` is the folder, trash, activity, or file location type. `OnOpenItem` is the reference-open callback type, and `Item` is its argument type. The CSS path supplies its styles.
 
 ### CLI, MCP, and adapters
 
@@ -322,6 +322,53 @@ drive.update({ baseUrl: location.origin, getToken: () => session.token, onOpenIt
 ```
 
 `DriveUiOptions` exports this optional hook for both `mount` and `DriveBrowser`. `update()` can replace or remove it. React hosts can change the `onOpenItem` prop without resetting the current folder. The callback is synchronous.
+
+### Embed navigation
+
+Use the exported `DriveLocation` type to select a folder, trash, item activity,
+or file download. A folder location has `{ kind: "folder", path: "/" }`.
+Its `path` accepts a folder id, an absolute path such as `"/Work/Plans"`,
+or a path from a folder id. Other locations use `{ kind: "trash" }`,
+`{ kind: "activity", itemId }`, or `{ kind: "file", itemId }`.
+The server checks access for each request. An inaccessible folder shows an error.
+
+`mount` starts at `options.location`, or root when it is absent.
+`setLocation` changes the view without remounting the drive.
+`getLocation` returns a copy of the active location. For a folder, pass its
+`path` as `folder` to the client's `registerDocument` method.
+Trash, activity, and downloads have no active folder.
+
+```ts
+import { mount, type DriveLocation } from "agentic-drive/ui";
+
+const readLocation = (): DriveLocation =>
+  JSON.parse(new URL(location.href).searchParams.get("drive") ??
+    '{"kind":"folder","path":"/"}'); // Validate URL data in your app.
+const drive = mount(document.getElementById("drive")!, {
+  baseUrl: location.origin,
+  getToken: () => session.token,
+  location: readLocation(),
+  onNavigate(next) {
+    const url = new URL(location.href);
+    url.searchParams.set("drive", JSON.stringify(next));
+    history.pushState(null, "", url);
+  },
+});
+addEventListener("popstate", () => drive.setLocation(readLocation()));
+const active = drive.getLocation();
+if (active.kind === "folder") {
+  await client.registerDocument({ name: "Plan", ref: "docs:plan", folder: active.path });
+}
+```
+
+`onNavigate` reports folder, breadcrumb, trash, activity, and download navigation.
+Initial render, `setLocation`, and `update` do not call it.
+`update` keeps the current location unless it receives a new `location`.
+In React, `DriveBrowser location={current} onNavigate={setCurrent}` is controlled:
+the host must apply the next location. Without `location`, React keeps it locally.
+Changes to server or token options keep the location and reload its data.
+The embed never changes the host URL itself.
+
 
 `getToken` returns 1 to 512 letters, digits, `-` or `_`, or `undefined` to send no `authorization` header. A bad `baseUrl` or a `getToken` that is not a function makes `mount` throw a `TypeError`. The server still checks every request against the token. The embed shows files and trash with upload, rename, move, share, and the "Created by agent" label. It has no sign-in form, because your app owns sign-in. It does not change the page address, and it has no theme switch. `agentic-design/styles.css` sets base styles for the whole page, and it follows the dark mode of the system unless your page sets `data-theme`. Add `agentic-design@">=0.8.0 <1.0.0"` to your own dependencies, because your page imports its files. The Worker sends no CORS headers, so the server must be on the origin of your page. Set `baseUrl` to the same address as `DRIVE_PUBLIC_URL`, or the UI refuses its download links. `unmount` and `update` abort the requests that run and stop an upload that has more files to send. The UI keeps the list or grid choice in `localStorage` under `agentic-drive-view`, and it has its own heading for each view. Dialogs, menus, and messages render in `document.body`, outside your element. A click with Ctrl, Cmd, Shift, or the middle button on a folder link does not open the folder. The class names start with `drive-`. The design-system classes start with `agd-`. `DriveBrowser` is the same UI as a React component. It closes its requests when it unmounts. Wrap it in `TooltipProvider` and `ToastProvider` from `agentic-design/react`. `react` and `react-dom` (version 19 or later) are optional peer dependencies. Install them in your project when you use `agentic-drive/ui`. The web UI that the Worker serves uses the same views.
 

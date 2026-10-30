@@ -12,7 +12,35 @@ import "./app.css";
 export type OnOpenItem = (item: Item) => boolean | void;
 export type { Item } from "../src/client.js";
 
+/** Folder locators follow the SDK rules: "/" is root; use an id or an absolute path. */
+export type DriveLocation =
+  | { kind: "folder"; path: string }
+  | { kind: "trash" }
+  | { kind: "activity"; itemId: string }
+  | { kind: "file"; itemId: string };
+
+const ROOT: DriveLocation = { kind: "folder", path: "/" };
+function locationHash(location: DriveLocation): string {
+  if (location.kind === "folder" && typeof location.path === "string" && location.path.length)
+    return `#/folder/${encodeURIComponent(location.path)}`;
+  if (location.kind === "trash") return "#/trash";
+  if ((location.kind === "activity" || location.kind === "file") && typeof location.itemId === "string" && location.itemId.length)
+    return `#/${location.kind === "activity" ? "a" : "f"}/${encodeURIComponent(location.itemId)}`;
+  throw new TypeError("Invalid drive location");
+}
+function fromHash(hash: string): DriveLocation {
+  const path = hash.slice(2);
+  if (path === "trash") return { kind: "trash" };
+  if (path.startsWith("a/")) return { kind: "activity", itemId: path.slice(2) };
+  if (path.startsWith("f/")) return { kind: "file", itemId: path.slice(2) };
+  return { kind: "folder", path: path || "/" };
+}
+
 export interface DriveUiOptions {
+  /** Controlled in React. In mount/update, selects the location; omission preserves it. */
+  location?: DriveLocation;
+  /** User navigation only. Controlled React hosts must apply the next location. */
+  onNavigate?: (location: DriveLocation) => void;
   /** Runs when a person activates a reference item. Return true to skip the built-in download. */
   onOpenItem?: OnOpenItem;
   /** The address of the drive server, for example `https://drive.example.com`. Only its origin is used. */
@@ -45,29 +73,35 @@ function makeClient({ baseUrl, getToken }: DriveUiOptions) {
 let clients = 0;
 
 /** The folders and trash of the signed-in caller, with upload, share, and the machine-made label. It needs the tooltip and toast providers above it. `mount` adds them.
- * It shows the root again when `baseUrl` changes. A bad `baseUrl` or `getToken` throws. Pass a stable `getToken`, because a new function makes a new client. */
-export function DriveBrowser({ baseUrl, getToken, onOpenItem }: DriveUiOptions) {
+ * It keeps its location when `baseUrl` changes. A bad `baseUrl` or `getToken` throws. Pass a stable `getToken`, because a new function makes a new client. */
+export function DriveBrowser({ baseUrl, getToken, onOpenItem, location, onNavigate }: DriveUiOptions) {
+  const [local, setLocal] = useState<DriveLocation>(ROOT);
+  const active = location ?? local;
+  locationHash(active);
+  const navigate = (next: DriveLocation) => {
+    if (location === undefined) setLocal(next);
+    onNavigate?.(next);
+  };
   const [made, setMade] = useState<{ id: number; client: DriveClient; origin: string }>();
   // The client closes when the component unmounts or an option changes, so work of the old one sends nothing more.
-  // The view is keyed on the client, so it loads again from the root with the new one.
+  // A new client reloads the current location.
   useEffect(() => {
     const next = makeClient({ baseUrl, getToken });
     setMade({ id: ++clients, client: next.client, origin: new URL(baseUrl).origin });
     return () => next.close();
   }, [baseUrl, getToken]);
-  return made ? <DriveView key={made.id} client={made.client} origin={made.origin} onOpenItem={onOpenItem} /> : null;
+  return made ? <DriveView key={made.id} client={made.client} origin={made.origin} onOpenItem={onOpenItem} location={active} onNavigate={navigate} /> : null;
 }
 
-function DriveView({ client, origin, onOpenItem }: { client: DriveClient; origin: string; onOpenItem?: OnOpenItem }) {
-  // The route lives in this component, not in the page address, so the embed never moves the host page.
-  const [hash, setHash] = useState("#/");
-  const go = (loc: string) => setHash(`#/${loc === "/" ? "" : loc}`);
+function DriveView({ client, origin, onOpenItem, location, onNavigate }: { client: DriveClient; origin: string; onOpenItem?: OnOpenItem; location: DriveLocation; onNavigate: (next: DriveLocation) => void }) {
+  const hash = locationHash(location);
+  const go = (loc: string) => onNavigate(fromHash(`#/${loc === "/" ? "" : loc}`));
   const follow = (e: MouseEvent) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     const link = (e.target as Element).closest?.("a[href^='#/']");
     if (!link || !e.currentTarget.contains(link)) return;
     e.preventDefault();
-    setHash(link.getAttribute("href")!);
+    onNavigate(fromHash(link.getAttribute("href")!));
   };
   const place = hash.startsWith("#/trash") ? "trash" : "files";
   return (
@@ -77,30 +111,42 @@ function DriveView({ client, origin, onOpenItem }: { client: DriveClient; origin
         { href: "#/trash", label: "Trash", current: place === "trash" },
       ]} />
       <div className="drive-main">
-        <Routes hash={hash} client={client} origin={origin} go={go} onOpenItem={onOpenItem} />
+        <Routes hash={hash} client={client} origin={origin} go={go} onOpenItem={onOpenItem} folderLoc={location.kind === "folder" ? location.path : undefined} />
       </div>
     </div>
   );
 }
 
 export interface MountedDrive {
-  /** Show the drive with another address, token callback, or item-open callback. The folder the person has open resets. */
+  /** Show the drive with another address, token callback, or item-open callback. The current location stays unless options.location is supplied. */
   update(options: DriveUiOptions): void;
+  /** Select a location without remounting the drive. Does not call onNavigate. */
+  setLocation(location: DriveLocation): void;
+  /** Current location. A folder path is suitable for SDK registerDocument({ folder }). */
+  getLocation(): DriveLocation;
   /** Remove the UI. A request that runs is aborted, and no later request starts or calls `getToken`. Calling it again does nothing. */
   unmount(): void;
 }
 
 /** Render the drive into an element, for an app that does not use React itself. A bad `baseUrl` or `getToken` throws a `TypeError`. */
 export function mount(element: HTMLElement, options: DriveUiOptions): MountedDrive {
+  let active = { ...(options.location ?? ROOT) };
+  locationHash(active);
+  let settings = options;
   let current = makeClient(options);
   const root = createRoot(element);
   let open = true;
   let version = 0;
+  const navigate = (next: DriveLocation) => {
+    active = { ...next };
+    render(settings, current.client);
+    settings.onNavigate?.({ ...active });
+  };
   const render = (next: DriveUiOptions, client: DriveClient) =>
     root.render(
       <TooltipProvider>
         <ToastProvider>
-          <DriveView key={version++} client={client} origin={new URL(next.baseUrl).origin} onOpenItem={next.onOpenItem} />
+          <DriveView key={version} client={client} origin={new URL(next.baseUrl).origin} onOpenItem={next.onOpenItem} location={active} onNavigate={navigate} />
         </ToastProvider>
       </TooltipProvider>,
     );
@@ -108,12 +154,23 @@ export function mount(element: HTMLElement, options: DriveUiOptions): MountedDri
   return {
     update: (next) => {
       if (!open) return;
+      if (next.location !== undefined) locationHash(next.location);
       const made = makeClient(next);
+      settings = next;
+      if (next.location !== undefined) active = { ...next.location };
+      version++;
       // The old client closes first, so an upload of the old UI sends nothing more.
       current.close();
       current = made;
       render(next, made.client);
     },
+    setLocation: (next) => {
+      if (!open) return;
+      locationHash(next);
+      active = { ...next };
+      render(settings, current.client);
+    },
+    getLocation: () => ({ ...active }),
     unmount: () => {
       if (!open) return;
       open = false;
