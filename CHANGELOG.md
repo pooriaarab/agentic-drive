@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0
+
+- Add the trusted host `claimResourceRef` helper. Commit app ownership and a reference atomically. Release on direct trash or removal and reclaim on restore. Report ownership conflicts as `REF_CONFLICT`. Require identity 0.12.0.
+
 ## 0.12.0
 
 - Add typed embedded navigation with `DriveLocation`, `location`, and `onNavigate`.
@@ -8,6 +12,7 @@
   history replace hint, and navigation cancels pending downloads.
 - Keep the current location on option updates. Route embedded activity actions
   through the host navigation API.
+
 
 ## 0.11.1
 

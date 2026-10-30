@@ -1,4 +1,4 @@
-import { EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, hasScope, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
+import { ResourceClaimConflictError, EraseRefusedError, isMachineMade, StoreConflictError, MAX_FOLDER_DEPTH, PRINCIPAL_KINDS, ROLES, SUBJECT_KINDS, hasScope, type Blobs, type createSharing, type Doc, type PrincipalContext, type PrincipalKind, type Resource, type Role, type Store, type StoreOps, type Subject, type SubjectKind } from "agentic-identity";
 
 export const ROOT_ID = "root";
 const NODES = "drive_nodes";
@@ -45,7 +45,11 @@ export type Sharing = ReturnType<typeof createSharing>;
 /** The seam for access. With `sharing`, the default is a role check through agentic-identity. */
 export type Can = (ctx: Ctx, action: Action, node: Node) => boolean | Promise<boolean>;
 
+export type ResourceOwnership = { resourceId: string; subject: Subject; type: string };
+
 export type Node = {
+  /** Trusted host claim. Kept in trash so restore can reacquire it. */
+  resourceOwnership?: ResourceOwnership;
   id: string;
   owner: string;
   parentId: string;
@@ -72,12 +76,12 @@ export type Node = {
 };
 
 export type ErrorCode =
-  | "NOT_FOUND" | "NAME_TAKEN" | "BLOB_EXISTS" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
+  | "REF_CONFLICT" | "NOT_FOUND" | "NAME_TAKEN" | "BLOB_EXISTS" | "INVALID_NAME" | "INVALID_PATH" | "INVALID_REF" | "NOT_A_FOLDER" | "NOT_A_FILE"
   | "MOVE_INTO_SELF" | "TOO_DEEP" | "PARENT_GONE" | "TRASHED" | "NOT_TRASHED" | "IS_ROOT" | "FORBIDDEN" | "BLOB_MISSING" | "TOO_LARGE" | "INVALID_EXPIRY" | "BUSY" | "CROSS_DRIVE" | "INVALID_SHARE" | "TOO_MANY_ITEMS";
 
 /** The HTTP status of each error code. A host that serves the drive reuses it. */
 export const ERROR_STATUS: Readonly<Record<ErrorCode, 400 | 403 | 404 | 409 | 413 | 500>> = Object.freeze({
-  CROSS_DRIVE: 409, INVALID_SHARE: 400, TOO_MANY_ITEMS: 409,
+  REF_CONFLICT: 409, CROSS_DRIVE: 409, INVALID_SHARE: 400, TOO_MANY_ITEMS: 409,
   TOO_DEEP: 400, INVALID_EXPIRY: 400, BUSY: 409, BLOB_EXISTS: 500,
   NOT_FOUND: 404, NAME_TAKEN: 409, INVALID_NAME: 400, INVALID_PATH: 400, INVALID_REF: 400, NOT_A_FOLDER: 400, NOT_A_FILE: 400,
   MOVE_INTO_SELF: 409, PARENT_GONE: 409, TRASHED: 409, NOT_TRASHED: 409, IS_ROOT: 400, FORBIDDEN: 403, BLOB_MISSING: 500, TOO_LARGE: 413,
@@ -498,7 +502,7 @@ export function createDrive(deps: DriveDeps) {
 
   type NewFields = Partial<Pick<Node, "kind" | "size" | "mime" | "hash" | "ref" | "blobKey">>;
   /** A new item belongs to the drive of its folder's owner, whoever adds it. */
-  async function insert(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict) {
+  async function insert(ops: StoreOps, w: ReturnType<typeof batch>, ctx: Ctx, parent: Node, rawName: string, fields: NewFields, onConflict: OnConflict, fixedId?: string) {
     let { name, key } = parseName(rawName);
     const empty = w.fresh.has(parent.id);
     if (!empty) await need(ctx, "write", parent);
@@ -514,7 +518,7 @@ export function createDrive(deps: DriveDeps) {
       name = await freeName(ops, parent.owner, parent.id, name);
       key = parseName(name).key;
     }
-    const id = newId();
+    const id = fixedId ?? newId();
     if (sharing) {
       const depth = (await depthOf(ops, w, parent)) + 1;
       if (depth > MAX_ITEM_DEPTH) throw new DriveError("TOO_DEEP", `an item can sit at most ${MAX_ITEM_DEPTH} folders deep`);
@@ -657,14 +661,31 @@ export function createDrive(deps: DriveDeps) {
   }
 
   /** A transaction for a caller. It reads access answers that it fetched outside, one retry per missing answer. */
-  async function transactAs<R>(ctx: Ctx, fn: (tx: StoreOps, ctx: Ctx) => Promise<R>): Promise<R> {
+  async function transactAs<R>(ctx: Ctx, fn: (tx: StoreOps, ctx: Ctx) => Promise<R>, lifecycle?: { ownership: ResourceOwnership; id: string; release?: boolean }): Promise<R> {
+    const run = async (mutate: (tx: StoreOps) => Promise<R>): Promise<R> => {
+      if (!lifecycle) return transact(mutate);
+      if (!sharing) throw new DriveError("INVALID_SHARE", "sharing is not set up");
+      const { ownership: o, id, release } = lifecycle;
+      let result!: R;
+      try {
+        await sharing[release ? "releaseResourceClaim" : "claimResource"](o.resourceId, o.subject, id, async (tx, claims) => {
+          result = await mutate(tx);
+          if (!release) claims.ensureOwner(o.type);
+        });
+      } catch (error) {
+        if (error instanceof ResourceClaimConflictError) throw new DriveError("REF_CONFLICT", "the app resource has a conflicting owner or reference");
+        if (error instanceof StoreConflictError) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
+        throw error;
+      }
+      return result;
+    };
     const answers = new Map<string, boolean>();
     // Every run counts and none is forgotten, so a drive that keeps changing ends in BUSY instead of a loop.
     let runs = 0;
     let asked = false;
     for (;;) {
       try {
-        return await transact((tx) => {
+        return await run((tx) => {
           // The store ran this transaction again because the data changed. The answers may be stale, so ask again.
           if (++runs > 2 * MAX_ASKS) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
           if (runs > 1 && !asked) answers.clear();
@@ -835,7 +856,17 @@ export function createDrive(deps: DriveDeps) {
       const chunk = rows.slice(i, i + size);
       for (const node of chunk) if (node.blobKey) await blobs.delete(node.blobKey);
       // The node is marked, so it is hidden and cannot come back. A call that fails from here on runs again: see `purge`.
-      for (const node of chunk) await finishResource(principal, node.id);
+      for (const node of chunk) {
+        const current = await store.get<Node>(NODES, node.id);
+        if (current?.resourceOwnership && !current.trashed) await transactAs({ owner: node.owner, actor: node.updatedBy }, async (tx) => {
+          const held = await tx.get<Node>(NODES, node.id);
+          if (held) {
+            const { resourceOwnership: _released, ...rest } = held;
+            await tx.put(NODES, node.id, rest);
+          }
+        }, { ownership: current.resourceOwnership, id: node.id, release: true });
+        await finishResource(principal, node.id);
+      }
       // The log goes before the row. A failed call leaves the marked row, and the call that runs again finds the log by item id.
       for (const node of chunk) for (const entry of await allWhere(store, ACTIVITY, { itemId: node.id, owner: node.owner })) await store.delete(ACTIVITY, entry.id);
       await transact(async (tx) => {
@@ -1019,8 +1050,9 @@ export function createDrive(deps: DriveDeps) {
 
     /** Hides an item and, for a folder, everything under it. Nothing else changes. */
     async trash(ctx: Ctx, loc: string): Promise<Node> {
+      const probe = await resolve(store, ctx, loc);
       return transactAs(ctx, async (tx, ctx) => {
-        const node = await resolve(tx, ctx, loc);
+        const node = await resolve(tx, ctx, probe.id);
         if (node.id === ROOT_ID) throw new DriveError("IS_ROOT", "cannot trash the root");
         await need(ctx, "write", node);
         const claim = await claimId(node.owner, node.parentId, node.nameKey);
@@ -1033,7 +1065,7 @@ export function createDrive(deps: DriveDeps) {
         // Trashing frees the name. Release only a claim that this item holds.
         if (held?.nodeId === node.id) await tx.delete(NAMES, claim);
         return trashed;
-      });
+      }, probe.resourceOwnership ? { ownership: probe.resourceOwnership, id: probe.id, release: true } : undefined);
     },
 
     /** Items trashed on their own, newest first. */
@@ -1060,6 +1092,7 @@ export function createDrive(deps: DriveDeps) {
 
     /** Puts a trashed item back. It needs a live parent folder. */
     async restore(ctx: Ctx, id: string, opts: { parentId?: string; onConflict?: OnConflict } = {}): Promise<Node> {
+      const ownership = (await fetch(store, ctx, id))?.resourceOwnership;
       // Only a caller who may read both the folder and the new parent makes the store count the subtree.
       let height = 0;
       if (sharing && opts.parentId !== undefined) {
@@ -1098,7 +1131,7 @@ export function createDrive(deps: DriveDeps) {
         await tx.put(NAMES, await claimId(parent.owner, parent.id, key), { nodeId: restored.id, owner: parent.owner, parentId: parent.id });
         if (sharing && parent.id !== node.parentId) await tx.put("resources", restored.id, await resourceDoc(restored, parent));
         return restored;
-      });
+      }, ownership ? { ownership, id } : undefined);
     },
 
     /** Live items that match every field given, sorted by path. */
@@ -1262,6 +1295,42 @@ export function createDrive(deps: DriveDeps) {
       }
       await store.put(ACTIVITY, ...logDoc(ctx, node, "share", { subjectKind: subject.kind, subjectId: subject.id, role: claim.role }));
       return node;
+    },
+
+    /** Trusted host only. Check app access before calling. Own the app resource and create its reference atomically. */
+    async claimResourceRef(ctx: Ctx, path: string, ref: string, ownership: ResourceOwnership, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
+      if (!REF.test(ref)) throw new DriveError("INVALID_REF", "a reference looks like docs:<id>");
+      const subject = parseSubject(ownership.subject);
+      const claim = { ...ownership, subject };
+      if (!claim.resourceId || !claim.type) throw new DriveError("INVALID_REF", "resourceId and type are required");
+      for (let attempt = 0; ; attempt++) {
+        let existing: Node | null = null;
+        try { existing = await resolve(store, ctx, path); }
+        catch (error) { if (!(error instanceof DriveError) || error.code !== "NOT_FOUND") throw error; }
+        const id = existing?.id ?? newId();
+        try { return await transactAs(ctx, async (tx, ctx) => {
+          const w = batch();
+          const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
+          const slot = await claimed(tx, parent.owner, parent.id, parseName(name).key);
+          if (slot.node?.id === id) {
+            await need(ctx, "write", slot.node);
+            const held = slot.node.resourceOwnership;
+            if (slot.node.ref !== ref || !held || held.resourceId !== claim.resourceId || held.type !== claim.type || held.subject.id !== subject.id || held.subject.kind !== subject.kind) {
+              throw new DriveError("REF_CONFLICT", "this path has a conflicting reference");
+            }
+            return slot.node;
+          }
+          if (existing) throw new DriveError("BUSY", "the reference moved at the same time. Try again.");
+          const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "rename" ? "rename" : "fail", id);
+          const owned = { ...node, resourceOwnership: claim };
+          w.put(NODES, id, owned);
+          await w.apply(tx);
+          return owned;
+        }, { ownership: claim, id });
+        } catch (error) {
+          if (attempt >= 2 || !(error instanceof DriveError) || error.code !== "NAME_TAKEN" || opts.onConflict === "rename") throw error;
+        }
+      }
     },
 
     /** An app deleted a document. Its references in this drive go to the trash. Returns how many. */

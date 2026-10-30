@@ -39,7 +39,7 @@ checks), `upload`, `sniffMime`, `DEFAULT_MAX_BYTES` (upload helpers), `buildExpo
 (account plug-in). See README for behavior and limits.
 
 Root types: `ActivityAction`, `ActivityEntry`, `Action`, `Actor`, `ActorKind`,
-`Can`, `Ctx`, `Drive`, `DriveDeps`, `ErrorCode`, `Node`, `OnConflict`,
+`Can`, `Ctx`, `Drive`, `DriveDeps`, `ErrorCode`, `Node`, `OnConflict`, `ResourceOwnership`,
 `UploadOptions`, `SearchQuery`, `BackfillOptions`, `BackfillResult`,
 `DriveAccount`, and `DriveAccountDeps`. They describe activity, callers, drive
 operations, uploads, migrations, and account operations.
@@ -142,3 +142,5 @@ cancels pending downloads. Explicit file locations return to the parent with
 replace true on success; an error leaves that explicit location selected.
 Root returns use "/". A direct location assignment does not notify the host,
 but a completed download does. Apply popstate with setLocation or React props.
+
+Trusted hosts use drive.claimResourceRef(ctx, path, ref, { resourceId, type, subject }, opts) for atomic app ownership. Check app access first. Repeated claims at the same path return the same reference. REF_CONFLICT means ownership or reference conflict. Direct trash releases the claim; restore reacquires it. Folder trash keeps child claims. This helper is not an unchecked HTTP, CLI, or MCP action.

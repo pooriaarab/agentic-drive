@@ -123,7 +123,7 @@ describe("claimRef", () => {
 
 describe("exports for hosts", () => {
   const all: ErrorCode[] = [
-    "NOT_FOUND", "NAME_TAKEN", "BLOB_EXISTS", "INVALID_NAME", "INVALID_PATH", "INVALID_REF", "NOT_A_FOLDER", "NOT_A_FILE", "MOVE_INTO_SELF", "TOO_DEEP",
+    "REF_CONFLICT", "NOT_FOUND", "NAME_TAKEN", "BLOB_EXISTS", "INVALID_NAME", "INVALID_PATH", "INVALID_REF", "NOT_A_FOLDER", "NOT_A_FILE", "MOVE_INTO_SELF", "TOO_DEEP",
     "PARENT_GONE", "TRASHED", "NOT_TRASHED", "IS_ROOT", "FORBIDDEN", "BLOB_MISSING", "TOO_LARGE", "INVALID_EXPIRY", "BUSY", "CROSS_DRIVE", "INVALID_SHARE", "TOO_MANY_ITEMS",
   ];
   it("maps every error code to an HTTP error status, from the package and the worker entry", () => {
@@ -132,5 +132,61 @@ describe("exports for hosts", () => {
     expect(Object.keys(ERROR_STATUS).sort()).toEqual([...all].sort());
     expect(Object.isFrozen(ERROR_STATUS)).toBe(true);
     expect(ERROR_STATUS).toMatchObject({ NOT_FOUND: 404, FORBIDDEN: 403, NAME_TAKEN: 409, TOO_LARGE: 413, INVALID_REF: 400 });
+  });
+});
+
+// Failure cases: two hosts race, existing sharing has another owner, a path
+// conflicts, trash frees ownership, restore conflicts, and removal frees it.
+describe("trusted resource references", () => {
+  const ownership = (id: string) => ({ resourceId: "app-document", type: "doc", subject: { kind: "human" as const, id } });
+  it("allows only one subject across two drive instances", async () => {
+    const store = backend.store();
+    const sharing = createSharing(store);
+    const deps = { store, sharing, blobs: createMemoryBlobs() };
+    const a = createDrive(deps), b = createDrive(deps);
+    const results = await Promise.allSettled([
+      a.claimResourceRef(A, "/a", "docs:1", ownership("alice")),
+      b.claimResourceRef(B, "/b", "docs:1", ownership("bob")),
+    ]);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(r => r.status === "rejected")).toMatchObject({ reason: { code: "REF_CONFLICT" } });
+    expect((await store.query("drive_nodes", { where: { kind: "ref" } })).items).toHaveLength(1);
+  });
+  it("repeats the same claim without host conflict recovery", async () => {
+    const nodes = await Promise.all(Array.from({ length: 4 }, () => drive.claimResourceRef(A, "/same", "docs:1", ownership("alice"))));
+    expect(new Set(nodes.map(n => n.id)).size).toBe(1);
+    await fails(drive.claimResourceRef(A, "/same", "docs:2", ownership("alice")), "REF_CONFLICT");
+  });
+  it("rolls back a reference when existing ownership conflicts", async () => {
+    await sharing.claimResource("app-document", { kind: "human", id: "bob" }, "external", async (_tx, claims) => { claims.ensureOwner("doc"); });
+    await fails(drive.claimResourceRef(A, "/a", "docs:1", ownership("alice")), "REF_CONFLICT");
+    expect(await drive.findByRef(A, "docs:1")).toEqual([]);
+  });
+  it("keeps ownership until the last reference is released", async () => {
+    const a = await drive.claimResourceRef(A, "/a", "docs:1", ownership("alice"));
+    const b = await drive.claimResourceRef(A, "/b", "docs:1", ownership("alice"));
+    await drive.trash(A, a.id);
+    await fails(drive.claimResourceRef(B, "/b", "docs:1", ownership("bob")), "REF_CONFLICT");
+    await drive.trash(A, b.id);
+    expect((await drive.claimResourceRef(B, "/b", "docs:1", ownership("bob"))).ref).toBe("docs:1");
+  });
+  it("releases a live child when a trashed folder is purged", async () => {
+    await drive.claimResourceRef(A, "/folder/plan", "docs:1", ownership("alice"), { parents: true });
+    await drive.trash(A, "/folder");
+    await drive.purge(A, (await drive.listTrash(A))[0]!.id);
+    expect((await drive.claimResourceRef(B, "/plan", "docs:1", ownership("bob"))).ref).toBe("docs:1");
+  });
+  it("keeps claims through failed paths and releases on trash and purge", async () => {
+    const a = await drive.claimResourceRef(A, "/a", "docs:1", ownership("alice"));
+    await fails(drive.claimResourceRef(A, "/a", "docs:2", ownership("alice")), "REF_CONFLICT");
+    await drive.trash(A, a.id);
+    const b = await drive.claimResourceRef(B, "/b", "docs:1", ownership("bob"));
+    await fails(drive.restore(A, a.id), "REF_CONFLICT");
+    expect((await drive.listTrash(A)).map(n => n.id)).toContain(a.id);
+    await drive.trash(B, b.id);
+    await drive.restore(A, a.id);
+    await drive.trash(A, a.id);
+    await drive.purge(A, a.id);
+    expect((await drive.claimResourceRef(B, "/c", "docs:1", ownership("bob"))).ref).toBe("docs:1");
   });
 });
