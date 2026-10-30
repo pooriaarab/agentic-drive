@@ -673,6 +673,9 @@ export function createDrive(deps: DriveDeps) {
           if (!release) claims.ensureOwner(o.type);
         });
       } catch (error) {
+        // Identity erase can remove an old subject's claim while its host reference stays.
+        // A conflicting claim belongs to someone else. Keep it and allow local removal.
+        if (release && error instanceof ResourceClaimConflictError) return transact(mutate);
         if (error instanceof ResourceClaimConflictError) throw new DriveError("REF_CONFLICT", "the app resource has a conflicting owner or reference");
         if (error instanceof StoreConflictError) throw new DriveError("BUSY", "the drive changed at the same time. Try again.");
         throw error;
@@ -1298,16 +1301,19 @@ export function createDrive(deps: DriveDeps) {
     },
 
     /** Trusted host only. Check app access before calling. Own the app resource and create its reference atomically. */
-    async claimResourceRef(ctx: Ctx, path: string, ref: string, ownership: ResourceOwnership, opts: { parents?: boolean; onConflict?: OnConflict } = {}): Promise<Node> {
+    async claimResourceRef(ctx: Ctx, path: string, ref: string, ownership: ResourceOwnership, opts: { parents?: boolean } = {}): Promise<Node> {
       if (!REF.test(ref)) throw new DriveError("INVALID_REF", "a reference looks like docs:<id>");
+      if (!ownership || typeof ownership !== "object" || typeof ownership.resourceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(ownership.resourceId) || typeof ownership.type !== "string" || !/^[a-z][a-z0-9_-]*$/.test(ownership.type)) {
+        throw new DriveError("INVALID_REF", "ownership needs a safe resource id and a lowercase resource type");
+      }
       const subject = parseSubject(ownership.subject);
       const claim = { ...ownership, subject };
-      if (!claim.resourceId || !claim.type) throw new DriveError("INVALID_REF", "resourceId and type are required");
       for (let attempt = 0; ; attempt++) {
         let existing: Node | null = null;
         try { existing = await resolve(store, ctx, path); }
         catch (error) { if (!(error instanceof DriveError) || error.code !== "NOT_FOUND") throw error; }
         const id = existing?.id ?? newId();
+        if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new DriveError("INVALID_REF", "the reference needs a safe id");
         try { return await transactAs(ctx, async (tx, ctx) => {
           const w = batch();
           const { parent, name } = await parentAndName(tx, w, ctx, path, opts.parents ?? false);
@@ -1315,20 +1321,20 @@ export function createDrive(deps: DriveDeps) {
           if (slot.node?.id === id) {
             await need(ctx, "write", slot.node);
             const held = slot.node.resourceOwnership;
-            if (slot.node.ref !== ref || !held || held.resourceId !== claim.resourceId || held.type !== claim.type || held.subject.id !== subject.id || held.subject.kind !== subject.kind) {
+            if (slot.node.ref !== ref || !held || held.resourceId !== claim.resourceId || held.type !== claim.type || !held.subject || held.subject.id !== subject.id || held.subject.kind !== subject.kind) {
               throw new DriveError("REF_CONFLICT", "this path has a conflicting reference");
             }
             return slot.node;
           }
           if (existing) throw new DriveError("BUSY", "the reference moved at the same time. Try again.");
-          const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, opts.onConflict === "rename" ? "rename" : "fail", id);
+          const { node } = await insert(tx, w, ctx, parent, name, { kind: "ref", ref }, "fail", id);
           const owned = { ...node, resourceOwnership: claim };
           w.put(NODES, id, owned);
           await w.apply(tx);
           return owned;
         }, { ownership: claim, id });
         } catch (error) {
-          if (attempt >= 2 || !(error instanceof DriveError) || error.code !== "NAME_TAKEN" || opts.onConflict === "rename") throw error;
+          if (attempt >= 2 || !(error instanceof DriveError) || error.code !== "NAME_TAKEN") throw error;
         }
       }
     },
