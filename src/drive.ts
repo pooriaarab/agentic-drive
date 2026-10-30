@@ -1106,9 +1106,8 @@ export function createDrive(deps: DriveDeps) {
       // Only a caller who may read both the folder and the new parent makes the store count the subtree.
       let height = 0;
       if (sharing && opts.parentId !== undefined) {
-        const probe = await fetch(store, ctx, id);
         const target = await rawNode(store, opts.parentId, ctx.owner, ctx.actor);
-        if (probe?.trashed && target && (await can(ctx, "read", target))) height = await heightFor(ctx, probe, target);
+        if (target && (await can(ctx, "read", target))) height = await heightFor(ctx, probe, target);
       }
       return transactAs(ctx, async (tx, ctx) => {
         const node = await fetch(tx, ctx, id);
